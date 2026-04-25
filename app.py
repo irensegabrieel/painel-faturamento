@@ -1,19 +1,11 @@
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-import time
 
 st.set_page_config(page_title="Painel de Faturamento", page_icon="📊", layout="wide")
 
-# ==============================
-# CONFIGURAÇÃO DO GITHUB
-# ==============================
-
-OWNER = "irensegabriel"
-REPO = "painel-faturamento"
-BRANCH = "main"
-
-BASE_URL = f"https://raw.githubusercontent.com/{OWNER}/{REPO}/{BRANCH}/dashboard"
+PASTA_DASHBOARD = Path("dashboard")
+PASTA_ATUAL = Path(".")
 
 ARQUIVOS = {
     "notas": "notas_dashboard.csv",
@@ -24,11 +16,6 @@ ARQUIVOS = {
 }
 
 ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
-
-
-# ==============================
-# AUTO ATUALIZAÇÃO
-# ==============================
 
 st.markdown(
     """
@@ -41,16 +28,24 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+def caminho_arquivo(nome):
+    candidatos = [
+        PASTA_DASHBOARD / nome,
+        PASTA_ATUAL / nome,
+        PASTA_ATUAL / nome.replace(".csv", "(1).csv"),
+    ]
 
-# ==============================
-# LEITURA DOS CSVs DO GITHUB
-# ==============================
+    for caminho in candidatos:
+        if caminho.exists():
+            return caminho
+
+    achados = list(PASTA_ATUAL.glob(nome.replace(".csv", "*.csv"))) + list(PASTA_DASHBOARD.glob(nome.replace(".csv", "*.csv")))
+    return achados[0] if achados else None
+
 
 @st.cache_data(ttl=60, show_spinner=False)
-def ler_csv_github(nome_arquivo):
-    url = f"{BASE_URL}/{nome_arquivo}?t={int(time.time())}"
-
-    df = pd.read_csv(url, sep=";", encoding="utf-8-sig")
+def ler_csv(caminho):
+    df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
 
     for col in df.columns:
         if "FATURAMENTO" in col:
@@ -61,23 +56,6 @@ def ler_csv_github(nome_arquivo):
 
     return df
 
-
-def carregar_bases():
-    bases = {}
-    faltando = []
-
-    for chave, nome in ARQUIVOS.items():
-        try:
-            bases[chave] = ler_csv_github(nome)
-        except Exception:
-            faltando.append(nome)
-
-    return bases, faltando
-
-
-# ==============================
-# FORMATADORES
-# ==============================
 
 def dinheiro(valor):
     try:
@@ -99,40 +77,44 @@ def formatar_tabela(df):
     for col in df2.columns:
         if "FATURAMENTO" in col or col in ["CORTE", "RELIGUE", "TOTAL", "MÍNIMO", "MÁXIMO"]:
             df2[col] = df2[col].apply(dinheiro)
-
         elif col in ["QTD_NOTAS", "NOTAS"]:
             df2[col] = df2[col].apply(numero)
 
     return df2
 
 
-# ==============================
-# CARREGAMENTO
-# ==============================
+def carregar_bases():
+    bases = {}
+    faltando = []
+
+    for chave, nome in ARQUIVOS.items():
+        caminho = caminho_arquivo(nome)
+
+        if caminho:
+            bases[chave] = ler_csv(str(caminho))
+        else:
+            faltando.append(nome)
+
+    return bases, faltando
+
 
 bases, faltando = carregar_bases()
 
 st.title("📊 Painel de Faturamento")
-st.caption("Painel atualizado automaticamente a partir dos CSVs da pasta dashboard no GitHub.")
+st.caption("Painel atualizado automaticamente a cada 60 segundos.")
 
 if faltando:
-    st.warning("Arquivos não encontrados ou com erro de leitura: " + ", ".join(faltando))
+    st.warning("Arquivos não encontrados: " + ", ".join(faltando))
 
 if not bases:
-    st.error("Nenhum CSV foi encontrado no GitHub.")
+    st.error("Nenhum CSV foi encontrado. Verifique se os arquivos estão na pasta dashboard.")
     st.stop()
-
 
 contratos_original = bases.get("contratos", pd.DataFrame())
 carro_original = bases.get("carro", pd.DataFrame())
 dias_original = bases.get("dias", pd.DataFrame())
 carro_dias_original = bases.get("carro_dias", pd.DataFrame())
 notas = bases.get("notas", pd.DataFrame())
-
-
-# ==============================
-# FILTROS EM BOTÕES
-# ==============================
 
 st.sidebar.header("Filtros")
 
@@ -153,9 +135,7 @@ if st.sidebar.button("📊 Todos", use_container_width=True):
     st.session_state.contrato_escolhido = "Todos"
 
 for contrato_nome in contratos_lista:
-    texto_botao = f"🔹 {contrato_nome}"
-
-    if st.sidebar.button(texto_botao, use_container_width=True):
+    if st.sidebar.button(f"🔹 {contrato_nome}", use_container_width=True):
         st.session_state.contrato_escolhido = contrato_nome
 
 contrato_escolhido = st.session_state.contrato_escolhido
@@ -163,7 +143,6 @@ contrato_escolhido = st.session_state.contrato_escolhido
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Selecionado:**")
 st.sidebar.info(contrato_escolhido)
-
 
 contratos = contratos_original.copy()
 carro = carro_original.copy()
@@ -183,22 +162,11 @@ if contrato_escolhido != "Todos":
     if not carro_dias.empty and "CONTRATO" in carro_dias.columns:
         carro_dias = carro_dias[carro_dias["CONTRATO"] == contrato_escolhido]
 
-
 mostrar_carro = not carro.empty
-
-
-# ==============================
-# ABAS
-# ==============================
 
 aba_resumo, aba_dias, aba_carro, aba_notas, aba_download = st.tabs([
     "Resumo", "Dias da semana", "Carro estimado", "Notas", "Downloads"
 ])
-
-
-# ==============================
-# ABA RESUMO
-# ==============================
 
 with aba_resumo:
     total_contratos = contratos["FATURAMENTO"].sum() if "FATURAMENTO" in contratos.columns else 0
@@ -213,7 +181,6 @@ with aba_resumo:
         c2.metric("Carro estimado mínimo", dinheiro(total_carro_min))
         c3.metric("Carro estimado máximo", dinheiro(total_carro_max))
         c4.metric("Notas únicas", numero(qtd_notas))
-
     else:
         c1, c2 = st.columns(2)
         c1.metric("Faturamento contratos", dinheiro(total_contratos))
@@ -246,18 +213,12 @@ with aba_resumo:
 
         st.markdown("**Detalhamento**")
         st.dataframe(formatar_tabela(contratos), use_container_width=True, hide_index=True)
-
     else:
         st.info("Nenhum contrato selecionado.")
 
     if mostrar_carro:
         st.subheader("Contrato do carro selecionado")
         st.dataframe(formatar_tabela(carro), use_container_width=True, hide_index=True)
-
-
-# ==============================
-# ABA DIAS
-# ==============================
 
 with aba_dias:
     st.subheader("Faturamento por dia da semana")
@@ -283,29 +244,18 @@ with aba_dias:
         por_dia = por_dia.sort_values("ordem")
 
         st.bar_chart(por_dia, x="DIA_SEMANA", y="FATURAMENTO")
-
     else:
-        st.info("Nenhum dado de dia da semana para o contrato selecionado.")
-
-
-# ==============================
-# ABA CARRO
-# ==============================
+        st.info("Nenhum dado para o contrato selecionado.")
 
 with aba_carro:
     st.subheader("Contrato do carro — estimativa")
 
     if not carro.empty:
         c1, c2 = st.columns(2)
-
-        if "FATURAMENTO_MIN" in carro.columns:
-            c1.metric("Mínimo estimado", dinheiro(carro["FATURAMENTO_MIN"].sum()))
-
-        if "FATURAMENTO_MAX" in carro.columns:
-            c2.metric("Máximo estimado", dinheiro(carro["FATURAMENTO_MAX"].sum()))
+        c1.metric("Mínimo estimado", dinheiro(carro["FATURAMENTO_MIN"].sum()))
+        c2.metric("Máximo estimado", dinheiro(carro["FATURAMENTO_MAX"].sum()))
 
         st.dataframe(formatar_tabela(carro), use_container_width=True, hide_index=True)
-
     else:
         st.info("Selecione o contrato do carro no menu lateral para visualizar.")
 
@@ -321,14 +271,8 @@ with aba_carro:
         )
 
         st.dataframe(tabela_carro.style.format(dinheiro), use_container_width=True)
-
     else:
         st.info("Nenhum dado diário do carro para o contrato selecionado.")
-
-
-# ==============================
-# ABA NOTAS
-# ==============================
 
 with aba_notas:
     st.subheader("Consulta de notas")
@@ -354,20 +298,15 @@ with aba_notas:
 
         st.dataframe(df_notas.head(2000), use_container_width=True, hide_index=True)
         st.caption("Mostrando até 2000 linhas para não deixar o painel pesado.")
-
     else:
         st.info("Base de notas não encontrada.")
 
-
-# ==============================
-# ABA DOWNLOAD
-# ==============================
-
 with aba_download:
-    st.subheader("Arquivos carregados do GitHub")
+    st.subheader("Arquivos carregados")
 
     for chave, nome in ARQUIVOS.items():
-        url = f"{BASE_URL}/{nome}"
+        caminho = caminho_arquivo(nome)
 
-        st.markdown(f"**{nome}**")
-        st.code(url)
+        if caminho:
+            with open(caminho, "rb") as f:
+                st.download_button(f"Baixar {caminho.name}", f, file_name=caminho.name)
