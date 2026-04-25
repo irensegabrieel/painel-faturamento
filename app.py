@@ -17,13 +17,13 @@ ARQUIVOS = {
 
 ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 
-# Atualiza a página automaticamente a cada 60 segundos.
+# Atualiza a página automaticamente a cada 15 minutos.
 st.markdown(
     """
     <script>
     setTimeout(function(){
         window.location.reload();
-    }, 60000);
+    }, 900000);
     </script>
     """,
     unsafe_allow_html=True
@@ -224,6 +224,43 @@ def meses_disponiveis_da_base(notas):
     return meses[["MES", "PERIODO"]].reset_index(drop=True)
 
 
+
+def data_maxima_do_mes(notas, mes):
+    """Retorna a maior data encontrada dentro de um mês no formato MM/AAAA."""
+    if notas.empty:
+        return None
+
+    df = notas.copy()
+    coluna_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in df.columns else "DATA"
+
+    if coluna_data not in df.columns:
+        return None
+
+    datas = pd.to_datetime(df[coluna_data], dayfirst=True, errors="coerce")
+    periodo_mes = pd.Period(f"{mes[3:7]}-{mes[0:2]}", freq="M")
+    datas_mes = datas[datas.dt.to_period("M") == periodo_mes]
+
+    if datas_mes.dropna().empty:
+        return None
+
+    return datas_mes.max()
+
+
+def texto_mes_com_parcial(notas, mes):
+    """Mostra o mês e, se ainda não fechou, informa até qual data há dados."""
+    data_max = data_maxima_do_mes(notas, mes)
+
+    if data_max is None:
+        return mes
+
+    periodo_mes = data_max.to_period("M")
+    ultimo_dia_mes = periodo_mes.end_time.normalize()
+
+    if data_max.normalize() < ultimo_dia_mes:
+        return f"{mes} (parcial até {data_max.strftime('%d/%m/%Y')})"
+
+    return f"{mes} (mês fechado)"
+
 def resumo_por_periodo(notas, meses_escolhidos, contrato_escolhido="Todos"):
     """Monta resumo financeiro por contrato e por grupo para os meses escolhidos."""
     parcial = preparar_parcial_do_dia(notas)
@@ -314,7 +351,7 @@ def variacao_percentual(atual, anterior):
 bases, faltando = carregar_bases()
 
 st.title("📊 Painel de Faturamento")
-st.caption("Painel atualizado automaticamente a cada 60 segundos.")
+st.caption("Painel atualizado automaticamente a cada 15 minutos.")
 
 if faltando:
     st.warning("Arquivos não encontrados: " + ", ".join(faltando))
@@ -412,9 +449,26 @@ if contrato_escolhido != "Todos":
 
 mostrar_carro = not carro.empty
 
-aba_resumo, aba_parcial, aba_comparativo, aba_dias, aba_carro, aba_notas, aba_download = st.tabs([
-    "Resumo", "Parcial do dia", "Comparativo mensal", "Dias da semana", "Carro estimado", "Notas", "Downloads"
-])
+mostrar_aba_carro = contrato_escolhido in ["Todos", "Contrato Carro STC estimado"]
+
+nomes_abas = ["Resumo", "Parcial do dia", "Comparativo mensal", "Dias da semana"]
+if mostrar_aba_carro:
+    nomes_abas.append("Carro estimado")
+nomes_abas += ["Notas", "Downloads"]
+
+abas = st.tabs(nomes_abas)
+aba_resumo = abas[0]
+aba_parcial = abas[1]
+aba_comparativo = abas[2]
+aba_dias = abas[3]
+
+if mostrar_aba_carro:
+    aba_carro = abas[4]
+    aba_notas = abas[5]
+    aba_download = abas[6]
+else:
+    aba_notas = abas[4]
+    aba_download = abas[5]
 
 # ==============================
 # ABA RESUMO
@@ -602,6 +656,15 @@ with aba_comparativo:
 
         st.markdown(f"**Comparando: {mes_escolhido} x {mes_anterior}**")
 
+        data_max_comp = data_maxima_do_mes(notas, mes_escolhido)
+        if data_max_comp is not None:
+            ultimo_dia_comp = data_max_comp.to_period("M").end_time.normalize()
+            if data_max_comp.normalize() < ultimo_dia_comp:
+                st.info(
+                    f"Atenção: {mes_escolhido} ainda é parcial. "
+                    f"Os dados vão até {data_max_comp.strftime('%d/%m/%Y')}."
+                )
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Faturamento", dinheiro(atual["FATURAMENTO"]), variacao_percentual(atual["FATURAMENTO"], anterior["FATURAMENTO"]))
         c2.metric("Notas", numero(atual["TOTAL_NOTAS"]), variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"]))
@@ -677,32 +740,33 @@ with aba_dias:
 # ABA CARRO
 # ==============================
 
-with aba_carro:
-    st.subheader("Contrato do carro — estimativa")
+if mostrar_aba_carro:
+    with aba_carro:
+        st.subheader("Contrato do carro — estimativa")
 
-    if not carro.empty:
-        c1, c2 = st.columns(2)
-        c1.metric("Mínimo estimado", dinheiro(carro["FATURAMENTO_MIN"].sum()))
-        c2.metric("Máximo estimado", dinheiro(carro["FATURAMENTO_MAX"].sum()))
+        if not carro.empty:
+            c1, c2 = st.columns(2)
+            c1.metric("Mínimo estimado", dinheiro(carro["FATURAMENTO_MIN"].sum()))
+            c2.metric("Máximo estimado", dinheiro(carro["FATURAMENTO_MAX"].sum()))
 
-        st.dataframe(formatar_tabela(carro), use_container_width=True, hide_index=True)
-    else:
-        st.info("Selecione o contrato do carro no menu lateral para visualizar.")
+            st.dataframe(formatar_tabela(carro), use_container_width=True, hide_index=True)
+        else:
+            st.info("Selecione o contrato do carro no menu lateral para visualizar.")
 
-    st.subheader("Carro estimado por dia")
+        st.subheader("Carro estimado por dia")
 
-    if not carro_dias.empty:
-        tabela_carro = carro_dias.pivot_table(
-            index=["CONTRATO", "SEMANA_INICIO"],
-            columns="DIA_SEMANA",
-            values=["FATURAMENTO_MIN", "FATURAMENTO_MAX"],
-            aggfunc="sum",
-            fill_value=0,
-        )
+        if not carro_dias.empty:
+            tabela_carro = carro_dias.pivot_table(
+                index=["CONTRATO", "SEMANA_INICIO"],
+                columns="DIA_SEMANA",
+                values=["FATURAMENTO_MIN", "FATURAMENTO_MAX"],
+                aggfunc="sum",
+                fill_value=0,
+            )
 
-        st.dataframe(tabela_carro.style.format(dinheiro), use_container_width=True)
-    else:
-        st.info("Nenhum dado diário do carro para o contrato selecionado.")
+            st.dataframe(tabela_carro.style.format(dinheiro), use_container_width=True)
+        else:
+            st.info("Nenhum dado diário do carro para o contrato selecionado.")
 
 # ==============================
 # ABA NOTAS
@@ -739,8 +803,14 @@ with aba_notas:
         if qtd_exec != "Todos" and "QTD_EXECUTORES" in df_notas.columns:
             df_notas = df_notas[df_notas["QTD_EXECUTORES"] == qtd_exec]
 
-        st.dataframe(df_notas.head(2000), use_container_width=True, hide_index=True)
-        st.caption("Mostrando até 2000 linhas para não deixar o painel pesado.")
+        total_filtrado = len(df_notas)
+        st.info(f"{numero(total_filtrado)} notas encontradas com os filtros atuais.")
+
+        if st.button("Carregar notas", use_container_width=True):
+            st.dataframe(df_notas.head(2000), use_container_width=True, hide_index=True)
+            st.caption("Mostrando até 2000 linhas para não deixar o painel pesado.")
+        else:
+            st.caption("As notas não são carregadas automaticamente para deixar o painel mais rápido.")
     else:
         st.info("Base de notas não encontrada.")
 
