@@ -741,6 +741,17 @@ with aba_dias:
         colunas_dias = [c for c in ORDEM_DIAS if c in tabela.columns]
 
         tabela["Total semana"] = tabela[colunas_dias].sum(axis=1)
+
+        # Ordena a tabela pela data real do início da semana.
+        # Sem isso, datas como 06/04 podem aparecer antes de 09/03,
+        # porque o Streamlit/Pandas pode tratar o campo como texto.
+        tabela["SEMANA_INICIO_DT"] = pd.to_datetime(
+            tabela["SEMANA_INICIO"],
+            dayfirst=True,
+            errors="coerce",
+        )
+        tabela = tabela.sort_values(["SEMANA_INICIO_DT", "CONTRATO"])
+
         tabela = tabela[["CONTRATO", "SEMANA_INICIO"] + colunas_dias + ["Total semana"]]
 
         st.dataframe(formatar_tabela(tabela), use_container_width=True, hide_index=True)
