@@ -194,6 +194,119 @@ def preparar_parcial_do_dia(notas):
     return parcial
 
 
+
+
+def meses_disponiveis_da_base(notas):
+    """Retorna os meses disponíveis na base acumulada, do mais recente para o mais antigo."""
+    if notas.empty:
+        return pd.DataFrame(columns=["MES", "PERIODO"])
+
+    df = notas.copy()
+    coluna_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in df.columns else "DATA"
+
+    if coluna_data not in df.columns:
+        return pd.DataFrame(columns=["MES", "PERIODO"])
+
+    datas = pd.to_datetime(df[coluna_data], dayfirst=True, errors="coerce")
+    periodos = datas.dt.to_period("M")
+
+    meses = (
+        pd.DataFrame({"PERIODO": periodos})
+        .dropna()
+        .drop_duplicates()
+        .sort_values("PERIODO", ascending=False)
+    )
+
+    if meses.empty:
+        return pd.DataFrame(columns=["MES", "PERIODO"])
+
+    meses["MES"] = meses["PERIODO"].dt.strftime("%m/%Y")
+    return meses[["MES", "PERIODO"]].reset_index(drop=True)
+
+
+def resumo_por_periodo(notas, meses_escolhidos, contrato_escolhido="Todos"):
+    """Monta resumo financeiro por contrato e por grupo para os meses escolhidos."""
+    parcial = preparar_parcial_do_dia(notas)
+
+    if parcial.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    if not meses_escolhidos:
+        meses_base = meses_disponiveis_da_base(notas)
+        if meses_base.empty:
+            return pd.DataFrame(), pd.DataFrame()
+        meses_escolhidos = [meses_base.iloc[0]["MES"]]
+
+    parcial["MES"] = parcial["DATA_DT"].dt.strftime("%m/%Y")
+    parcial = parcial[parcial["MES"].isin(meses_escolhidos)].copy()
+
+    if contrato_escolhido != "Todos" and "CONTRATO" in parcial.columns:
+        parcial = parcial[parcial["CONTRATO"] == contrato_escolhido]
+
+    if parcial.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    resumo_contrato = (
+        parcial.groupby("CONTRATO", dropna=False)
+        .agg(
+            TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
+            CORTES=("EH_CORTE", "sum"),
+            RELIGUES=("EH_RELIGUE", "sum"),
+            FATURAMENTO=("FATURAMENTO", "sum"),
+            FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
+            FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
+        )
+        .reset_index()
+        .sort_values("FATURAMENTO", ascending=False)
+    )
+
+    resumo_grupo = (
+        parcial.groupby(["CONTRATO", "GRUPO_NOTA"], dropna=False)
+        .agg(
+            TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
+            FATURAMENTO=("FATURAMENTO", "sum"),
+            FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
+            FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
+        )
+        .reset_index()
+    )
+
+    return resumo_contrato, resumo_grupo
+
+
+def calcular_resumo_mensal(notas, mes, contrato_escolhido="Todos"):
+    resumo_contrato, _ = resumo_por_periodo(notas, [mes], contrato_escolhido)
+
+    if resumo_contrato.empty:
+        return {
+            "FATURAMENTO": 0.0,
+            "TOTAL_NOTAS": 0,
+            "CORTES": 0,
+            "RELIGUES": 0,
+            "FATURAMENTO_MIN": 0.0,
+            "FATURAMENTO_MAX": 0.0,
+        }
+
+    return {
+        "FATURAMENTO": float(resumo_contrato["FATURAMENTO"].sum()),
+        "TOTAL_NOTAS": int(resumo_contrato["TOTAL_NOTAS"].sum()),
+        "CORTES": int(resumo_contrato["CORTES"].sum()),
+        "RELIGUES": int(resumo_contrato["RELIGUES"].sum()),
+        "FATURAMENTO_MIN": float(resumo_contrato["FATURAMENTO_MIN"].sum()),
+        "FATURAMENTO_MAX": float(resumo_contrato["FATURAMENTO_MAX"].sum()),
+    }
+
+
+def variacao_percentual(atual, anterior):
+    if anterior == 0:
+        if atual == 0:
+            return "0,0%"
+        return "novo"
+    valor = ((atual - anterior) / anterior) * 100
+    sinal = "+" if valor >= 0 else ""
+    return f"{sinal}{valor:.1f}%".replace(".", ",")
+
+
 # ==============================
 # CARREGAMENTO
 # ==============================
@@ -299,8 +412,8 @@ if contrato_escolhido != "Todos":
 
 mostrar_carro = not carro.empty
 
-aba_resumo, aba_parcial, aba_dias, aba_carro, aba_notas, aba_download = st.tabs([
-    "Resumo", "Parcial do dia", "Dias da semana", "Carro estimado", "Notas", "Downloads"
+aba_resumo, aba_parcial, aba_comparativo, aba_dias, aba_carro, aba_notas, aba_download = st.tabs([
+    "Resumo", "Parcial do dia", "Comparativo mensal", "Dias da semana", "Carro estimado", "Notas", "Downloads"
 ])
 
 # ==============================
@@ -462,6 +575,72 @@ with aba_parcial:
                 ]
                 colunas_detalhe = [c for c in colunas_detalhe if c in parcial_dia.columns]
                 st.dataframe(parcial_dia[colunas_detalhe], use_container_width=True, hide_index=True)
+
+
+# ==============================
+# ABA COMPARATIVO MENSAL
+# ==============================
+
+with aba_comparativo:
+    st.subheader("Comparativo mensal")
+    st.caption("Compara o mês escolhido com o mês anterior, usando a base acumulada de notas.")
+
+    meses_base_comp = meses_disponiveis_da_base(notas)
+
+    if meses_base_comp.empty:
+        st.info("Ainda não encontrei meses disponíveis na base de notas.")
+    else:
+        opcoes_meses = meses_base_comp["MES"].tolist()
+        mes_escolhido = st.selectbox("Escolha o mês para comparar", opcoes_meses, index=0)
+
+        periodo_escolhido = meses_base_comp.loc[meses_base_comp["MES"] == mes_escolhido, "PERIODO"].iloc[0]
+        periodo_anterior = periodo_escolhido - 1
+        mes_anterior = periodo_anterior.strftime("%m/%Y")
+
+        atual = calcular_resumo_mensal(notas, mes_escolhido, contrato_escolhido)
+        anterior = calcular_resumo_mensal(notas, mes_anterior, contrato_escolhido)
+
+        st.markdown(f"**Comparando: {mes_escolhido} x {mes_anterior}**")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Faturamento", dinheiro(atual["FATURAMENTO"]), variacao_percentual(atual["FATURAMENTO"], anterior["FATURAMENTO"]))
+        c2.metric("Notas", numero(atual["TOTAL_NOTAS"]), variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"]))
+        c3.metric("Cortes", numero(atual["CORTES"]), variacao_percentual(atual["CORTES"], anterior["CORTES"]))
+        c4.metric("Religues", numero(atual["RELIGUES"]), variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"]))
+
+        tabela_comparativo = pd.DataFrame([
+            {"Indicador": "Faturamento", mes_escolhido: dinheiro(atual["FATURAMENTO"]), mes_anterior: dinheiro(anterior["FATURAMENTO"]), "Variação": variacao_percentual(atual["FATURAMENTO"], anterior["FATURAMENTO"])},
+            {"Indicador": "Notas", mes_escolhido: numero(atual["TOTAL_NOTAS"]), mes_anterior: numero(anterior["TOTAL_NOTAS"]), "Variação": variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"])},
+            {"Indicador": "Cortes", mes_escolhido: numero(atual["CORTES"]), mes_anterior: numero(anterior["CORTES"]), "Variação": variacao_percentual(atual["CORTES"], anterior["CORTES"])},
+            {"Indicador": "Religues", mes_escolhido: numero(atual["RELIGUES"]), mes_anterior: numero(anterior["RELIGUES"]), "Variação": variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"])},
+        ])
+        st.dataframe(tabela_comparativo, use_container_width=True, hide_index=True)
+
+        st.markdown("**Evolução mês a mês**")
+        linhas_evolucao = []
+        for mes in reversed(opcoes_meses):
+            r = calcular_resumo_mensal(notas, mes, contrato_escolhido)
+            linhas_evolucao.append({
+                "MES": mes,
+                "FATURAMENTO": r["FATURAMENTO"],
+                "NOTAS": r["TOTAL_NOTAS"],
+                "CORTES": r["CORTES"],
+                "RELIGUES": r["RELIGUES"],
+            })
+        evolucao = pd.DataFrame(linhas_evolucao)
+
+        if not evolucao.empty:
+            st.bar_chart(evolucao, x="MES", y="FATURAMENTO")
+            st.dataframe(formatar_tabela(evolucao), use_container_width=True, hide_index=True)
+
+        st.markdown("**Resumo por contrato no mês escolhido**")
+        resumo_mes, _ = resumo_por_periodo(notas, [mes_escolhido], contrato_escolhido)
+        if resumo_mes.empty:
+            st.info("Nenhum dado encontrado para esse mês.")
+        else:
+            colunas = ["CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]
+            colunas = [c for c in colunas if c in resumo_mes.columns]
+            st.dataframe(formatar_tabela(resumo_mes[colunas]), use_container_width=True, hide_index=True)
 
 # ==============================
 # ABA DIAS
