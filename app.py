@@ -17,6 +17,9 @@ ARQUIVOS = {
 
 ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 
+# Como dias anteriores não mudam, podemos segurar cache por 15 minutos.
+CACHE_TTL_SEGUNDOS = 900
+
 # Atualiza a página automaticamente a cada 15 minutos.
 st.markdown(
     """
@@ -45,7 +48,7 @@ def caminho_arquivo(nome):
     return achados[0] if achados else None
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def ler_csv(caminho):
     df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
 
@@ -120,6 +123,7 @@ def eh_disjuntor_santa_cruz(recurso):
     return primeiros_numeros.startswith("89") or primeiros_numeros.startswith("20")
 
 
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def preparar_parcial_do_dia(notas):
     if notas.empty:
         return pd.DataFrame()
@@ -261,6 +265,7 @@ def texto_mes_com_parcial(notas, mes):
 
     return f"{mes} (mês fechado)"
 
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def resumo_por_periodo(notas, meses_escolhidos, contrato_escolhido="Todos"):
     """Monta resumo financeiro por contrato e por grupo para os meses escolhidos."""
     parcial = preparar_parcial_do_dia(notas)
@@ -311,6 +316,7 @@ def resumo_por_periodo(notas, meses_escolhidos, contrato_escolhido="Todos"):
     return resumo_contrato, resumo_grupo
 
 
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def calcular_resumo_mensal(notas, mes, contrato_escolhido="Todos"):
     resumo_contrato, _ = resumo_por_periodo(notas, [mes], contrato_escolhido)
 
@@ -351,7 +357,7 @@ def variacao_percentual(atual, anterior):
 bases, faltando = carregar_bases()
 
 st.title("📊 Painel de Faturamento")
-st.caption("Painel atualizado automaticamente a cada 15 minutos.")
+st.caption("Painel atualizado automaticamente a cada 15 minutos. Cálculos em cache para trocar filtros mais rápido.")
 
 if faltando:
     st.warning("Arquivos não encontrados: " + ", ".join(faltando))
