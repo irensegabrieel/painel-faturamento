@@ -17,6 +17,7 @@ ARQUIVOS = {
 
 ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 
+# Atualiza a página automaticamente a cada 60 segundos.
 st.markdown(
     """
     <script>
@@ -27,6 +28,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
 
 def caminho_arquivo(nome):
     candidatos = [
@@ -75,9 +77,9 @@ def formatar_tabela(df):
     df2 = df.copy()
 
     for col in df2.columns:
-        if "FATURAMENTO" in col or col in ["CORTE", "RELIGUE", "TOTAL", "MÍNIMO", "MÁXIMO"]:
+        if "FATURAMENTO" in col or col in ["CORTE", "RELIGUE", "TOTAL", "MÍNIMO", "MÁXIMO", "VALOR"]:
             df2[col] = df2[col].apply(dinheiro)
-        elif col in ["QTD_NOTAS", "NOTAS"]:
+        elif col in ["QTD_NOTAS", "NOTAS", "CORTES", "RELIGUES", "TOTAL_NOTAS"]:
             df2[col] = df2[col].apply(numero)
 
     return df2
@@ -98,6 +100,104 @@ def carregar_bases():
     return bases, faltando
 
 
+# ==============================
+# REGRAS DE CONTRATO / FATURAMENTO
+# Usadas na aba "Parcial do dia"
+# ==============================
+
+def eh_disjuntor_jundiai(recurso):
+    recurso_norm = str(recurso).strip().upper()
+    return recurso_norm.startswith("JUN55") or recurso_norm.startswith("JUN59") or recurso_norm.startswith("SAL55")
+
+
+def eh_disjuntor_santa_cruz(recurso):
+    import re
+    recurso_norm = str(recurso).strip().upper()
+    m = re.search(r"(\d+)", recurso_norm)
+    if not m:
+        return False
+    primeiros_numeros = m.group(1)
+    return primeiros_numeros.startswith("89") or primeiros_numeros.startswith("20")
+
+
+def preparar_parcial_do_dia(notas):
+    if notas.empty:
+        return pd.DataFrame()
+
+    df = notas.copy()
+
+    for col in ["ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "RECUSA", "ELETRICISTA1", "ELETRICISTA2", "DATA"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str).str.strip()
+
+    if "QTD_EXECUTORES" not in df.columns:
+        df["QTD_EXECUTORES"] = ((df["ELETRICISTA1"] != "").astype(int) + (df["ELETRICISTA2"] != "").astype(int))
+    else:
+        df["QTD_EXECUTORES"] = pd.to_numeric(df["QTD_EXECUTORES"], errors="coerce").fillna(0).astype(int)
+
+    df["GRUPO_NOTA"] = df["GRUPO_NOTA"].str.upper()
+    df["RECURSO"] = df["RECURSO"].str.upper()
+    df["RECUSA"] = df["RECUSA"].fillna("").astype(str).str.strip()
+
+    # Parcial considera apenas notas pagáveis, ou seja, sem recusa.
+    df = df[df["RECUSA"] == ""].copy()
+
+    linhas = []
+
+    for _, row in df.iterrows():
+        recurso = row.get("RECURSO", "")
+        grupo = row.get("GRUPO_NOTA", "")
+        qtd_exec = int(row.get("QTD_EXECUTORES", 0) or 0)
+
+        contrato = ""
+        faturamento = 0.0
+        faturamento_min = 0.0
+        faturamento_max = 0.0
+
+        if eh_disjuntor_jundiai(recurso):
+            contrato = "Disjuntor Jundiaí"
+            faturamento = {"CORTE": 13.72, "RELIGUE": 27.43}.get(grupo, 0.0)
+            faturamento_min = faturamento
+            faturamento_max = faturamento
+
+        elif eh_disjuntor_santa_cruz(recurso):
+            contrato = "Disjuntor Santa Cruz"
+            faturamento = {"CORTE": 11.34, "RELIGUE": 12.68}.get(grupo, 0.0)
+            faturamento_min = faturamento
+            faturamento_max = faturamento
+
+        elif str(recurso).startswith("JUN58") and qtd_exec >= 2:
+            contrato = "Contrato Carro STC estimado"
+            faturamento_min = {"CORTE": 38.18, "RELIGUE": 36.36}.get(grupo, 0.0)
+            faturamento_max = {"CORTE": 45.45, "RELIGUE": 50.91}.get(grupo, 0.0)
+            faturamento = faturamento_min
+
+        if contrato:
+            item = row.to_dict()
+            item["CONTRATO"] = contrato
+            item["FATURAMENTO"] = faturamento
+            item["FATURAMENTO_MIN"] = faturamento_min
+            item["FATURAMENTO_MAX"] = faturamento_max
+            item["EH_CORTE"] = 1 if grupo == "CORTE" else 0
+            item["EH_RELIGUE"] = 1 if grupo == "RELIGUE" else 0
+            linhas.append(item)
+
+    if not linhas:
+        return pd.DataFrame()
+
+    parcial = pd.DataFrame(linhas)
+    parcial["DATA_DT"] = pd.to_datetime(parcial["DATA"], dayfirst=True, errors="coerce")
+    parcial = parcial.dropna(subset=["DATA_DT"])
+    parcial["DATA"] = parcial["DATA_DT"].dt.strftime("%d/%m/%Y")
+
+    return parcial
+
+
+# ==============================
+# CARREGAMENTO
+# ==============================
+
 bases, faltando = carregar_bases()
 
 st.title("📊 Painel de Faturamento")
@@ -115,6 +215,10 @@ carro_original = bases.get("carro", pd.DataFrame())
 dias_original = bases.get("dias", pd.DataFrame())
 carro_dias_original = bases.get("carro_dias", pd.DataFrame())
 notas = bases.get("notas", pd.DataFrame())
+
+# ==============================
+# FILTROS EM BOTÕES
+# ==============================
 
 st.sidebar.header("Filtros")
 
@@ -164,9 +268,13 @@ if contrato_escolhido != "Todos":
 
 mostrar_carro = not carro.empty
 
-aba_resumo, aba_dias, aba_carro, aba_notas, aba_download = st.tabs([
-    "Resumo", "Dias da semana", "Carro estimado", "Notas", "Downloads"
+aba_resumo, aba_parcial, aba_dias, aba_carro, aba_notas, aba_download = st.tabs([
+    "Resumo", "Parcial do dia", "Dias da semana", "Carro estimado", "Notas", "Downloads"
 ])
+
+# ==============================
+# ABA RESUMO
+# ==============================
 
 with aba_resumo:
     total_contratos = contratos["FATURAMENTO"].sum() if "FATURAMENTO" in contratos.columns else 0
@@ -220,6 +328,93 @@ with aba_resumo:
         st.subheader("Contrato do carro selecionado")
         st.dataframe(formatar_tabela(carro), use_container_width=True, hide_index=True)
 
+# ==============================
+# ABA PARCIAL DO DIA
+# ==============================
+
+with aba_parcial:
+    st.subheader("Parcial do dia por equipe")
+
+    parcial = preparar_parcial_do_dia(notas)
+
+    if parcial.empty:
+        st.info("Ainda não há dados suficientes para montar a parcial do dia.")
+    else:
+        if contrato_escolhido != "Todos" and "CONTRATO" in parcial.columns:
+            parcial = parcial[parcial["CONTRATO"] == contrato_escolhido]
+
+        datas_disponiveis = (
+            parcial[["DATA", "DATA_DT"]]
+            .drop_duplicates()
+            .sort_values("DATA_DT", ascending=False)
+        )
+
+        if datas_disponiveis.empty:
+            st.info("Nenhuma data encontrada na base de notas.")
+        else:
+            opcoes_datas = datas_disponiveis["DATA"].tolist()
+            data_escolhida = st.selectbox("Escolha o dia", opcoes_datas, index=0)
+
+            parcial_dia = parcial[parcial["DATA"] == data_escolhida].copy()
+
+            if parcial_dia.empty:
+                st.info("Nenhuma nota encontrada para esse dia.")
+            else:
+                total_notas = parcial_dia["ORDEM_DE_SERVICO"].nunique()
+                total_cortes = int(parcial_dia["EH_CORTE"].sum())
+                total_religues = int(parcial_dia["EH_RELIGUE"].sum())
+                total_faturamento = parcial_dia["FATURAMENTO"].sum()
+                total_faturamento_min = parcial_dia["FATURAMENTO_MIN"].sum()
+                total_faturamento_max = parcial_dia["FATURAMENTO_MAX"].sum()
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Notas no dia", numero(total_notas))
+                c2.metric("Cortes", numero(total_cortes))
+                c3.metric("Religues", numero(total_religues))
+
+                if contrato_escolhido == "Contrato Carro STC estimado":
+                    c4.metric("Faturamento estimado", f"{dinheiro(total_faturamento_min)} a {dinheiro(total_faturamento_max)}")
+                else:
+                    c4.metric("Faturamento", dinheiro(total_faturamento))
+
+                st.markdown("**Resumo por equipe**")
+
+                resumo_equipe = (
+                    parcial_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
+                    .agg(
+                        TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
+                        CORTES=("EH_CORTE", "sum"),
+                        RELIGUES=("EH_RELIGUE", "sum"),
+                        FATURAMENTO=("FATURAMENTO", "sum"),
+                        FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
+                        FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
+                    )
+                    .reset_index()
+                    .sort_values(["CONTRATO", "RECURSO"])
+                )
+
+                if contrato_escolhido == "Contrato Carro STC estimado":
+                    tabela_equipe = resumo_equipe[[
+                        "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
+                    ]]
+                else:
+                    tabela_equipe = resumo_equipe[[
+                        "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "FATURAMENTO"
+                    ]]
+
+                st.dataframe(formatar_tabela(tabela_equipe), use_container_width=True, hide_index=True)
+
+                st.markdown("**Detalhamento das notas do dia**")
+                colunas_detalhe = [
+                    "ORDEM_DE_SERVICO", "RECURSO", "CONTRATO", "GRUPO_NOTA", "DATA", "ELETRICISTA1", "ELETRICISTA2"
+                ]
+                colunas_detalhe = [c for c in colunas_detalhe if c in parcial_dia.columns]
+                st.dataframe(parcial_dia[colunas_detalhe], use_container_width=True, hide_index=True)
+
+# ==============================
+# ABA DIAS
+# ==============================
+
 with aba_dias:
     st.subheader("Faturamento por dia da semana")
 
@@ -246,6 +441,10 @@ with aba_dias:
         st.bar_chart(por_dia, x="DIA_SEMANA", y="FATURAMENTO")
     else:
         st.info("Nenhum dado para o contrato selecionado.")
+
+# ==============================
+# ABA CARRO
+# ==============================
 
 with aba_carro:
     st.subheader("Contrato do carro — estimativa")
@@ -274,14 +473,27 @@ with aba_carro:
     else:
         st.info("Nenhum dado diário do carro para o contrato selecionado.")
 
+# ==============================
+# ABA NOTAS
+# ==============================
+
 with aba_notas:
     st.subheader("Consulta de notas")
 
     if not notas.empty:
         df_notas = notas.copy()
 
-        if contrato_escolhido != "Todos" and "CONTRATO" in df_notas.columns:
-            df_notas = df_notas[df_notas["CONTRATO"] == contrato_escolhido]
+        # A base de notas acumulada não tem contrato salvo. Por isso, para filtrar por contrato,
+        # reaproveitamos a classificação feita na parcial.
+        parcial_para_filtro = preparar_parcial_do_dia(notas)
+        if contrato_escolhido != "Todos" and not parcial_para_filtro.empty:
+            ordens_do_contrato = parcial_para_filtro.loc[
+                parcial_para_filtro["CONTRATO"] == contrato_escolhido,
+                "ORDEM_DE_SERVICO"
+            ].astype(str).unique().tolist()
+            if "ORDEM_DE_SERVICO" in df_notas.columns:
+                df_notas["ORDEM_DE_SERVICO"] = df_notas["ORDEM_DE_SERVICO"].astype(str)
+                df_notas = df_notas[df_notas["ORDEM_DE_SERVICO"].isin(ordens_do_contrato)]
 
         grupo = st.selectbox(
             "Grupo de nota",
@@ -300,6 +512,10 @@ with aba_notas:
         st.caption("Mostrando até 2000 linhas para não deixar o painel pesado.")
     else:
         st.info("Base de notas não encontrada.")
+
+# ==============================
+# ABA DOWNLOAD
+# ==============================
 
 with aba_download:
     st.subheader("Arquivos carregados")
