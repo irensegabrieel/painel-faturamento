@@ -163,7 +163,7 @@ def preparar_parcial_do_dia(notas):
 
         elif eh_disjuntor_santa_cruz(recurso):
             contrato = "Disjuntor Santa Cruz"
-            faturamento = {"CORTE": 11.34, "RELIGUE": 12.68}.get(grupo, 0.0)
+            faturamento = {"CORTE": 11.98, "RELIGUE": 23.97}.get(grupo, 0.0)
             faturamento_min = faturamento
             faturamento_max = faturamento
 
