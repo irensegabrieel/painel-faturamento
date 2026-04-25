@@ -79,8 +79,13 @@ def numero(valor):
 def formatar_tabela(df):
     df2 = df.copy()
 
+    colunas_moeda = ORDEM_DIAS + [
+        "CORTE", "RELIGUE", "TOTAL", "MÍNIMO", "MÁXIMO", "VALOR",
+        "Total semana", "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
+    ]
+
     for col in df2.columns:
-        if "FATURAMENTO" in col or col in ["CORTE", "RELIGUE", "TOTAL", "MÍNIMO", "MÁXIMO", "VALOR"]:
+        if "FATURAMENTO" in col or col in colunas_moeda:
             df2[col] = df2[col].apply(dinheiro)
         elif col in ["QTD_NOTAS", "NOTAS", "CORTES", "RELIGUES", "TOTAL_NOTAS"]:
             df2[col] = df2[col].apply(numero)
@@ -597,7 +602,11 @@ with aba_parcial:
                 c2.metric("Cortes", numero(total_cortes))
                 c3.metric("Religues", numero(total_religues))
 
-                if contrato_escolhido == "Contrato Carro STC estimado":
+                tem_carro_no_dia = "CONTRATO" in parcial_dia.columns and (
+                    parcial_dia["CONTRATO"] == "Contrato Carro STC estimado"
+                ).any()
+
+                if tem_carro_no_dia:
                     c4.metric("Faturamento estimado", f"{dinheiro(total_faturamento_min)} a {dinheiro(total_faturamento_max)}")
                 else:
                     c4.metric("Faturamento", dinheiro(total_faturamento))
@@ -618,14 +627,16 @@ with aba_parcial:
                     .sort_values(["CONTRATO", "RECURSO"])
                 )
 
-                if contrato_escolhido == "Contrato Carro STC estimado":
-                    tabela_equipe = resumo_equipe[[
-                        "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
-                    ]]
-                else:
-                    tabela_equipe = resumo_equipe[[
-                        "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "FATURAMENTO"
-                    ]]
+                def faturamento_linha_equipe(row):
+                    if row.get("CONTRATO") == "Contrato Carro STC estimado":
+                        return f"{dinheiro(row.get('FATURAMENTO_MIN', 0))} a {dinheiro(row.get('FATURAMENTO_MAX', 0))}"
+                    return dinheiro(row.get("FATURAMENTO", 0))
+
+                tabela_equipe = resumo_equipe.copy()
+                tabela_equipe["FATURAMENTO"] = tabela_equipe.apply(faturamento_linha_equipe, axis=1)
+                tabela_equipe = tabela_equipe[[
+                    "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "FATURAMENTO"
+                ]]
 
                 st.dataframe(formatar_tabela(tabela_equipe), use_container_width=True, hide_index=True)
 
