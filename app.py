@@ -1,3 +1,25 @@
+import streamlit as st
+
+SENHA_CORRETA = "SCS@2026"
+
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
+
+if not st.session_state.autenticado:
+    st.title("🔒 Acesso restrito")
+
+    senha = st.text_input("Digite a senha para acessar o painel:", type="password")
+
+    if st.button("Entrar"):
+        if senha == SENHA_CORRETA:
+            st.session_state.autenticado = True
+            st.rerun()
+        else:
+            st.error("Senha incorreta")
+
+    st.stop()
+
+
 from pathlib import Path
 import pandas as pd
 import streamlit as st
