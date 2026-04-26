@@ -48,6 +48,19 @@ st.markdown(
     .silver { border-left: 7px solid #a8a8a8; }
     .bronze { border-left: 7px solid #cd7f32; }
 
+    .soft-note {
+        border-radius: 14px;
+        padding: 10px 14px;
+        background: rgba(125, 125, 125, 0.07);
+        border: 1px solid rgba(125, 125, 125, 0.16);
+        margin: 8px 0 14px 0;
+        font-size: 0.94rem;
+    }
+    .section-title {
+        font-weight: 800;
+        margin: 18px 0 6px 0;
+    }
+
     @media (prefers-color-scheme: dark) {
         div[data-testid="stMetric"] {
             background: rgba(255, 255, 255, 0.06);
@@ -61,6 +74,10 @@ st.markdown(
         .ranking-podium {
             background: rgba(255, 255, 255, 0.05);
             border-color: rgba(255, 255, 255, 0.13);
+        }
+        .soft-note {
+            background: rgba(255, 255, 255, 0.045);
+            border-color: rgba(255, 255, 255, 0.12);
         }
     }
     </style>
@@ -98,8 +115,10 @@ ARQUIVOS = {
 
 ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 
-# Como dias anteriores não mudam, podemos segurar cache por 15 minutos.
+# Como dias anteriores não mudam, mantemos o carregamento geral em 15 minutos
+# e deixamos cálculos históricos/ranqueamentos em cache mais longo.
 CACHE_TTL_SEGUNDOS = 900
+CACHE_TTL_RANKING_SEGUNDOS = 86400
 
 # Atualiza a página automaticamente a cada 15 minutos.
 st.markdown(
@@ -214,7 +233,7 @@ def mostrar_podio_ranking(ranking, nome_coluna="RECURSO"):
         )
 
 
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
 def montar_base_executores(notas):
     """Monta base de ranking por RECURSO/equipe, não por código de eletricista."""
     parcial = preparar_parcial_do_dia(notas)
@@ -292,6 +311,46 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
     ranking.insert(0, "POSIÇÃO", range(1, len(ranking) + 1))
 
     return ranking
+
+
+@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
+def opcoes_periodo_ranking(base):
+    """Pré-calcula listas de datas/semanas/meses para o ranking."""
+    if base.empty:
+        return [], [], []
+
+    dias = (
+        base[["DATA", "DATA_DT"]]
+        .drop_duplicates()
+        .sort_values("DATA_DT", ascending=False)["DATA"]
+        .tolist()
+    )
+
+    semanas = (
+        base[["SEMANA", "SEMANA_INICIO_DT"]]
+        .drop_duplicates()
+        .sort_values("SEMANA_INICIO_DT", ascending=False)["SEMANA"]
+        .tolist()
+    )
+
+    meses_df = base[["MES", "DATA_DT"]].drop_duplicates().copy()
+    meses_df["PERIODO"] = pd.to_datetime(meses_df["DATA_DT"]).dt.to_period("M")
+    meses = (
+        meses_df[["MES", "PERIODO"]]
+        .drop_duplicates()
+        .sort_values("PERIODO", ascending=False)["MES"]
+        .tolist()
+    )
+
+    return dias, semanas, meses
+
+
+@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
+def ranking_recursos_cacheado(base, contrato, tipo_periodo, valor_periodo, criterio):
+    """Filtra e calcula o ranking em cache para acelerar trocas de filtro."""
+    base_filtrada = filtrar_base_executores(base, contrato, tipo_periodo, valor_periodo)
+    ranking = calcular_ranking_executores(base_filtrada, criterio)
+    return base_filtrada, ranking
 
 
 def carregar_bases():
@@ -858,6 +917,10 @@ with aba_parcial:
 with aba_ranking:
     st.subheader("🏆 Ranking de recursos")
     st.caption("Ranking por RECURSO/equipe, usando o código operacional da equipe, como SAL5539-EMP.")
+    st.markdown(
+        '<div class="soft-note">⚡ Otimizado com cache: dias anteriores ficam reaproveitados, então alternar filtros tende a ficar mais rápido após o primeiro carregamento.</div>',
+        unsafe_allow_html=True,
+    )
 
     base_exec = montar_base_executores(notas)
 
@@ -866,6 +929,7 @@ with aba_ranking:
     else:
         col_f1, col_f2, col_f3, col_f4 = st.columns([1.2, 1.1, 1.2, 1.1])
 
+        dias_ranking, semanas_ranking, meses_ranking = opcoes_periodo_ranking(base_exec)
         contratos_exec = ["Todos"] + sorted(base_exec["CONTRATO"].dropna().unique().tolist())
         contrato_ranking = col_f1.selectbox(
             "Contrato",
@@ -883,28 +947,19 @@ with aba_ranking:
 
         valor_periodo = None
         if tipo_periodo == "Dia":
-            opcoes = base_exec[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT", ascending=False)["DATA"].tolist()
-            valor_periodo = col_f3.selectbox("Dia", opcoes, key="ranking_dia")
+            valor_periodo = col_f3.selectbox("Dia", dias_ranking, key="ranking_dia")
         elif tipo_periodo == "Semana":
-            semanas = (
-                base_exec[["SEMANA", "SEMANA_INICIO_DT"]]
-                .drop_duplicates()
-                .sort_values("SEMANA_INICIO_DT", ascending=False)
-            )
-            opcoes = semanas["SEMANA"].tolist()
-            valor_periodo = col_f3.selectbox("Semana iniciada em", opcoes, key="ranking_semana")
+            valor_periodo = col_f3.selectbox("Semana iniciada em", semanas_ranking, key="ranking_semana")
         elif tipo_periodo == "Mês":
-            meses = base_exec[["MES", "DATA_DT"]].drop_duplicates().copy()
-            meses["PERIODO"] = pd.to_datetime(meses["DATA_DT"]).dt.to_period("M")
-            opcoes = meses[["MES", "PERIODO"]].drop_duplicates().sort_values("PERIODO", ascending=False)["MES"].tolist()
-            valor_periodo = col_f3.selectbox("Mês", opcoes, key="ranking_mes")
+            valor_periodo = col_f3.selectbox("Mês", meses_ranking, key="ranking_mes")
         else:
             col_f3.info("Considerando toda a base")
 
         criterio = col_f4.selectbox("Ordenar por", ["Notas", "Faturamento"], key="ranking_criterio")
 
-        base_filtrada_exec = filtrar_base_executores(base_exec, contrato_ranking, tipo_periodo, valor_periodo)
-        ranking_exec = calcular_ranking_executores(base_filtrada_exec, criterio)
+        base_filtrada_exec, ranking_exec = ranking_recursos_cacheado(
+            base_exec, contrato_ranking, tipo_periodo, valor_periodo, criterio
+        )
 
         if ranking_exec.empty:
             st.info("Nenhum recurso encontrado para os filtros selecionados.")
@@ -932,14 +987,14 @@ with aba_ranking:
             m3.metric("Faturamento atribuído", dinheiro(total_fat_atribuido))
             m4.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
 
-            st.markdown("**Top 10 recursos**")
+            st.markdown('<div class="section-title">Top 10 recursos</div>', unsafe_allow_html=True)
             top10 = ranking_exec.head(10).copy()
             st.bar_chart(top10, x="RECURSO", y="NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO")
 
-            st.markdown("**Pódio**")
+            st.markdown('<div class="section-title">Pódio</div>', unsafe_allow_html=True)
             mostrar_podio_ranking(ranking_exec, nome_coluna="RECURSO")
 
-            st.markdown("**Ranking detalhado**")
+            st.markdown('<div class="section-title">Ranking detalhado</div>', unsafe_allow_html=True)
             colunas_ranking = [
                 "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS",
                 "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
