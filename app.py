@@ -1,6 +1,7 @@
 from pathlib import Path
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 st.set_page_config(page_title="Painel de Faturamento", page_icon="📊", layout="wide")
 
@@ -13,71 +14,166 @@ SENHA_CORRETA = "SCS@2026"
 st.markdown(
     """
     <style>
-    .main .block-container { padding-top: 1.6rem; }
+    /* Layout geral */
+    .stApp {
+        background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+    }
 
+    .main .block-container {
+        padding-top: 1.4rem;
+        padding-bottom: 3rem;
+        max-width: 1280px;
+    }
+
+    h1, h2, h3 {
+        letter-spacing: -0.03em;
+        color: #0f172a;
+    }
+
+    .stCaption, div[data-testid="stCaptionContainer"] {
+        color: #64748b;
+    }
+
+    /* Métricas */
     div[data-testid="stMetric"] {
-        background: rgba(125, 125, 125, 0.08);
-        border: 1px solid rgba(125, 125, 125, 0.22);
-        border-radius: 16px;
-        padding: 16px 18px;
-        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        border-radius: 22px;
+        padding: 20px 22px;
+        box-shadow: 0 14px 35px rgba(15, 23, 42, 0.08);
     }
-    div[data-testid="stMetric"] label { font-weight: 700 !important; }
-    div[data-testid="stMetricValue"] { font-weight: 800 !important; }
 
-    .executive-card {
-        background: rgba(31, 120, 180, 0.14);
-        color: inherit;
-        border: 1px solid rgba(31, 120, 180, 0.35);
-        border-left: 7px solid #1f78b4;
-        border-radius: 18px;
-        padding: 18px 22px;
-        margin-bottom: 14px;
-        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.10);
+    div[data-testid="stMetric"] label {
+        color: #64748b !important;
+        font-weight: 800 !important;
     }
-    .executive-card h3 { margin-bottom: 6px; }
+
+    div[data-testid="stMetricValue"] {
+        color: #0f172a !important;
+        font-weight: 900 !important;
+        letter-spacing: -0.04em;
+    }
+
+    /* Cards */
+    .executive-card {
+        background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
+        color: white;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 24px;
+        padding: 24px 28px;
+        margin: 12px 0 20px 0;
+        box-shadow: 0 18px 45px rgba(29, 78, 216, 0.25);
+    }
+
+    .executive-card h3 {
+        margin: 0 0 8px 0;
+        color: white;
+    }
 
     .ranking-podium {
-        border-radius: 14px;
-        padding: 10px 12px;
-        margin: 4px 0 10px 0;
-        border: 1px solid rgba(125, 125, 125, 0.22);
-        background: rgba(125, 125, 125, 0.08);
+        border-radius: 18px;
+        padding: 14px 16px;
+        margin: 6px 0 12px 0;
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        box-shadow: 0 10px 26px rgba(15, 23, 42, 0.07);
     }
-    .gold { border-left: 7px solid #d4af37; }
-    .silver { border-left: 7px solid #a8a8a8; }
-    .bronze { border-left: 7px solid #cd7f32; }
+
+    .gold { border-left: 8px solid #f59e0b; }
+    .silver { border-left: 8px solid #94a3b8; }
+    .bronze { border-left: 8px solid #b45309; }
 
     .soft-note {
-        border-radius: 14px;
-        padding: 10px 14px;
-        background: rgba(125, 125, 125, 0.07);
-        border: 1px solid rgba(125, 125, 125, 0.16);
-        margin: 8px 0 14px 0;
-        font-size: 0.94rem;
+        border-radius: 18px;
+        padding: 13px 16px;
+        background: rgba(37, 99, 235, 0.08);
+        border: 1px solid rgba(37, 99, 235, 0.16);
+        margin: 10px 0 18px 0;
+        color: #1e3a8a;
+        font-size: 0.95rem;
     }
+
     .section-title {
-        font-weight: 800;
-        margin: 18px 0 6px 0;
+        font-size: 1.05rem;
+        font-weight: 900;
+        margin: 26px 0 10px 0;
+        color: #0f172a;
+    }
+
+    /* Abas */
+    div[data-baseweb="tab-list"] {
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    button[data-baseweb="tab"] {
+        border-radius: 999px;
+        padding: 8px 18px;
+        background: rgba(255, 255, 255, 0.68);
+        border: 1px solid rgba(15, 23, 42, 0.08);
+    }
+
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background: #1d4ed8;
+        color: white;
+    }
+
+    /* Botões e inputs */
+    button[kind="secondary"] {
+        border-radius: 14px !important;
+        border: 1px solid rgba(15, 23, 42, 0.10) !important;
+        box-shadow: 0 6px 16px rgba(15, 23, 42, 0.05);
+    }
+
+    div[data-testid="stDataFrame"] {
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+    }
+
+    section[data-testid="stSidebar"] {
+        background: rgba(255, 255, 255, 0.74);
+        border-right: 1px solid rgba(15, 23, 42, 0.08);
     }
 
     @media (prefers-color-scheme: dark) {
-        div[data-testid="stMetric"] {
-            background: rgba(255, 255, 255, 0.06);
-            border-color: rgba(255, 255, 255, 0.14);
+        .stApp {
+            background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
         }
-        .executive-card {
-            background: rgba(59, 130, 246, 0.12);
-            border-color: rgba(147, 197, 253, 0.35);
-            border-left-color: #60a5fa;
+
+        h1, h2, h3, .section-title {
+            color: #e5e7eb;
         }
+
+        div[data-testid="stMetric"],
         .ranking-podium {
-            background: rgba(255, 255, 255, 0.05);
-            border-color: rgba(255, 255, 255, 0.13);
+            background: rgba(15, 23, 42, 0.86);
+            border-color: rgba(255, 255, 255, 0.10);
         }
+
+        div[data-testid="stMetricValue"] {
+            color: #f8fafc !important;
+        }
+
         .soft-note {
-            background: rgba(255, 255, 255, 0.045);
-            border-color: rgba(255, 255, 255, 0.12);
+            color: #bfdbfe;
+            background: rgba(59, 130, 246, 0.12);
+            border-color: rgba(147, 197, 253, 0.22);
+        }
+
+        section[data-testid="stSidebar"] {
+            background: rgba(15, 23, 42, 0.82);
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        button[data-baseweb="tab"] {
+            background: rgba(15, 23, 42, 0.75);
+            border-color: rgba(255, 255, 255, 0.10);
+        }
+
+        button[data-baseweb="tab"][aria-selected="true"] {
+            background: #2563eb;
+            color: white;
         }
     }
     </style>
@@ -989,7 +1085,37 @@ with aba_ranking:
 
             st.markdown('<div class="section-title">Top 10 recursos</div>', unsafe_allow_html=True)
             top10 = ranking_exec.head(10).copy()
-            st.bar_chart(top10, x="RECURSO", y="NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO")
+            coluna_grafico = "NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO"
+            titulo_eixo_y = "Notas" if criterio == "Notas" else "Faturamento atribuído"
+
+            grafico_top10 = (
+                alt.Chart(top10)
+                .mark_bar(
+                    cornerRadiusTopLeft=8,
+                    cornerRadiusTopRight=8,
+                )
+                .encode(
+                    x=alt.X(
+                        "RECURSO:N",
+                        sort=alt.SortField(field=coluna_grafico, order="descending"),
+                        title="Recurso",
+                        axis=alt.Axis(labelAngle=-90),
+                    ),
+                    y=alt.Y(
+                        f"{coluna_grafico}:Q",
+                        title=titulo_eixo_y,
+                    ),
+                    tooltip=[
+                        alt.Tooltip("POSIÇÃO:Q", title="Posição"),
+                        alt.Tooltip("RECURSO:N", title="Recurso"),
+                        alt.Tooltip("NOTAS:Q", title="Notas"),
+                        alt.Tooltip("FATURAMENTO_ATRIBUÍDO:Q", title="Faturamento atribuído", format=",.2f"),
+                    ],
+                )
+                .properties(height=360)
+            )
+
+            st.altair_chart(grafico_top10, use_container_width=True)
 
             st.markdown('<div class="section-title">Pódio</div>', unsafe_allow_html=True)
             mostrar_podio_ranking(ranking_exec, nome_coluna="RECURSO")
