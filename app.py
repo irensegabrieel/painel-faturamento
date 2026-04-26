@@ -14,24 +14,55 @@ st.markdown(
     """
     <style>
     .main .block-container { padding-top: 1.6rem; }
+
     div[data-testid="stMetric"] {
-        background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
-        border: 1px solid #dbeafe;
+        background: rgba(125, 125, 125, 0.08);
+        border: 1px solid rgba(125, 125, 125, 0.22);
         border-radius: 16px;
         padding: 16px 18px;
-        box-shadow: 0 3px 12px rgba(15, 23, 42, 0.07);
+        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
     }
-    div[data-testid="stMetric"] label { color: #334155 !important; font-weight: 700 !important; }
-    div[data-testid="stMetricValue"] { color: #0f172a !important; font-weight: 800 !important; }
+    div[data-testid="stMetric"] label { font-weight: 700 !important; }
+    div[data-testid="stMetricValue"] { font-weight: 800 !important; }
+
     .executive-card {
-        background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
-        color: white;
+        background: rgba(31, 120, 180, 0.14);
+        color: inherit;
+        border: 1px solid rgba(31, 120, 180, 0.35);
+        border-left: 7px solid #1f78b4;
         border-radius: 18px;
         padding: 18px 22px;
         margin-bottom: 14px;
-        box-shadow: 0 8px 22px rgba(15, 23, 42, 0.18);
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.10);
     }
-    .executive-card h3 { color: white; margin-bottom: 6px; }
+    .executive-card h3 { margin-bottom: 6px; }
+
+    .ranking-podium {
+        border-radius: 14px;
+        padding: 10px 12px;
+        margin: 4px 0 10px 0;
+        border: 1px solid rgba(125, 125, 125, 0.22);
+        background: rgba(125, 125, 125, 0.08);
+    }
+    .gold { border-left: 7px solid #d4af37; }
+    .silver { border-left: 7px solid #a8a8a8; }
+    .bronze { border-left: 7px solid #cd7f32; }
+
+    @media (prefers-color-scheme: dark) {
+        div[data-testid="stMetric"] {
+            background: rgba(255, 255, 255, 0.06);
+            border-color: rgba(255, 255, 255, 0.14);
+        }
+        .executive-card {
+            background: rgba(59, 130, 246, 0.12);
+            border-color: rgba(147, 197, 253, 0.35);
+            border-left-color: #60a5fa;
+        }
+        .ranking-podium {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.13);
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -145,72 +176,66 @@ def formatar_tabela(df):
 
 
 
-def destacar_ranking(df, colunas_moeda=None):
-    """Aplica cores no ranking: ouro/prata/bronze, barras nos valores e tons por volume."""
+def preparar_tabela_ranking(df, colunas_moeda=None):
+    """Formata ranking sem depender de Styler/Jinja2, evitando erro no Streamlit Cloud."""
     if df.empty:
         return df
 
+    df2 = df.copy()
     colunas_moeda = colunas_moeda or []
-    formatadores = {}
 
-    for col in df.columns:
-        if col in colunas_moeda or "FATURAMENTO" in col:
-            formatadores[col] = dinheiro
-        elif col in ["POSIÇÃO", "NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS", "QTD_EQUIPES"]:
-            formatadores[col] = numero
-        elif col in ["TICKET_MÉDIO", "MÉDIA_NOTAS_DIA"]:
-            formatadores[col] = lambda v: f"{float(v):.2f}".replace(".", ",")
+    for col in df2.columns:
+        if col in colunas_moeda or "FATURAMENTO" in col or col == "TICKET_MÉDIO":
+            df2[col] = df2[col].apply(dinheiro)
+        elif col in ["POSIÇÃO", "NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS", "QTD_EQUIPES", "QTD_RECURSOS"]:
+            df2[col] = df2[col].apply(numero)
+        elif col in ["MÉDIA_NOTAS_DIA"]:
+            df2[col] = df2[col].apply(lambda v: f"{float(v):.2f}".replace(".", ","))
 
-    def cor_linha(row):
-        pos = row.get("POSIÇÃO", None)
-        if pos == 1:
-            return ["background-color: #fef3c7; font-weight: 700"] * len(row)
-        if pos == 2:
-            return ["background-color: #f1f5f9; font-weight: 650"] * len(row)
-        if pos == 3:
-            return ["background-color: #ffedd5; font-weight: 650"] * len(row)
-        return [""] * len(row)
+    return df2
 
-    styled = df.style.apply(cor_linha, axis=1).format(formatadores)
 
-    for col in ["NOTAS", "FATURAMENTO_ATRIBUÍDO", "FATURAMENTO_EQUIPE"]:
-        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
-            styled = styled.background_gradient(subset=[col], cmap="Blues")
+def mostrar_podio_ranking(ranking, nome_coluna="RECURSO"):
+    """Mostra os três primeiros colocados com destaque compatível com tema claro/escuro."""
+    if ranking.empty:
+        return
 
-    return styled
+    classes = ["gold", "silver", "bronze"]
+    medalhas = ["🥇", "🥈", "🥉"]
+    for i, (_, row) in enumerate(ranking.head(3).iterrows()):
+        st.markdown(
+            f"""
+            <div class="ranking-podium {classes[i]}">
+                <b>{medalhas[i]} {numero(row.get('POSIÇÃO', i + 1))}º — {row.get(nome_coluna, '')}</b><br>
+                {numero(row.get('NOTAS', 0))} notas • {dinheiro(row.get('FATURAMENTO_ATRIBUÍDO', 0))} em faturamento
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def montar_base_executores(notas):
-    """Explode eletricista 1 e 2 para montar ranking individual de produção."""
+    """Monta base de ranking por RECURSO/equipe, não por código de eletricista."""
     parcial = preparar_parcial_do_dia(notas)
 
     if parcial.empty:
         return pd.DataFrame()
 
-    linhas = []
-    for _, row in parcial.iterrows():
-        executores = []
-        for col in ["ELETRICISTA1", "ELETRICISTA2"]:
-            nome = str(row.get(col, "")).strip()
-            if nome and nome.upper() not in ["NAN", "NONE", "-"]:
-                executores.append(nome.upper())
+    base = parcial.copy()
+    if "RECURSO" not in base.columns:
+        base["RECURSO"] = ""
 
-        executores = list(dict.fromkeys(executores))
-        qtd_rateio = max(len(executores), 1)
+    base["RECURSO"] = base["RECURSO"].fillna("").astype(str).str.strip().str.upper()
+    base = base[base["RECURSO"] != ""].copy()
 
-        for executor in executores:
-            item = row.to_dict()
-            item["EXECUTOR"] = executor
-            item["FATURAMENTO_ATRIBUÍDO"] = float(row.get("FATURAMENTO", 0) or 0) / qtd_rateio
-            item["FATURAMENTO_MIN_ATRIBUÍDO"] = float(row.get("FATURAMENTO_MIN", 0) or 0) / qtd_rateio
-            item["FATURAMENTO_MAX_ATRIBUÍDO"] = float(row.get("FATURAMENTO_MAX", 0) or 0) / qtd_rateio
-            linhas.append(item)
-
-    if not linhas:
+    if base.empty:
         return pd.DataFrame()
 
-    base = pd.DataFrame(linhas)
+    base["FATURAMENTO_ATRIBUÍDO"] = pd.to_numeric(base.get("FATURAMENTO", 0), errors="coerce").fillna(0)
+    base["FATURAMENTO_MIN_ATRIBUÍDO"] = pd.to_numeric(base.get("FATURAMENTO_MIN", 0), errors="coerce").fillna(0)
+    base["FATURAMENTO_MAX_ATRIBUÍDO"] = pd.to_numeric(base.get("FATURAMENTO_MAX", 0), errors="coerce").fillna(0)
+
     base["MES"] = base["DATA_DT"].dt.strftime("%m/%Y")
     base["SEMANA_INICIO_DT"] = base["DATA_DT"] - pd.to_timedelta(base["DATA_DT"].dt.weekday, unit="D")
     base["SEMANA"] = base["SEMANA_INICIO_DT"].dt.strftime("%d/%m/%Y")
@@ -238,7 +263,7 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
         return pd.DataFrame()
 
     ranking = (
-        base_filtrada.groupby("EXECUTOR", dropna=False)
+        base_filtrada.groupby("RECURSO", dropna=False)
         .agg(
             NOTAS=("ORDEM_DE_SERVICO", "nunique"),
             CORTES=("EH_CORTE", "sum"),
@@ -267,6 +292,7 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
     ranking.insert(0, "POSIÇÃO", range(1, len(ranking) + 1))
 
     return ranking
+
 
 def carregar_bases():
     bases = {}
@@ -637,7 +663,7 @@ mostrar_carro = not carro.empty
 
 mostrar_aba_carro = contrato_escolhido in ["Todos", "Contrato Carro STC estimado"]
 
-nomes_abas = ["Resumo", "Parcial do dia", "Ranking de executores", "Comparativo mensal", "Dias da semana"]
+nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana"]
 if mostrar_aba_carro:
     nomes_abas.append("Carro estimado")
 nomes_abas += ["Notas", "Downloads"]
@@ -826,12 +852,12 @@ with aba_parcial:
 
 
 # ==============================
-# ABA RANKING DE EXECUTORES
+# ABA RANKING DE RECURSOS
 # ==============================
 
 with aba_ranking:
-    st.subheader("🏆 Ranking de executores")
-    st.caption("Ranking individual com rateio de faturamento quando a nota possui mais de um executor.")
+    st.subheader("🏆 Ranking de recursos")
+    st.caption("Ranking por RECURSO/equipe, usando o código operacional da equipe, como SAL5539-EMP.")
 
     base_exec = montar_base_executores(notas)
 
@@ -881,10 +907,10 @@ with aba_ranking:
         ranking_exec = calcular_ranking_executores(base_filtrada_exec, criterio)
 
         if ranking_exec.empty:
-            st.info("Nenhum executor encontrado para os filtros selecionados.")
+            st.info("Nenhum recurso encontrado para os filtros selecionados.")
         else:
             total_notas_exec = int(base_filtrada_exec["ORDEM_DE_SERVICO"].nunique())
-            total_executores = int(ranking_exec["EXECUTOR"].nunique())
+            total_executores = int(ranking_exec["RECURSO"].nunique())
             total_fat_atribuido = float(ranking_exec["FATURAMENTO_ATRIBUÍDO"].sum())
             media_notas_executor = total_notas_exec / total_executores if total_executores else 0
 
@@ -894,53 +920,56 @@ with aba_ranking:
                 f"""
                 <div class="executive-card">
                     <h3>Resumo executivo do ranking</h3>
-                    <div>🥇 Líder: <b>{lider['EXECUTOR']}</b> • {numero(lider['NOTAS'])} notas • {dinheiro(lider['FATURAMENTO_ATRIBUÍDO'])} em faturamento atribuído</div>
+                    <div>🥇 Líder: <b>{lider['RECURSO']}</b> • {numero(lider['NOTAS'])} notas • {dinheiro(lider['FATURAMENTO_ATRIBUÍDO'])} em faturamento atribuído</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Executores ativos", numero(total_executores))
+            m1.metric("Recursos ativos", numero(total_executores))
             m2.metric("Notas únicas", numero(total_notas_exec))
             m3.metric("Faturamento atribuído", dinheiro(total_fat_atribuido))
-            m4.metric("Média notas/executor", f"{media_notas_executor:.1f}".replace(".", ","))
+            m4.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
 
-            st.markdown("**Top 10 executores**")
+            st.markdown("**Top 10 recursos**")
             top10 = ranking_exec.head(10).copy()
-            st.bar_chart(top10, x="EXECUTOR", y="NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO")
+            st.bar_chart(top10, x="RECURSO", y="NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO")
+
+            st.markdown("**Pódio**")
+            mostrar_podio_ranking(ranking_exec, nome_coluna="RECURSO")
 
             st.markdown("**Ranking detalhado**")
             colunas_ranking = [
-                "POSIÇÃO", "EXECUTOR", "NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS",
+                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS",
                 "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
                 "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE", "QTD_EQUIPES"
             ]
             colunas_ranking = [c for c in colunas_ranking if c in ranking_exec.columns]
             st.dataframe(
-                destacar_ranking(ranking_exec[colunas_ranking]),
+                preparar_tabela_ranking(ranking_exec[colunas_ranking]),
                 use_container_width=True,
                 hide_index=True,
             )
 
             with st.expander("Ver notas consideradas no ranking"):
                 detalhe_cols = [
-                    "DATA", "EXECUTOR", "RECURSO", "CONTRATO", "ORDEM_DE_SERVICO",
+                    "DATA", "RECURSO", "CONTRATO", "ORDEM_DE_SERVICO",
                     "GRUPO_NOTA", "FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"
                 ]
                 detalhe_cols = [c for c in detalhe_cols if c in base_filtrada_exec.columns]
-                detalhe = base_filtrada_exec[detalhe_cols].sort_values(["DATA", "EXECUTOR"], ascending=[False, True])
+                detalhe = base_filtrada_exec[detalhe_cols].sort_values(["DATA", "RECURSO"], ascending=[False, True])
                 st.dataframe(
-                    destacar_ranking(detalhe, colunas_moeda=["FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"]),
+                    preparar_tabela_ranking(detalhe, colunas_moeda=["FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"]),
                     use_container_width=True,
                     hide_index=True,
                 )
 
             csv_ranking = ranking_exec.to_csv(index=False, sep=";", encoding="utf-8-sig")
             st.download_button(
-                "Baixar ranking de executores em CSV",
+                "Baixar ranking de recursos em CSV",
                 csv_ranking,
-                file_name="ranking_executores.csv",
+                file_name="ranking_recursos.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
