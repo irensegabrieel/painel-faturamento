@@ -1,6 +1,41 @@
+from pathlib import Path
+import pandas as pd
 import streamlit as st
 
+st.set_page_config(page_title="Painel de Faturamento", page_icon="📊", layout="wide")
+
 SENHA_CORRETA = "SCS@2026"
+
+# ==============================
+# IDENTIDADE VISUAL / CORES
+# ==============================
+
+st.markdown(
+    """
+    <style>
+    .main .block-container { padding-top: 1.6rem; }
+    div[data-testid="stMetric"] {
+        background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
+        border: 1px solid #dbeafe;
+        border-radius: 16px;
+        padding: 16px 18px;
+        box-shadow: 0 3px 12px rgba(15, 23, 42, 0.07);
+    }
+    div[data-testid="stMetric"] label { color: #334155 !important; font-weight: 700 !important; }
+    div[data-testid="stMetricValue"] { color: #0f172a !important; font-weight: 800 !important; }
+    .executive-card {
+        background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
+        color: white;
+        border-radius: 18px;
+        padding: 18px 22px;
+        margin-bottom: 14px;
+        box-shadow: 0 8px 22px rgba(15, 23, 42, 0.18);
+    }
+    .executive-card h3 { color: white; margin-bottom: 6px; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
@@ -18,13 +53,6 @@ if not st.session_state.autenticado:
             st.error("Senha incorreta")
 
     st.stop()
-
-
-from pathlib import Path
-import pandas as pd
-import streamlit as st
-
-st.set_page_config(page_title="Painel de Faturamento", page_icon="📊", layout="wide")
 
 PASTA_DASHBOARD = Path("dashboard")
 PASTA_ATUAL = Path(".")
@@ -114,6 +142,131 @@ def formatar_tabela(df):
 
     return df2
 
+
+
+
+def destacar_ranking(df, colunas_moeda=None):
+    """Aplica cores no ranking: ouro/prata/bronze, barras nos valores e tons por volume."""
+    if df.empty:
+        return df
+
+    colunas_moeda = colunas_moeda or []
+    formatadores = {}
+
+    for col in df.columns:
+        if col in colunas_moeda or "FATURAMENTO" in col:
+            formatadores[col] = dinheiro
+        elif col in ["POSIÇÃO", "NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS", "QTD_EQUIPES"]:
+            formatadores[col] = numero
+        elif col in ["TICKET_MÉDIO", "MÉDIA_NOTAS_DIA"]:
+            formatadores[col] = lambda v: f"{float(v):.2f}".replace(".", ",")
+
+    def cor_linha(row):
+        pos = row.get("POSIÇÃO", None)
+        if pos == 1:
+            return ["background-color: #fef3c7; font-weight: 700"] * len(row)
+        if pos == 2:
+            return ["background-color: #f1f5f9; font-weight: 650"] * len(row)
+        if pos == 3:
+            return ["background-color: #ffedd5; font-weight: 650"] * len(row)
+        return [""] * len(row)
+
+    styled = df.style.apply(cor_linha, axis=1).format(formatadores)
+
+    for col in ["NOTAS", "FATURAMENTO_ATRIBUÍDO", "FATURAMENTO_EQUIPE"]:
+        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+            styled = styled.background_gradient(subset=[col], cmap="Blues")
+
+    return styled
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def montar_base_executores(notas):
+    """Explode eletricista 1 e 2 para montar ranking individual de produção."""
+    parcial = preparar_parcial_do_dia(notas)
+
+    if parcial.empty:
+        return pd.DataFrame()
+
+    linhas = []
+    for _, row in parcial.iterrows():
+        executores = []
+        for col in ["ELETRICISTA1", "ELETRICISTA2"]:
+            nome = str(row.get(col, "")).strip()
+            if nome and nome.upper() not in ["NAN", "NONE", "-"]:
+                executores.append(nome.upper())
+
+        executores = list(dict.fromkeys(executores))
+        qtd_rateio = max(len(executores), 1)
+
+        for executor in executores:
+            item = row.to_dict()
+            item["EXECUTOR"] = executor
+            item["FATURAMENTO_ATRIBUÍDO"] = float(row.get("FATURAMENTO", 0) or 0) / qtd_rateio
+            item["FATURAMENTO_MIN_ATRIBUÍDO"] = float(row.get("FATURAMENTO_MIN", 0) or 0) / qtd_rateio
+            item["FATURAMENTO_MAX_ATRIBUÍDO"] = float(row.get("FATURAMENTO_MAX", 0) or 0) / qtd_rateio
+            linhas.append(item)
+
+    if not linhas:
+        return pd.DataFrame()
+
+    base = pd.DataFrame(linhas)
+    base["MES"] = base["DATA_DT"].dt.strftime("%m/%Y")
+    base["SEMANA_INICIO_DT"] = base["DATA_DT"] - pd.to_timedelta(base["DATA_DT"].dt.weekday, unit="D")
+    base["SEMANA"] = base["SEMANA_INICIO_DT"].dt.strftime("%d/%m/%Y")
+    return base
+
+
+def filtrar_base_executores(base, contrato, tipo_periodo, valor_periodo):
+    df = base.copy()
+
+    if contrato != "Todos" and "CONTRATO" in df.columns:
+        df = df[df["CONTRATO"] == contrato]
+
+    if tipo_periodo == "Dia" and valor_periodo:
+        df = df[df["DATA"] == valor_periodo]
+    elif tipo_periodo == "Semana" and valor_periodo:
+        df = df[df["SEMANA"] == valor_periodo]
+    elif tipo_periodo == "Mês" and valor_periodo:
+        df = df[df["MES"] == valor_periodo]
+
+    return df
+
+
+def calcular_ranking_executores(base_filtrada, criterio="Notas"):
+    if base_filtrada.empty:
+        return pd.DataFrame()
+
+    ranking = (
+        base_filtrada.groupby("EXECUTOR", dropna=False)
+        .agg(
+            NOTAS=("ORDEM_DE_SERVICO", "nunique"),
+            CORTES=("EH_CORTE", "sum"),
+            RELIGUES=("EH_RELIGUE", "sum"),
+            DIAS_ATIVOS=("DATA", "nunique"),
+            QTD_EQUIPES=("RECURSO", "nunique"),
+            FATURAMENTO_ATRIBUÍDO=("FATURAMENTO_ATRIBUÍDO", "sum"),
+            FATURAMENTO_MIN_ATRIBUÍDO=("FATURAMENTO_MIN_ATRIBUÍDO", "sum"),
+            FATURAMENTO_MAX_ATRIBUÍDO=("FATURAMENTO_MAX_ATRIBUÍDO", "sum"),
+            FATURAMENTO_EQUIPE=("FATURAMENTO", "sum"),
+        )
+        .reset_index()
+    )
+
+    ranking["MÉDIA_NOTAS_DIA"] = ranking.apply(
+        lambda r: (r["NOTAS"] / r["DIAS_ATIVOS"]) if r["DIAS_ATIVOS"] else 0,
+        axis=1,
+    )
+    ranking["TICKET_MÉDIO"] = ranking.apply(
+        lambda r: (r["FATURAMENTO_ATRIBUÍDO"] / r["NOTAS"]) if r["NOTAS"] else 0,
+        axis=1,
+    )
+
+    coluna_ordem = "NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO"
+    ranking = ranking.sort_values([coluna_ordem, "NOTAS"], ascending=False).reset_index(drop=True)
+    ranking.insert(0, "POSIÇÃO", range(1, len(ranking) + 1))
+
+    return ranking
 
 def carregar_bases():
     bases = {}
@@ -484,7 +637,7 @@ mostrar_carro = not carro.empty
 
 mostrar_aba_carro = contrato_escolhido in ["Todos", "Contrato Carro STC estimado"]
 
-nomes_abas = ["Resumo", "Parcial do dia", "Comparativo mensal", "Dias da semana"]
+nomes_abas = ["Resumo", "Parcial do dia", "Ranking de executores", "Comparativo mensal", "Dias da semana"]
 if mostrar_aba_carro:
     nomes_abas.append("Carro estimado")
 nomes_abas += ["Notas", "Downloads"]
@@ -492,16 +645,17 @@ nomes_abas += ["Notas", "Downloads"]
 abas = st.tabs(nomes_abas)
 aba_resumo = abas[0]
 aba_parcial = abas[1]
-aba_comparativo = abas[2]
-aba_dias = abas[3]
+aba_ranking = abas[2]
+aba_comparativo = abas[3]
+aba_dias = abas[4]
 
 if mostrar_aba_carro:
-    aba_carro = abas[4]
+    aba_carro = abas[5]
+    aba_notas = abas[6]
+    aba_download = abas[7]
+else:
     aba_notas = abas[5]
     aba_download = abas[6]
-else:
-    aba_notas = abas[4]
-    aba_download = abas[5]
 
 # ==============================
 # ABA RESUMO
@@ -669,6 +823,127 @@ with aba_parcial:
                 colunas_detalhe = [c for c in colunas_detalhe if c in parcial_dia.columns]
                 st.dataframe(parcial_dia[colunas_detalhe], use_container_width=True, hide_index=True)
 
+
+
+# ==============================
+# ABA RANKING DE EXECUTORES
+# ==============================
+
+with aba_ranking:
+    st.subheader("🏆 Ranking de executores")
+    st.caption("Ranking individual com rateio de faturamento quando a nota possui mais de um executor.")
+
+    base_exec = montar_base_executores(notas)
+
+    if base_exec.empty:
+        st.info("Ainda não há dados suficientes de eletricistas/executores para montar o ranking.")
+    else:
+        col_f1, col_f2, col_f3, col_f4 = st.columns([1.2, 1.1, 1.2, 1.1])
+
+        contratos_exec = ["Todos"] + sorted(base_exec["CONTRATO"].dropna().unique().tolist())
+        contrato_ranking = col_f1.selectbox(
+            "Contrato",
+            contratos_exec,
+            index=contratos_exec.index(contrato_escolhido) if contrato_escolhido in contratos_exec else 0,
+            key="ranking_contrato",
+        )
+
+        tipo_periodo = col_f2.selectbox(
+            "Período",
+            ["Total", "Dia", "Semana", "Mês"],
+            index=3,
+            key="ranking_tipo_periodo",
+        )
+
+        valor_periodo = None
+        if tipo_periodo == "Dia":
+            opcoes = base_exec[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT", ascending=False)["DATA"].tolist()
+            valor_periodo = col_f3.selectbox("Dia", opcoes, key="ranking_dia")
+        elif tipo_periodo == "Semana":
+            semanas = (
+                base_exec[["SEMANA", "SEMANA_INICIO_DT"]]
+                .drop_duplicates()
+                .sort_values("SEMANA_INICIO_DT", ascending=False)
+            )
+            opcoes = semanas["SEMANA"].tolist()
+            valor_periodo = col_f3.selectbox("Semana iniciada em", opcoes, key="ranking_semana")
+        elif tipo_periodo == "Mês":
+            meses = base_exec[["MES", "DATA_DT"]].drop_duplicates().copy()
+            meses["PERIODO"] = pd.to_datetime(meses["DATA_DT"]).dt.to_period("M")
+            opcoes = meses[["MES", "PERIODO"]].drop_duplicates().sort_values("PERIODO", ascending=False)["MES"].tolist()
+            valor_periodo = col_f3.selectbox("Mês", opcoes, key="ranking_mes")
+        else:
+            col_f3.info("Considerando toda a base")
+
+        criterio = col_f4.selectbox("Ordenar por", ["Notas", "Faturamento"], key="ranking_criterio")
+
+        base_filtrada_exec = filtrar_base_executores(base_exec, contrato_ranking, tipo_periodo, valor_periodo)
+        ranking_exec = calcular_ranking_executores(base_filtrada_exec, criterio)
+
+        if ranking_exec.empty:
+            st.info("Nenhum executor encontrado para os filtros selecionados.")
+        else:
+            total_notas_exec = int(base_filtrada_exec["ORDEM_DE_SERVICO"].nunique())
+            total_executores = int(ranking_exec["EXECUTOR"].nunique())
+            total_fat_atribuido = float(ranking_exec["FATURAMENTO_ATRIBUÍDO"].sum())
+            media_notas_executor = total_notas_exec / total_executores if total_executores else 0
+
+            lider = ranking_exec.iloc[0]
+
+            st.markdown(
+                f"""
+                <div class="executive-card">
+                    <h3>Resumo executivo do ranking</h3>
+                    <div>🥇 Líder: <b>{lider['EXECUTOR']}</b> • {numero(lider['NOTAS'])} notas • {dinheiro(lider['FATURAMENTO_ATRIBUÍDO'])} em faturamento atribuído</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Executores ativos", numero(total_executores))
+            m2.metric("Notas únicas", numero(total_notas_exec))
+            m3.metric("Faturamento atribuído", dinheiro(total_fat_atribuido))
+            m4.metric("Média notas/executor", f"{media_notas_executor:.1f}".replace(".", ","))
+
+            st.markdown("**Top 10 executores**")
+            top10 = ranking_exec.head(10).copy()
+            st.bar_chart(top10, x="EXECUTOR", y="NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO")
+
+            st.markdown("**Ranking detalhado**")
+            colunas_ranking = [
+                "POSIÇÃO", "EXECUTOR", "NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS",
+                "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
+                "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE", "QTD_EQUIPES"
+            ]
+            colunas_ranking = [c for c in colunas_ranking if c in ranking_exec.columns]
+            st.dataframe(
+                destacar_ranking(ranking_exec[colunas_ranking]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            with st.expander("Ver notas consideradas no ranking"):
+                detalhe_cols = [
+                    "DATA", "EXECUTOR", "RECURSO", "CONTRATO", "ORDEM_DE_SERVICO",
+                    "GRUPO_NOTA", "FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"
+                ]
+                detalhe_cols = [c for c in detalhe_cols if c in base_filtrada_exec.columns]
+                detalhe = base_filtrada_exec[detalhe_cols].sort_values(["DATA", "EXECUTOR"], ascending=[False, True])
+                st.dataframe(
+                    destacar_ranking(detalhe, colunas_moeda=["FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            csv_ranking = ranking_exec.to_csv(index=False, sep=";", encoding="utf-8-sig")
+            st.download_button(
+                "Baixar ranking de executores em CSV",
+                csv_ranking,
+                file_name="ranking_executores.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
 # ==============================
 # ABA COMPARATIVO MENSAL
