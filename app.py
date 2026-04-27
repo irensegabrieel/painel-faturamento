@@ -1,5 +1,6 @@
 from pathlib import Path
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import json
 import pandas as pd
 import streamlit as st
@@ -769,9 +770,12 @@ def variacao_percentual(atual, anterior):
 
 
 def arquivo_mtime_datetime(caminho):
-    """Retorna a data/hora local da última modificação do arquivo do dashboard."""
+    """Retorna a data/hora de São Paulo da última modificação do arquivo."""
     try:
-        return datetime.fromtimestamp(Path(caminho).stat().st_mtime).astimezone()
+        return datetime.fromtimestamp(
+            Path(caminho).stat().st_mtime,
+            tz=ZoneInfo("America/Sao_Paulo")
+        )
     except Exception:
         return None
 
@@ -811,7 +815,7 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
     o caso de aparecer +0 quando houve atualização real.
     """
     caminho_status = PASTA_ATUAL / "status_dashboard_snapshot.json"
-    agora = datetime.now().astimezone()
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     mtime_dt = arquivo_mtime_datetime(caminho_notas) if caminho_notas else None
     mtime = mtime_dt.isoformat() if mtime_dt else ""
 
