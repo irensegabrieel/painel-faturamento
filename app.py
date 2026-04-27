@@ -808,16 +808,27 @@ def contar_notas_por_contrato(notas):
 
 def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
     """
-    Mantém um pequeno arquivo local com a última contagem observada.
+    Mantém um snapshot local da última atualização do CSV.
 
-    Esta versão NÃO depende apenas do horário de modificação do arquivo.
-    Ela compara sempre a contagem atual com a última contagem salva, evitando
-    o caso de aparecer +0 quando houve atualização real.
+    Correção importante:
+    - O snapshot só é sobrescrito quando o arquivo de notas realmente muda.
+    - Ao trocar de contrato/aba, o painel apenas lê o delta já salvo.
+    - Isso evita o bug em que um contrato mostrava +4 e, ao trocar filtro,
+      os demais passavam a mostrar +0 porque o snapshot tinha sido regravado.
     """
     caminho_status = PASTA_ATUAL / "status_dashboard_snapshot.json"
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     mtime_dt = arquivo_mtime_datetime(caminho_notas) if caminho_notas else None
     mtime = mtime_dt.isoformat() if mtime_dt else ""
+
+    try:
+        tamanho_arquivo = Path(caminho_notas).stat().st_size if caminho_notas else 0
+    except Exception:
+        tamanho_arquivo = 0
+
+    # Identificador simples da versão atual do CSV.
+    # Se mudou horário ou tamanho, tratamos como nova atualização.
+    arquivo_id = f"{mtime}|{tamanho_arquivo}"
 
     contagens = contar_notas_por_contrato(notas)
     total_atual = int(contagens.get("Todos", 0))
@@ -830,38 +841,49 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
         except Exception:
             status_antigo = {}
 
+    arquivo_id_antigo = status_antigo.get("arquivo_id", "")
     contagens_anteriores = status_antigo.get("contagens", {})
 
-    # Sempre compara a contagem atual com a última contagem salva.
-    # max(0, ...) evita números negativos se algum arquivo for reprocessado ou reduzido.
-    delta_geral = max(0, total_atual - int(contagens_anteriores.get("Todos", total_atual)))
-    delta_contrato = max(0, contrato_atual - int(contagens_anteriores.get(contrato_escolhido, contrato_atual)))
+    # Primeira vez: cria baseline, mas não inventa delta.
+    primeira_execucao = not bool(contagens_anteriores)
 
-    # Guarda também o delta por todos os contratos, para quando o usuário trocar o filtro.
-    deltas_por_contrato = {}
-    for contrato, qtd_atual in contagens.items():
-        qtd_antiga = int(contagens_anteriores.get(contrato, qtd_atual))
-        deltas_por_contrato[contrato] = max(0, int(qtd_atual) - qtd_antiga)
+    if arquivo_id != arquivo_id_antigo:
+        if primeira_execucao:
+            deltas_por_contrato = {contrato: 0 for contrato in contagens.keys()}
+            delta_geral = 0
+        else:
+            deltas_por_contrato = {}
+            for contrato, qtd_atual in contagens.items():
+                qtd_antiga = int(contagens_anteriores.get(contrato, qtd_atual))
+                deltas_por_contrato[contrato] = max(0, int(qtd_atual) - qtd_antiga)
 
-    status = {
-        "mtime": mtime,
-        "ultima_verificacao": agora.isoformat(),
-        "contagens": contagens,
-        "ultimo_delta_geral": int(delta_geral),
-        "ultimo_delta_por_contrato": deltas_por_contrato,
-    }
+            delta_geral = int(deltas_por_contrato.get("Todos", 0))
 
-    try:
-        caminho_status.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+        status = {
+            "arquivo_id": arquivo_id,
+            "mtime": mtime,
+            "ultima_verificacao": agora.isoformat(),
+            "contagens": contagens,
+            "ultimo_delta_geral": int(delta_geral),
+            "ultimo_delta_por_contrato": deltas_por_contrato,
+        }
+
+        try:
+            caminho_status.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    else:
+        # Mesmo arquivo: mantém o último delta salvo.
+        # Isso é o que permite trocar contrato/aba sem zerar os números.
+        deltas_por_contrato = status_antigo.get("ultimo_delta_por_contrato", {})
+        delta_geral = int(status_antigo.get("ultimo_delta_geral", 0))
 
     return {
         "ultima_atualizacao": mtime_dt,
         "total_atual": total_atual,
         "contrato_atual": contrato_atual,
         "delta_geral": int(delta_geral),
-        "delta_contrato": int(deltas_por_contrato.get(contrato_escolhido, delta_contrato)),
+        "delta_contrato": int(deltas_por_contrato.get(contrato_escolhido, 0 if contrato_escolhido != "Todos" else delta_geral)),
     }
 
 
