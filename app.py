@@ -824,14 +824,17 @@ def normalizar_executor(valor):
 def caminho_pagamento_express():
     """
     Procura a planilha manual de Pagamento Express.
-    Nomes aceitos:
+
+    Aceita nomes como:
     - pagamento_express.xlsx
+    - pagamento_express.xlsx.xlsx
     - pagamento_express.csv
     - express.xlsx
     - express.csv
     """
     nomes = [
         "pagamento_express.xlsx",
+        "pagamento_express.xlsx.xlsx",
         "pagamento_express.csv",
         "express.xlsx",
         "express.csv",
@@ -843,6 +846,16 @@ def caminho_pagamento_express():
             if caminho.exists():
                 return caminho
 
+    for pasta in [PASTA_DASHBOARD, PASTA_ATUAL]:
+        achados = (
+            list(pasta.glob("pagamento_express*.xlsx"))
+            + list(pasta.glob("pagamento_express*.csv"))
+            + list(pasta.glob("express*.xlsx"))
+            + list(pasta.glob("express*.csv"))
+        )
+        if achados:
+            return achados[0]
+
     return None
 
 
@@ -850,8 +863,12 @@ def caminho_pagamento_express():
 def ler_pagamento_express(caminho):
     """
     Lê a planilha manual do Pagamento Express.
-    A coluna obrigatória é EXECUTOR.
-    A data preferencial é DT_REFERENCIA.
+
+    Novo formato:
+    - não depende mais de RECURSO nem EXECUTOR;
+    - usa NOME_EXECUTOR_01 como responsável principal;
+    - se NOME_EXECUTOR_01 estiver vazio, tenta NOME_EXECUTOR_02;
+    - filtra VALIDAÇÃO/VALIDACAO contendo PAGAMENTO EXPRESS, quando existir.
     """
     if not caminho:
         return pd.DataFrame()
@@ -871,15 +888,29 @@ def ler_pagamento_express(caminho):
 
     df.columns = [str(c).strip().upper() for c in df.columns]
 
-    if "EXECUTOR" not in df.columns:
-        return pd.DataFrame()
-
     if "VALIDAÇÃO" in df.columns:
         df = df[df["VALIDAÇÃO"].astype(str).str.upper().str.contains("PAGAMENTO EXPRESS", na=False)].copy()
     elif "VALIDACAO" in df.columns:
         df = df[df["VALIDACAO"].astype(str).str.upper().str.contains("PAGAMENTO EXPRESS", na=False)].copy()
 
-    df["EXECUTOR_NORM"] = df["EXECUTOR"].apply(normalizar_executor)
+    # Nome da pessoa responsável pelo Express.
+    if "NOME_EXECUTOR_01" in df.columns:
+        df["NOME_EXPRESS"] = df["NOME_EXECUTOR_01"].fillna("").astype(str).str.strip()
+    elif "NOME_EXECUTOR" in df.columns:
+        df["NOME_EXPRESS"] = df["NOME_EXECUTOR"].fillna("").astype(str).str.strip()
+    elif "EXECUTOR" in df.columns:
+        df["NOME_EXPRESS"] = df["EXECUTOR"].fillna("").astype(str).str.strip()
+    else:
+        df["NOME_EXPRESS"] = ""
+
+    if "NOME_EXECUTOR_02" in df.columns:
+        mascara_vazia = df["NOME_EXPRESS"].eq("") | df["NOME_EXPRESS"].str.upper().eq("NAN")
+        df.loc[mascara_vazia, "NOME_EXPRESS"] = (
+            df.loc[mascara_vazia, "NOME_EXECUTOR_02"].fillna("").astype(str).str.strip()
+        )
+
+    df["NOME_EXPRESS"] = df["NOME_EXPRESS"].replace({"nan": "", "NaN": "", "None": ""})
+    df = df[df["NOME_EXPRESS"] != ""].copy()
 
     if "DT_REFERENCIA" in df.columns:
         df["DATA_EXPRESS_DT"] = pd.to_datetime(df["DT_REFERENCIA"], dayfirst=True, errors="coerce")
@@ -936,19 +967,23 @@ def valor_express_por_contrato(contrato):
 
 
 @st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
-def calcular_express_mensal(notas, mes):
+def calcular_express_mensal_por_nome(mes):
     """
-    Calcula Pagamento Express por RECURSO para o mês escolhido.
-    Retorna resumo por recurso, data máxima considerada e executores sem vínculo.
+    Calcula Pagamento Express por NOME para o mês escolhido.
+
+    Regras atuais:
+    - conta somente no mensal;
+    - considera como Disjuntor Jundiaí;
+    - cada Express vale o mesmo que um RELIGUE de Disjuntor Jundiaí.
     """
     caminho = caminho_pagamento_express()
 
     if not caminho:
-        return pd.DataFrame(), "", pd.DataFrame()
+        return pd.DataFrame(), "", ""
 
     express = ler_pagamento_express(str(caminho))
     if express.empty:
-        return pd.DataFrame(), "", pd.DataFrame()
+        return pd.DataFrame(), "", str(caminho)
 
     if "DATA_EXPRESS_DT" in express.columns and express["DATA_EXPRESS_DT"].notna().any():
         periodo_mes = pd.Period(f"{mes[3:7]}-{mes[0:2]}", freq="M")
@@ -959,104 +994,42 @@ def calcular_express_mensal(notas, mes):
         data_max_txt = ""
 
     if express.empty:
-        return pd.DataFrame(), data_max_txt, pd.DataFrame()
+        return pd.DataFrame(), data_max_txt, str(caminho)
 
-    mapa = mapa_executor_recurso(notas)
-    express = express.merge(mapa, on="EXECUTOR_NORM", how="left")
-
-    sem_vinculo = express[express["RECURSO"].isna() | (express["RECURSO"].astype(str).str.strip() == "")].copy()
-
-    express_ok = express.dropna(subset=["RECURSO"]).copy()
-    express_ok = express_ok[express_ok["RECURSO"].astype(str).str.strip() != ""].copy()
-
-    if express_ok.empty:
-        return pd.DataFrame(), data_max_txt, sem_vinculo
-
-    resumo = (
-        express_ok.groupby(["RECURSO", "CONTRATO"], dropna=False)
+    ranking_nome = (
+        express.groupby("NOME_EXPRESS", dropna=False)
         .size()
         .reset_index(name="EXPRESS")
+        .sort_values(["EXPRESS", "NOME_EXPRESS"], ascending=[False, True])
+        .reset_index(drop=True)
     )
 
-    resumo["EXPRESS"] = pd.to_numeric(resumo["EXPRESS"], errors="coerce").fillna(0).astype(int)
-    resumo["FATURAMENTO_EXPRESS"] = resumo.apply(
-        lambda r: r["EXPRESS"] * valor_express_por_contrato(r.get("CONTRATO", "")),
-        axis=1,
-    )
+    ranking_nome.insert(0, "POSIÇÃO", range(1, len(ranking_nome) + 1))
+    ranking_nome["FATURAMENTO_EXPRESS"] = ranking_nome["EXPRESS"] * valor_express_por_contrato("Disjuntor Jundiaí")
 
-    return resumo, data_max_txt, sem_vinculo
+    return ranking_nome, data_max_txt, str(caminho)
 
 
-def aplicar_express_no_ranking_mensal(ranking, notas, mes):
+def aplicar_express_no_resumo_mensal(ranking, mes, contrato_ranking):
     """
-    Soma EXPRESS ao ranking mensal.
-    EXPRESS entra em NOTAS e FATURAMENTO_ATRIBUÍDO.
-    Só é usado no período Mês.
+    Não distribui Express por RECURSO, porque esse arquivo não tem recurso.
+    Apenas retorna o ranking por NOME e os totais para somar nos cards mensais.
     """
-    if ranking.empty or not mes:
-        return ranking, "", pd.DataFrame()
+    ranking_nome, data_max_txt, caminho = calcular_express_mensal_por_nome(mes)
 
-    express_resumo, data_max_txt, sem_vinculo = calcular_express_mensal(notas, mes)
+    if ranking_nome.empty:
+        return ranking.copy(), ranking_nome, data_max_txt, caminho, 0, 0.0
 
-    ranking = ranking.copy()
+    # Express entra nos totais somente quando a visão comporta Disjuntor Jundiaí.
+    if contrato_ranking in ["Todos", "Disjuntor Jundiaí"]:
+        total_express = int(ranking_nome["EXPRESS"].sum())
+        fat_express = float(ranking_nome["FATURAMENTO_EXPRESS"].sum())
+    else:
+        total_express = 0
+        fat_express = 0.0
 
-    if "EXPRESS" not in ranking.columns:
-        ranking["EXPRESS"] = 0
-    if "FATURAMENTO_EXPRESS" not in ranking.columns:
-        ranking["FATURAMENTO_EXPRESS"] = 0.0
+    return ranking.copy(), ranking_nome, data_max_txt, caminho, total_express, fat_express
 
-    if express_resumo.empty:
-        return ranking, data_max_txt, sem_vinculo
-
-    ranking = ranking.merge(
-        express_resumo[["RECURSO", "EXPRESS", "FATURAMENTO_EXPRESS"]],
-        on="RECURSO",
-        how="outer",
-        suffixes=("", "_NOVO"),
-    )
-
-    for col in ["NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS", "QTD_EQUIPES"]:
-        if col not in ranking.columns:
-            ranking[col] = 0
-
-    for col in [
-        "FATURAMENTO_ATRIBUÍDO", "FATURAMENTO_MIN_ATRIBUÍDO",
-        "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE"
-    ]:
-        if col not in ranking.columns:
-            ranking[col] = 0.0
-
-    ranking["EXPRESS"] = pd.to_numeric(ranking.get("EXPRESS", 0), errors="coerce").fillna(0)
-    ranking["EXPRESS_NOVO"] = pd.to_numeric(ranking.get("EXPRESS_NOVO", 0), errors="coerce").fillna(0)
-    ranking["FATURAMENTO_EXPRESS"] = pd.to_numeric(ranking.get("FATURAMENTO_EXPRESS", 0), errors="coerce").fillna(0)
-    ranking["FATURAMENTO_EXPRESS_NOVO"] = pd.to_numeric(ranking.get("FATURAMENTO_EXPRESS_NOVO", 0), errors="coerce").fillna(0)
-
-    ranking["EXPRESS"] = (ranking["EXPRESS"] + ranking["EXPRESS_NOVO"]).astype(int)
-    ranking["FATURAMENTO_EXPRESS"] = ranking["FATURAMENTO_EXPRESS"] + ranking["FATURAMENTO_EXPRESS_NOVO"]
-
-    ranking["NOTAS"] = pd.to_numeric(ranking["NOTAS"], errors="coerce").fillna(0).astype(int) + ranking["EXPRESS"]
-    ranking["FATURAMENTO_ATRIBUÍDO"] = pd.to_numeric(ranking["FATURAMENTO_ATRIBUÍDO"], errors="coerce").fillna(0) + ranking["FATURAMENTO_EXPRESS"]
-    ranking["FATURAMENTO_EQUIPE"] = pd.to_numeric(ranking["FATURAMENTO_EQUIPE"], errors="coerce").fillna(0) + ranking["FATURAMENTO_EXPRESS"]
-
-    ranking = ranking.drop(columns=[
-        c for c in ["EXPRESS_NOVO", "FATURAMENTO_EXPRESS_NOVO", "POSIÇÃO"]
-        if c in ranking.columns
-    ])
-
-    ranking["DIAS_ATIVOS"] = pd.to_numeric(ranking["DIAS_ATIVOS"], errors="coerce").fillna(0).astype(int)
-    ranking["MÉDIA_NOTAS_DIA"] = ranking.apply(
-        lambda r: (r["NOTAS"] / r["DIAS_ATIVOS"]) if r["DIAS_ATIVOS"] else 0,
-        axis=1,
-    )
-    ranking["TICKET_MÉDIO"] = ranking.apply(
-        lambda r: (r["FATURAMENTO_ATRIBUÍDO"] / r["NOTAS"]) if r["NOTAS"] else 0,
-        axis=1,
-    )
-
-    ranking = ranking.sort_values(["NOTAS", "FATURAMENTO_ATRIBUÍDO"], ascending=False).reset_index(drop=True)
-    ranking.insert(0, "POSIÇÃO", range(1, len(ranking) + 1))
-
-    return ranking, data_max_txt, sem_vinculo
 
 
 
@@ -1758,22 +1731,24 @@ with aba_ranking:
         )
 
         express_data_max = ""
-        express_sem_vinculo = pd.DataFrame()
-        if tipo_periodo == "Mês" and valor_periodo:
-            ranking_exec, express_data_max, express_sem_vinculo = aplicar_express_no_ranking_mensal(
-                ranking_exec,
-                notas,
-                valor_periodo,
-            )
+        express_ranking_nome = pd.DataFrame()
+        express_caminho = ""
+        total_express_mensal = 0
+        fat_express_mensal = 0.0
 
-            if contrato_ranking != "Todos" and not ranking_exec.empty and "RECURSO" in ranking_exec.columns:
-                recursos_contrato = base_exec.loc[
-                    base_exec["CONTRATO"] == contrato_ranking,
-                    "RECURSO"
-                ].dropna().astype(str).str.upper().unique().tolist()
-                ranking_exec = ranking_exec[ranking_exec["RECURSO"].isin(recursos_contrato)].copy()
-                ranking_exec = ranking_exec.drop(columns=["POSIÇÃO"], errors="ignore").reset_index(drop=True)
-                ranking_exec.insert(0, "POSIÇÃO", range(1, len(ranking_exec) + 1))
+        if tipo_periodo == "Mês" and valor_periodo:
+            (
+                ranking_exec,
+                express_ranking_nome,
+                express_data_max,
+                express_caminho,
+                total_express_mensal,
+                fat_express_mensal,
+            ) = aplicar_express_no_resumo_mensal(
+                ranking_exec,
+                valor_periodo,
+                contrato_ranking,
+            )
 
         if ranking_exec.empty:
             st.info("Nenhum recurso encontrado para os filtros selecionados.")
@@ -1781,18 +1756,20 @@ with aba_ranking:
             total_notas_exec = int(ranking_exec["NOTAS"].sum()) if "NOTAS" in ranking_exec.columns else int(base_filtrada_exec["ORDEM_DE_SERVICO"].nunique())
             total_executores = int(ranking_exec["RECURSO"].nunique())
             total_fat_atribuido = float(ranking_exec["FATURAMENTO_ATRIBUÍDO"].sum())
-            media_notas_executor = total_notas_exec / total_executores if total_executores else 0
 
             if tipo_periodo == "Mês" and valor_periodo:
-                if express_data_max:
-                    st.info(f"Pagamento Express considerado no ranking mensal até {express_data_max}.")
-                else:
-                    st.caption("Pagamento Express: nenhuma data encontrada ou nenhum arquivo localizado para o mês selecionado.")
+                total_notas_exec += int(total_express_mensal)
+                total_fat_atribuido += float(fat_express_mensal)
 
-                if not express_sem_vinculo.empty:
-                    with st.expander("⚠️ Executores de Pagamento Express sem recurso encontrado"):
-                        cols_sem = [c for c in ["EXECUTOR", "EXECUTOR_NORM", "DT_REFERENCIA", "VALIDAÇÃO", "VALIDACAO"] if c in express_sem_vinculo.columns]
-                        st.dataframe(express_sem_vinculo[cols_sem].head(500), use_container_width=True, hide_index=True)
+                if express_caminho:
+                    if express_data_max:
+                        st.info(f"Pagamento Express considerado como Disjuntor Jundiaí até {express_data_max}.")
+                    else:
+                        st.info("Pagamento Express considerado como Disjuntor Jundiaí. A planilha não trouxe data válida para exibir o limite.")
+                else:
+                    st.caption("Pagamento Express: arquivo não localizado.")
+
+            media_notas_executor = total_notas_exec / total_executores if total_executores else 0
 
             lider = ranking_exec.iloc[0]
 
@@ -1810,7 +1787,50 @@ with aba_ranking:
             m1.metric("Recursos ativos", numero(total_executores))
             m2.metric("Notas únicas", numero(total_notas_exec))
             m3.metric("Faturamento atribuído", dinheiro(total_fat_atribuido))
-            m4.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
+            if tipo_periodo == "Mês" and valor_periodo:
+                m4.metric("Express", numero(total_express_mensal))
+            else:
+                m4.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
+
+            if tipo_periodo == "Mês" and valor_periodo and not express_ranking_nome.empty:
+                st.markdown('<div class="section-title">Ranking Pagamento Express por nome</div>', unsafe_allow_html=True)
+
+                grafico_express_nome = (
+                    alt.Chart(express_ranking_nome.head(15))
+                    .mark_bar(
+                        cornerRadiusTopLeft=8,
+                        cornerRadiusTopRight=8,
+                    )
+                    .encode(
+                        x=alt.X(
+                            "NOME_EXPRESS:N",
+                            sort=alt.SortField(field="EXPRESS", order="descending"),
+                            title="Nome",
+                            axis=alt.Axis(labelAngle=-45),
+                        ),
+                        y=alt.Y("EXPRESS:Q", title="Express"),
+                        tooltip=[
+                            alt.Tooltip("POSIÇÃO:Q", title="Posição"),
+                            alt.Tooltip("NOME_EXPRESS:N", title="Nome"),
+                            alt.Tooltip("EXPRESS:Q", title="Notas Express"),
+                            alt.Tooltip("FATURAMENTO_EXPRESS:Q", title="Faturamento Express", format=",.2f"),
+                        ],
+                    )
+                    .properties(height=360)
+                )
+
+                st.altair_chart(grafico_express_nome, use_container_width=True)
+
+                tabela_express_nome = express_ranking_nome.copy()
+                tabela_express_nome = tabela_express_nome.rename(columns={
+                    "NOME_EXPRESS": "NOME",
+                    "FATURAMENTO_EXPRESS": "FATURAMENTO",
+                })
+                st.dataframe(
+                    formatar_tabela(tabela_express_nome[["POSIÇÃO", "NOME", "EXPRESS", "FATURAMENTO"]]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
             st.markdown('<div class="section-title">Top 10 recursos</div>', unsafe_allow_html=True)
             top10 = ranking_exec.head(10).copy()
@@ -1838,7 +1858,6 @@ with aba_ranking:
                         alt.Tooltip("POSIÇÃO:Q", title="Posição"),
                         alt.Tooltip("RECURSO:N", title="Recurso"),
                         alt.Tooltip("NOTAS:Q", title="Notas"),
-                        alt.Tooltip("EXPRESS:Q", title="Express"),
                         alt.Tooltip("FATURAMENTO_ATRIBUÍDO:Q", title="Faturamento atribuído", format=",.2f"),
                     ],
                 )
@@ -1852,7 +1871,7 @@ with aba_ranking:
 
             st.markdown('<div class="section-title">Ranking detalhado</div>', unsafe_allow_html=True)
             colunas_ranking = [
-                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "EXPRESS", "DIAS_ATIVOS",
+                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS",
                 "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
                 "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE", "QTD_EQUIPES"
             ]
