@@ -1,4 +1,6 @@
 from pathlib import Path
+from datetime import datetime
+import json
 import pandas as pd
 import streamlit as st
 import altair as alt
@@ -93,6 +95,28 @@ st.markdown(
         font-size: 0.95rem;
     }
 
+    .status-card {
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        border-radius: 22px;
+        padding: 16px 18px;
+        margin: 10px 0 20px 0;
+        box-shadow: 0 14px 35px rgba(15, 23, 42, 0.08);
+    }
+
+    .status-card b {
+        color: #0f172a;
+    }
+
+    .zero-card {
+        border-radius: 18px;
+        padding: 14px 16px;
+        background: rgba(245, 158, 11, 0.12);
+        border: 1px solid rgba(245, 158, 11, 0.28);
+        color: #92400e;
+        margin: 10px 0 18px 0;
+    }
+
     .section-title {
         font-size: 1.05rem;
         font-weight: 900;
@@ -159,6 +183,21 @@ st.markdown(
             color: #bfdbfe;
             background: rgba(59, 130, 246, 0.12);
             border-color: rgba(147, 197, 253, 0.22);
+        }
+
+        .status-card {
+            background: rgba(15, 23, 42, 0.86);
+            border-color: rgba(255, 255, 255, 0.10);
+        }
+
+        .status-card b {
+            color: #f8fafc;
+        }
+
+        .zero-card {
+            color: #fde68a;
+            background: rgba(245, 158, 11, 0.13);
+            border-color: rgba(245, 158, 11, 0.32);
         }
 
         section[data-testid="stSidebar"] {
@@ -729,6 +768,126 @@ def variacao_percentual(atual, anterior):
     return f"{sinal}{valor:.1f}%".replace(".", ",")
 
 
+def arquivo_mtime_datetime(caminho):
+    """Retorna a data/hora da última modificação do arquivo do dashboard."""
+    try:
+        return datetime.fromtimestamp(Path(caminho).stat().st_mtime)
+    except Exception:
+        return None
+
+
+def contar_notas_por_contrato(notas):
+    """
+    Conta notas feitas por contrato, sem contar recusas.
+    Também retorna o total geral.
+    """
+    parcial = preparar_parcial_do_dia(notas)
+
+    contagens = {"Todos": 0}
+
+    if parcial.empty:
+        return contagens
+
+    contagens["Todos"] = int(parcial["ORDEM_DE_SERVICO"].nunique())
+
+    por_contrato = (
+        parcial.groupby("CONTRATO", dropna=False)["ORDEM_DE_SERVICO"]
+        .nunique()
+        .to_dict()
+    )
+
+    for contrato, qtd in por_contrato.items():
+        contagens[str(contrato)] = int(qtd)
+
+    return contagens
+
+
+def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
+    """
+    Mantém um pequeno arquivo local com a última contagem observada.
+    Quando o CSV muda, calcula quantas notas subiram desde a leitura anterior.
+    """
+    caminho_status = PASTA_ATUAL / "status_dashboard_snapshot.json"
+    agora = datetime.now()
+    mtime_dt = arquivo_mtime_datetime(caminho_notas) if caminho_notas else None
+    mtime = mtime_dt.isoformat() if mtime_dt else ""
+
+    contagens = contar_notas_por_contrato(notas)
+    total_atual = int(contagens.get("Todos", 0))
+    contrato_atual = int(contagens.get(contrato_escolhido, total_atual if contrato_escolhido == "Todos" else 0))
+
+    status_antigo = {}
+    if caminho_status.exists():
+        try:
+            status_antigo = json.loads(caminho_status.read_text(encoding="utf-8"))
+        except Exception:
+            status_antigo = {}
+
+    contagens_anteriores = status_antigo.get("contagens", {})
+    mtime_anterior = status_antigo.get("mtime", "")
+
+    if mtime and mtime != mtime_anterior:
+        delta_geral = total_atual - int(contagens_anteriores.get("Todos", total_atual))
+        delta_contrato = contrato_atual - int(contagens_anteriores.get(contrato_escolhido, contrato_atual))
+        status = {
+            "mtime": mtime,
+            "ultima_verificacao": agora.isoformat(),
+            "contagens": contagens,
+            "ultimo_delta_geral": int(delta_geral),
+            "ultimo_delta_por_contrato": {
+                contrato_escolhido: int(delta_contrato)
+            },
+        }
+        try:
+            caminho_status.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    else:
+        delta_geral = int(status_antigo.get("ultimo_delta_geral", 0))
+        delta_por_contrato = status_antigo.get("ultimo_delta_por_contrato", {})
+        delta_contrato = int(delta_por_contrato.get(contrato_escolhido, 0))
+
+    return {
+        "ultima_atualizacao": mtime_dt,
+        "total_atual": total_atual,
+        "contrato_atual": contrato_atual,
+        "delta_geral": int(delta_geral),
+        "delta_contrato": int(delta_contrato),
+    }
+
+
+def mostrar_status_atualizacao(notas, contrato_escolhido):
+    caminho_notas = caminho_arquivo(ARQUIVOS["notas"])
+    status = atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido)
+
+    ultima = status.get("ultima_atualizacao")
+    ultima_txt = ultima.strftime("%d/%m/%Y %H:%M:%S") if ultima else "não identificado"
+
+    delta_geral = status.get("delta_geral", 0)
+    delta_contrato = status.get("delta_contrato", 0)
+
+    delta_geral_txt = f"+{numero(delta_geral)}" if delta_geral >= 0 else numero(delta_geral)
+    delta_contrato_txt = f"+{numero(delta_contrato)}" if delta_contrato >= 0 else numero(delta_contrato)
+
+    if contrato_escolhido == "Todos":
+        texto_contrato = "Todos os contratos"
+        detalhe = f"{delta_geral_txt} notas novas na última atualização"
+    else:
+        texto_contrato = contrato_escolhido
+        detalhe = f"{delta_contrato_txt} notas feitas na última atualização / últimos 15 min"
+
+    st.markdown(
+        f"""
+        <div class="status-card">
+            <b>🕒 Última atualização dos dados:</b> {ultima_txt}<br>
+            <b>📈 Geral:</b> {delta_geral_txt} notas novas • total atual: {numero(status.get("total_atual", 0))}<br>
+            <b>📌 {texto_contrato}:</b> {detalhe}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ==============================
 # CARREGAMENTO
 # ==============================
@@ -757,6 +916,11 @@ notas = bases.get("notas", pd.DataFrame())
 
 st.sidebar.header("Filtros")
 
+if st.sidebar.button("🔄 Atualizar dados", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
+
 contratos_lista = []
 
 for base in [contratos_original, dias_original, carro_original, carro_dias_original]:
@@ -782,6 +946,9 @@ contrato_escolhido = st.session_state.contrato_escolhido
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Contrato selecionado:**")
 st.sidebar.info(contrato_escolhido)
+
+if not notas.empty:
+    mostrar_status_atualizacao(notas, contrato_escolhido)
 
 # Este período vale para a tela inicial "Resumo".
 # Por padrão, fica só no mês mais recente da base, para não somar março + abril sem querer.
@@ -995,56 +1162,82 @@ with aba_parcial:
 
                 st.markdown('<div class="section-title">Ranking do dia por produção</div>', unsafe_allow_html=True)
 
-                if parcial_dia.empty:
-                    st.info("Nenhuma nota feita encontrada para esse dia. Se houver recusas, elas aparecem abaixo.")
-                else:
-                    resumo_producao = (
-                        parcial_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
-                        .agg(
-                            TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
-                            CORTES=("EH_CORTE", "sum"),
-                            RELIGUES=("EH_RELIGUE", "sum"),
-                            FATURAMENTO=("FATURAMENTO", "sum"),
-                            FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
-                            FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
-                        )
-                        .reset_index()
+                resumo_producao = (
+                    parcial_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
+                    .agg(
+                        TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
+                        CORTES=("EH_CORTE", "sum"),
+                        RELIGUES=("EH_RELIGUE", "sum"),
+                        FATURAMENTO=("FATURAMENTO", "sum"),
+                        FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
+                        FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
                     )
+                    .reset_index()
+                    if not parcial_dia.empty
+                    else pd.DataFrame(columns=[
+                        "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES",
+                        "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
+                    ])
+                )
 
-                    resumo_recusas_por_recurso = (
-                        recusas_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
-                        .agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
-                        .reset_index()
-                        if not recusas_dia.empty
-                        else pd.DataFrame(columns=["RECURSO", "CONTRATO", "RECUSAS"])
-                    )
+                resumo_recusas_por_recurso = (
+                    recusas_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
+                    .agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
+                    .reset_index()
+                    if not recusas_dia.empty
+                    else pd.DataFrame(columns=["RECURSO", "CONTRATO", "RECUSAS"])
+                )
 
-                    resumo_equipe = resumo_producao.merge(
-                        resumo_recusas_por_recurso,
-                        on=["RECURSO", "CONTRATO"],
-                        how="outer",
-                    ).fillna({
-                        "TOTAL_NOTAS": 0,
-                        "CORTES": 0,
-                        "RELIGUES": 0,
-                        "FATURAMENTO": 0,
-                        "FATURAMENTO_MIN": 0,
-                        "FATURAMENTO_MAX": 0,
-                        "RECUSAS": 0,
-                    })
+                resumo_equipe = resumo_producao.merge(
+                    resumo_recusas_por_recurso,
+                    on=["RECURSO", "CONTRATO"],
+                    how="outer",
+                ).fillna({
+                    "TOTAL_NOTAS": 0,
+                    "CORTES": 0,
+                    "RELIGUES": 0,
+                    "FATURAMENTO": 0,
+                    "FATURAMENTO_MIN": 0,
+                    "FATURAMENTO_MAX": 0,
+                    "RECUSAS": 0,
+                })
 
-                    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS"]:
+                for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS"]:
+                    if col in resumo_equipe.columns:
                         resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0).astype(int)
 
-                    for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
+                for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
+                    if col in resumo_equipe.columns:
                         resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0)
 
-                    resumo_equipe = (
-                        resumo_equipe
-                        .sort_values(["TOTAL_NOTAS", "FATURAMENTO", "RECUSAS"], ascending=[False, False, False])
-                        .reset_index(drop=True)
-                    )
+                resumo_equipe = (
+                    resumo_equipe
+                    .sort_values(["TOTAL_NOTAS", "FATURAMENTO", "RECUSAS"], ascending=[False, False, False])
+                    .reset_index(drop=True)
+                )
+
+                if resumo_equipe.empty:
+                    st.info("Nenhuma nota ou recusa encontrada para esse dia.")
+                else:
                     resumo_equipe.insert(0, "POSIÇÃO", range(1, len(resumo_equipe) + 1))
+
+                    recursos_zero = resumo_equipe[
+                        (resumo_equipe["TOTAL_NOTAS"] == 0) & (resumo_equipe["RECUSAS"] > 0)
+                    ].copy()
+
+                    if not recursos_zero.empty:
+                        lista_zero = ", ".join(recursos_zero["RECURSO"].astype(str).head(12).tolist())
+                        if len(recursos_zero) > 12:
+                            lista_zero += f" e mais {len(recursos_zero) - 12}"
+                        st.markdown(
+                            f"""
+                            <div class="zero-card">
+                                ⚠️ <b>Recursos com zero produção no dia:</b> {numero(len(recursos_zero))}<br>
+                                {lista_zero}
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
                     top10_dia = resumo_equipe.head(10).copy()
 
