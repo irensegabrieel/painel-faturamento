@@ -769,9 +769,9 @@ def variacao_percentual(atual, anterior):
 
 
 def arquivo_mtime_datetime(caminho):
-    """Retorna a data/hora da última modificação do arquivo do dashboard."""
+    """Retorna a data/hora local da última modificação do arquivo do dashboard."""
     try:
-        return datetime.fromtimestamp(Path(caminho).stat().st_mtime)
+        return datetime.fromtimestamp(Path(caminho).stat().st_mtime).astimezone()
     except Exception:
         return None
 
@@ -805,10 +805,13 @@ def contar_notas_por_contrato(notas):
 def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
     """
     Mantém um pequeno arquivo local com a última contagem observada.
-    Quando o CSV muda, calcula quantas notas subiram desde a leitura anterior.
+
+    Esta versão NÃO depende apenas do horário de modificação do arquivo.
+    Ela compara sempre a contagem atual com a última contagem salva, evitando
+    o caso de aparecer +0 quando houve atualização real.
     """
     caminho_status = PASTA_ATUAL / "status_dashboard_snapshot.json"
-    agora = datetime.now()
+    agora = datetime.now().astimezone()
     mtime_dt = arquivo_mtime_datetime(caminho_notas) if caminho_notas else None
     mtime = mtime_dt.isoformat() if mtime_dt else ""
 
@@ -824,35 +827,37 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
             status_antigo = {}
 
     contagens_anteriores = status_antigo.get("contagens", {})
-    mtime_anterior = status_antigo.get("mtime", "")
 
-    if mtime and mtime != mtime_anterior:
-        delta_geral = total_atual - int(contagens_anteriores.get("Todos", total_atual))
-        delta_contrato = contrato_atual - int(contagens_anteriores.get(contrato_escolhido, contrato_atual))
-        status = {
-            "mtime": mtime,
-            "ultima_verificacao": agora.isoformat(),
-            "contagens": contagens,
-            "ultimo_delta_geral": int(delta_geral),
-            "ultimo_delta_por_contrato": {
-                contrato_escolhido: int(delta_contrato)
-            },
-        }
-        try:
-            caminho_status.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-    else:
-        delta_geral = int(status_antigo.get("ultimo_delta_geral", 0))
-        delta_por_contrato = status_antigo.get("ultimo_delta_por_contrato", {})
-        delta_contrato = int(delta_por_contrato.get(contrato_escolhido, 0))
+    # Sempre compara a contagem atual com a última contagem salva.
+    # max(0, ...) evita números negativos se algum arquivo for reprocessado ou reduzido.
+    delta_geral = max(0, total_atual - int(contagens_anteriores.get("Todos", total_atual)))
+    delta_contrato = max(0, contrato_atual - int(contagens_anteriores.get(contrato_escolhido, contrato_atual)))
+
+    # Guarda também o delta por todos os contratos, para quando o usuário trocar o filtro.
+    deltas_por_contrato = {}
+    for contrato, qtd_atual in contagens.items():
+        qtd_antiga = int(contagens_anteriores.get(contrato, qtd_atual))
+        deltas_por_contrato[contrato] = max(0, int(qtd_atual) - qtd_antiga)
+
+    status = {
+        "mtime": mtime,
+        "ultima_verificacao": agora.isoformat(),
+        "contagens": contagens,
+        "ultimo_delta_geral": int(delta_geral),
+        "ultimo_delta_por_contrato": deltas_por_contrato,
+    }
+
+    try:
+        caminho_status.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
     return {
         "ultima_atualizacao": mtime_dt,
         "total_atual": total_atual,
         "contrato_atual": contrato_atual,
         "delta_geral": int(delta_geral),
-        "delta_contrato": int(delta_contrato),
+        "delta_contrato": int(deltas_por_contrato.get(contrato_escolhido, delta_contrato)),
     }
 
 
