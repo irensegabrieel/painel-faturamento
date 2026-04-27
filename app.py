@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import json
+import tempfile
 import pandas as pd
 import streamlit as st
 import altair as alt
@@ -240,6 +241,9 @@ if not st.session_state.autenticado:
 
 PASTA_DASHBOARD = Path("dashboard")
 PASTA_ATUAL = Path(".")
+# Streamlit Cloud pode não manter/gravar bem no diretório do app.
+# /tmp é o local mais seguro para guardar o snapshot temporário entre atualizações.
+STATUS_SNAPSHOT_PATH = Path(tempfile.gettempdir()) / "status_dashboard_snapshot.json"
 
 ARQUIVOS = {
     "notas": "notas_dashboard.csv",
@@ -850,7 +854,7 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
     Agora o comparativo principal é da produção do dia mais recente:
     notas, cortes e religues desde a atualização anterior.
     """
-    caminho_status = PASTA_ATUAL / "status_dashboard_snapshot.json"
+    caminho_status = STATUS_SNAPSHOT_PATH
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     mtime_dt = arquivo_mtime_datetime(caminho_notas) if caminho_notas else None
     mtime = mtime_dt.isoformat() if mtime_dt else ""
@@ -868,6 +872,7 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
     parcial_atual = resumo_parcial_mais_recente(notas, contrato_escolhido)
 
     status_antigo = {}
+    snapshot_erro = ""
     if caminho_status.exists():
         try:
             status_antigo = json.loads(caminho_status.read_text(encoding="utf-8"))
@@ -931,8 +936,8 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
 
         try:
             caminho_status.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as e:
+            snapshot_erro = str(e)
     else:
         delta_geral_base = int(status_antigo.get("ultimo_delta_geral_base", 0))
         delta_hoje = int(status_antigo.get("ultimo_delta_hoje", 0))
@@ -962,6 +967,8 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
         "delta_contrato": int(delta_contrato_info.get("notas", 0)),
         "delta_contrato_cortes": int(delta_contrato_info.get("cortes", 0)),
         "delta_contrato_religues": int(delta_contrato_info.get("religues", 0)),
+        "snapshot_caminho": str(caminho_status),
+        "snapshot_erro": snapshot_erro,
     }
 
 
@@ -990,6 +997,8 @@ def mostrar_status_atualizacao(notas, contrato_escolhido):
 
     data_parcial = status.get("data_parcial", "")
     texto_data = f" em {data_parcial}" if data_parcial else ""
+    snapshot_erro = status.get("snapshot_erro", "")
+    aviso_snapshot = f"<br><b>⚠️ Snapshot:</b> erro ao salvar comparativo ({snapshot_erro})" if snapshot_erro else ""
 
     if contrato_escolhido == "Todos":
         texto_contrato = "Todos os contratos"
@@ -1013,7 +1022,7 @@ def mostrar_status_atualizacao(notas, contrato_escolhido):
             <b>📊 Total atual do dia:</b> {numero(status.get("notas_hoje", 0))} notas
             (Cortes: {numero(status.get("cortes_hoje", 0))} • Religues: {numero(status.get("religues_hoje", 0))})<br>
             <b>📦 Base geral:</b> {numero(status.get("total_atual", 0))} notas acumuladas<br>
-            <b>📌 {texto_contrato}:</b> {detalhe}
+            <b>📌 {texto_contrato}:</b> {detalhe}{aviso_snapshot}
         </div>
         """,
         unsafe_allow_html=True,
