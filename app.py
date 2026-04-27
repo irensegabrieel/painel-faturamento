@@ -283,7 +283,7 @@ def formatar_tabela(df):
     for col in df2.columns:
         if "FATURAMENTO" in col or col in colunas_moeda:
             df2[col] = df2[col].apply(dinheiro)
-        elif col in ["QTD_NOTAS", "NOTAS", "CORTES", "RELIGUES", "TOTAL_NOTAS"]:
+        elif col in ["QTD_NOTAS", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "TOTAL_NOTAS"]:
             df2[col] = df2[col].apply(numero)
 
     return df2
@@ -302,7 +302,7 @@ def preparar_tabela_ranking(df, colunas_moeda=None):
     for col in df2.columns:
         if col in colunas_moeda or "FATURAMENTO" in col or col == "TICKET_MÉDIO":
             df2[col] = df2[col].apply(dinheiro)
-        elif col in ["POSIÇÃO", "NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS", "QTD_EQUIPES", "QTD_RECURSOS"]:
+        elif col in ["POSIÇÃO", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "DIAS_ATIVOS", "QTD_EQUIPES", "QTD_RECURSOS"]:
             df2[col] = df2[col].apply(numero)
         elif col in ["MÉDIA_NOTAS_DIA"]:
             df2[col] = df2[col].apply(lambda v: f"{float(v):.2f}".replace(".", ","))
@@ -998,7 +998,7 @@ with aba_parcial:
                 if parcial_dia.empty:
                     st.info("Nenhuma nota feita encontrada para esse dia. Se houver recusas, elas aparecem abaixo.")
                 else:
-                    resumo_equipe = (
+                    resumo_producao = (
                         parcial_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
                         .agg(
                             TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
@@ -1009,7 +1009,39 @@ with aba_parcial:
                             FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
                         )
                         .reset_index()
-                        .sort_values(["TOTAL_NOTAS", "FATURAMENTO"], ascending=[False, False])
+                    )
+
+                    resumo_recusas_por_recurso = (
+                        recusas_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
+                        .agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
+                        .reset_index()
+                        if not recusas_dia.empty
+                        else pd.DataFrame(columns=["RECURSO", "CONTRATO", "RECUSAS"])
+                    )
+
+                    resumo_equipe = resumo_producao.merge(
+                        resumo_recusas_por_recurso,
+                        on=["RECURSO", "CONTRATO"],
+                        how="outer",
+                    ).fillna({
+                        "TOTAL_NOTAS": 0,
+                        "CORTES": 0,
+                        "RELIGUES": 0,
+                        "FATURAMENTO": 0,
+                        "FATURAMENTO_MIN": 0,
+                        "FATURAMENTO_MAX": 0,
+                        "RECUSAS": 0,
+                    })
+
+                    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS"]:
+                        resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0).astype(int)
+
+                    for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
+                        resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0)
+
+                    resumo_equipe = (
+                        resumo_equipe
+                        .sort_values(["TOTAL_NOTAS", "FATURAMENTO", "RECUSAS"], ascending=[False, False, False])
                         .reset_index(drop=True)
                     )
                     resumo_equipe.insert(0, "POSIÇÃO", range(1, len(resumo_equipe) + 1))
@@ -1036,6 +1068,7 @@ with aba_parcial:
                                 alt.Tooltip("TOTAL_NOTAS:Q", title="Notas feitas"),
                                 alt.Tooltip("CORTES:Q", title="Cortes"),
                                 alt.Tooltip("RELIGUES:Q", title="Religues"),
+                                alt.Tooltip("RECUSAS:Q", title="Recusas"),
                                 alt.Tooltip("FATURAMENTO:Q", title="Faturamento", format=",.2f"),
                             ],
                         )
@@ -1052,7 +1085,7 @@ with aba_parcial:
                     tabela_equipe = resumo_equipe.copy()
                     tabela_equipe["FATURAMENTO"] = tabela_equipe.apply(faturamento_linha_equipe, axis=1)
                     tabela_equipe = tabela_equipe[[
-                        "POSIÇÃO", "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "FATURAMENTO"
+                        "POSIÇÃO", "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS", "FATURAMENTO"
                     ]]
 
                     st.dataframe(formatar_tabela(tabela_equipe), use_container_width=True, hide_index=True)
@@ -1062,17 +1095,7 @@ with aba_parcial:
                 if recusas_dia.empty:
                     st.success("Nenhuma recusa encontrada para esse dia.")
                 else:
-                    resumo_recusas = (
-                        recusas_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
-                        .agg(
-                            RECUSAS=("ORDEM_DE_SERVICO", "nunique"),
-                        )
-                        .reset_index()
-                        .sort_values(["RECUSAS", "RECURSO"], ascending=[False, True])
-                    )
-                    st.dataframe(resumo_recusas, use_container_width=True, hide_index=True)
-
-                    with st.expander("Ver detalhes das recusas"):
+                    with st.expander("Ver detalhes das recusas", expanded=True):
                         colunas_recusa = [
                             "ORDEM_DE_SERVICO", "RECURSO", "CONTRATO", "GRUPO_NOTA",
                             "RECUSA", "DATA", "ELETRICISTA1", "ELETRICISTA2"
