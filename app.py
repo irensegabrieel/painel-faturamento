@@ -806,15 +806,49 @@ def contar_notas_por_contrato(notas):
     return contagens
 
 
+def resumo_parcial_mais_recente(notas, contrato_escolhido="Todos"):
+    """
+    Calcula a produção da data mais recente da base.
+    Usa apenas notas feitas, sem recusas.
+    """
+    parcial = preparar_parcial_do_dia(notas)
+
+    resumo = {
+        "data": "",
+        "notas": 0,
+        "cortes": 0,
+        "religues": 0,
+        "por_contrato": {},
+    }
+
+    if parcial.empty:
+        return resumo
+
+    ultima_data_dt = parcial["DATA_DT"].max()
+    parcial_dia = parcial[parcial["DATA_DT"] == ultima_data_dt].copy()
+
+    resumo["data"] = ultima_data_dt.strftime("%d/%m/%Y")
+    resumo["notas"] = int(parcial_dia["ORDEM_DE_SERVICO"].nunique())
+    resumo["cortes"] = int(parcial_dia["EH_CORTE"].sum())
+    resumo["religues"] = int(parcial_dia["EH_RELIGUE"].sum())
+
+    for contrato, df_contrato in parcial_dia.groupby("CONTRATO", dropna=False):
+        contrato = str(contrato)
+        resumo["por_contrato"][contrato] = {
+            "notas": int(df_contrato["ORDEM_DE_SERVICO"].nunique()),
+            "cortes": int(df_contrato["EH_CORTE"].sum()),
+            "religues": int(df_contrato["EH_RELIGUE"].sum()),
+        }
+
+    return resumo
+
+
 def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
     """
     Mantém um snapshot local da última atualização do CSV.
 
-    Correção importante:
-    - O snapshot só é sobrescrito quando o arquivo de notas realmente muda.
-    - Ao trocar de contrato/aba, o painel apenas lê o delta já salvo.
-    - Isso evita o bug em que um contrato mostrava +4 e, ao trocar filtro,
-      os demais passavam a mostrar +0 porque o snapshot tinha sido regravado.
+    Agora o comparativo principal é da produção do dia mais recente:
+    notas, cortes e religues desde a atualização anterior.
     """
     caminho_status = PASTA_ATUAL / "status_dashboard_snapshot.json"
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
@@ -826,13 +860,12 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
     except Exception:
         tamanho_arquivo = 0
 
-    # Identificador simples da versão atual do CSV.
-    # Se mudou horário ou tamanho, tratamos como nova atualização.
     arquivo_id = f"{mtime}|{tamanho_arquivo}"
 
     contagens = contar_notas_por_contrato(notas)
     total_atual = int(contagens.get("Todos", 0))
-    contrato_atual = int(contagens.get(contrato_escolhido, total_atual if contrato_escolhido == "Todos" else 0))
+
+    parcial_atual = resumo_parcial_mais_recente(notas, contrato_escolhido)
 
     status_antigo = {}
     if caminho_status.exists():
@@ -842,29 +875,57 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
             status_antigo = {}
 
     arquivo_id_antigo = status_antigo.get("arquivo_id", "")
+    parcial_anterior = status_antigo.get("parcial_atual", {})
     contagens_anteriores = status_antigo.get("contagens", {})
 
-    # Primeira vez: cria baseline, mas não inventa delta.
-    primeira_execucao = not bool(contagens_anteriores)
+    primeira_execucao = not bool(parcial_anterior)
 
     if arquivo_id != arquivo_id_antigo:
         if primeira_execucao:
-            deltas_por_contrato = {contrato: 0 for contrato in contagens.keys()}
-            delta_geral = 0
+            delta_hoje = 0
+            delta_cortes = 0
+            delta_religues = 0
+            deltas_por_contrato = {
+                contrato: {"notas": 0, "cortes": 0, "religues": 0}
+                for contrato in parcial_atual.get("por_contrato", {}).keys()
+            }
+            delta_geral_base = 0
         else:
-            deltas_por_contrato = {}
-            for contrato, qtd_atual in contagens.items():
-                qtd_antiga = int(contagens_anteriores.get(contrato, qtd_atual))
-                deltas_por_contrato[contrato] = max(0, int(qtd_atual) - qtd_antiga)
+            # Se mudou a data, começa um novo baseline para o novo dia.
+            mesma_data = parcial_atual.get("data") == parcial_anterior.get("data")
 
-            delta_geral = int(deltas_por_contrato.get("Todos", 0))
+            if mesma_data:
+                delta_hoje = max(0, int(parcial_atual.get("notas", 0)) - int(parcial_anterior.get("notas", 0)))
+                delta_cortes = max(0, int(parcial_atual.get("cortes", 0)) - int(parcial_anterior.get("cortes", 0)))
+                delta_religues = max(0, int(parcial_atual.get("religues", 0)) - int(parcial_anterior.get("religues", 0)))
+            else:
+                delta_hoje = 0
+                delta_cortes = 0
+                delta_religues = 0
+
+            deltas_por_contrato = {}
+            parcial_ant_por_contrato = parcial_anterior.get("por_contrato", {}) if mesma_data else {}
+
+            for contrato, valores in parcial_atual.get("por_contrato", {}).items():
+                anterior = parcial_ant_por_contrato.get(contrato, {})
+                deltas_por_contrato[contrato] = {
+                    "notas": max(0, int(valores.get("notas", 0)) - int(anterior.get("notas", valores.get("notas", 0)))),
+                    "cortes": max(0, int(valores.get("cortes", 0)) - int(anterior.get("cortes", valores.get("cortes", 0)))),
+                    "religues": max(0, int(valores.get("religues", 0)) - int(anterior.get("religues", valores.get("religues", 0)))),
+                }
+
+            delta_geral_base = max(0, total_atual - int(contagens_anteriores.get("Todos", total_atual)))
 
         status = {
             "arquivo_id": arquivo_id,
             "mtime": mtime,
             "ultima_verificacao": agora.isoformat(),
             "contagens": contagens,
-            "ultimo_delta_geral": int(delta_geral),
+            "parcial_atual": parcial_atual,
+            "ultimo_delta_geral_base": int(delta_geral_base),
+            "ultimo_delta_hoje": int(delta_hoje),
+            "ultimo_delta_cortes": int(delta_cortes),
+            "ultimo_delta_religues": int(delta_religues),
             "ultimo_delta_por_contrato": deltas_por_contrato,
         }
 
@@ -873,17 +934,34 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
         except Exception:
             pass
     else:
-        # Mesmo arquivo: mantém o último delta salvo.
-        # Isso é o que permite trocar contrato/aba sem zerar os números.
+        delta_geral_base = int(status_antigo.get("ultimo_delta_geral_base", 0))
+        delta_hoje = int(status_antigo.get("ultimo_delta_hoje", 0))
+        delta_cortes = int(status_antigo.get("ultimo_delta_cortes", 0))
+        delta_religues = int(status_antigo.get("ultimo_delta_religues", 0))
         deltas_por_contrato = status_antigo.get("ultimo_delta_por_contrato", {})
-        delta_geral = int(status_antigo.get("ultimo_delta_geral", 0))
+
+    delta_contrato_info = deltas_por_contrato.get(contrato_escolhido, {"notas": 0, "cortes": 0, "religues": 0})
+    if contrato_escolhido == "Todos":
+        delta_contrato_info = {
+            "notas": int(delta_hoje),
+            "cortes": int(delta_cortes),
+            "religues": int(delta_religues),
+        }
 
     return {
         "ultima_atualizacao": mtime_dt,
         "total_atual": total_atual,
-        "contrato_atual": contrato_atual,
-        "delta_geral": int(delta_geral),
-        "delta_contrato": int(deltas_por_contrato.get(contrato_escolhido, 0 if contrato_escolhido != "Todos" else delta_geral)),
+        "delta_geral_base": int(delta_geral_base),
+        "data_parcial": parcial_atual.get("data", ""),
+        "notas_hoje": int(parcial_atual.get("notas", 0)),
+        "cortes_hoje": int(parcial_atual.get("cortes", 0)),
+        "religues_hoje": int(parcial_atual.get("religues", 0)),
+        "delta_hoje": int(delta_hoje),
+        "delta_cortes": int(delta_cortes),
+        "delta_religues": int(delta_religues),
+        "delta_contrato": int(delta_contrato_info.get("notas", 0)),
+        "delta_contrato_cortes": int(delta_contrato_info.get("cortes", 0)),
+        "delta_contrato_religues": int(delta_contrato_info.get("religues", 0)),
     }
 
 
@@ -894,24 +972,47 @@ def mostrar_status_atualizacao(notas, contrato_escolhido):
     ultima = status.get("ultima_atualizacao")
     ultima_txt = ultima.strftime("%d/%m/%Y %H:%M:%S") if ultima else "não identificado"
 
-    delta_geral = status.get("delta_geral", 0)
-    delta_contrato = status.get("delta_contrato", 0)
+    delta_hoje = status.get("delta_hoje", 0)
+    delta_cortes = status.get("delta_cortes", 0)
+    delta_religues = status.get("delta_religues", 0)
 
-    delta_geral_txt = f"+{numero(delta_geral)}" if delta_geral >= 0 else numero(delta_geral)
+    delta_hoje_txt = f"+{numero(delta_hoje)}" if delta_hoje >= 0 else numero(delta_hoje)
+    delta_cortes_txt = f"+{numero(delta_cortes)}" if delta_cortes >= 0 else numero(delta_cortes)
+    delta_religues_txt = f"+{numero(delta_religues)}" if delta_religues >= 0 else numero(delta_religues)
+
+    delta_contrato = status.get("delta_contrato", 0)
+    delta_contrato_cortes = status.get("delta_contrato_cortes", 0)
+    delta_contrato_religues = status.get("delta_contrato_religues", 0)
+
     delta_contrato_txt = f"+{numero(delta_contrato)}" if delta_contrato >= 0 else numero(delta_contrato)
+    delta_contrato_cortes_txt = f"+{numero(delta_contrato_cortes)}" if delta_contrato_cortes >= 0 else numero(delta_contrato_cortes)
+    delta_contrato_religues_txt = f"+{numero(delta_contrato_religues)}" if delta_contrato_religues >= 0 else numero(delta_contrato_religues)
+
+    data_parcial = status.get("data_parcial", "")
+    texto_data = f" em {data_parcial}" if data_parcial else ""
 
     if contrato_escolhido == "Todos":
         texto_contrato = "Todos os contratos"
-        detalhe = f"{delta_geral_txt} notas novas na última atualização"
+        detalhe = (
+            f"{delta_hoje_txt} notas na última atualização "
+            f"(Cortes: {delta_cortes_txt} • Religues: {delta_religues_txt})"
+        )
     else:
         texto_contrato = contrato_escolhido
-        detalhe = f"{delta_contrato_txt} notas feitas na última atualização / últimos 15 min"
+        detalhe = (
+            f"{delta_contrato_txt} notas na última atualização "
+            f"(Cortes: {delta_contrato_cortes_txt} • Religues: {delta_contrato_religues_txt})"
+        )
 
     st.markdown(
         f"""
         <div class="status-card">
             <b>🕒 Última atualização dos dados:</b> {ultima_txt}<br>
-            <b>📈 Geral:</b> {delta_geral_txt} notas novas • total atual: {numero(status.get("total_atual", 0))}<br>
+            <b>📈 Parcial do dia{texto_data}:</b> {delta_hoje_txt} notas na última atualização
+            (Cortes: {delta_cortes_txt} • Religues: {delta_religues_txt})<br>
+            <b>📊 Total atual do dia:</b> {numero(status.get("notas_hoje", 0))} notas
+            (Cortes: {numero(status.get("cortes_hoje", 0))} • Religues: {numero(status.get("religues_hoje", 0))})<br>
+            <b>📦 Base geral:</b> {numero(status.get("total_atual", 0))} notas acumuladas<br>
             <b>📌 {texto_contrato}:</b> {detalhe}
         </div>
         """,
