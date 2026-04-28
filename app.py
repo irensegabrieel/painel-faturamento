@@ -938,7 +938,6 @@ def caminho_pagamento_express():
     return None
 
 
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def ler_pagamento_express(caminho):
     """
     Lê a planilha manual do Pagamento Express.
@@ -1075,7 +1074,6 @@ def valor_express_por_contrato(contrato):
     return 0.0
 
 
-@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
 def calcular_express_mensal(notas, mes):
     """
     Calcula Pagamento Express por RECURSO para o mês escolhido.
@@ -1955,6 +1953,46 @@ with aba_ranking:
 
                 if not express_sem_vinculo.empty:
                     st.warning(f"Pagamento Express: {numero(len(express_sem_vinculo))} linha(s) não encontraram nome no DE/PARA Nome → Recurso.")
+
+                # Auditoria sempre visível no período mensal: se zerar, a tela mostra exatamente o motivo.
+                with st.expander("Auditoria do Pagamento Express", expanded=(total_express_mensal == 0)):
+                    if express_caminho:
+                        st.caption(f"Arquivo lido: {express_caminho}")
+                    if not express_resumo_recurso.empty:
+                        st.success(f"Express conciliado: {numero(total_express_mensal)} nota(s) no mês {valor_periodo}.")
+                        st.dataframe(
+                            formatar_tabela(express_resumo_recurso.sort_values(["EXPRESS", "RECURSO"], ascending=[False, True])),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    else:
+                        st.info("Nenhum Express entrou no ranking para este filtro. Verifique abaixo se o arquivo foi lido, se a data bate com o mês e se os nomes estão no DE/PARA.")
+                        caminho_debug = caminho_pagamento_express()
+                        if caminho_debug:
+                            express_debug = ler_pagamento_express(str(caminho_debug))
+                            if express_debug.empty:
+                                st.warning("O arquivo foi encontrado, mas ficou vazio após o filtro de VALIDAÇÃO = PAGAMENTO EXPRESS ou sem nome de executor.")
+                            else:
+                                total_linhas_debug = len(express_debug)
+                                datas_validas_debug = int(express_debug.get("DATA_EXPRESS_DT", pd.Series(dtype=object)).notna().sum()) if "DATA_EXPRESS_DT" in express_debug.columns else 0
+                                st.write({
+                                    "linhas_lidas": total_linhas_debug,
+                                    "datas_validas": datas_validas_debug,
+                                    "meses_no_excel": express_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y").value_counts(dropna=False).to_dict() if "DATA_EXPRESS_DT" in express_debug.columns and express_debug["DATA_EXPRESS_DT"].notna().any() else {},
+                                    "nomes_mapeados": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
+                                })
+                                cols_debug = [
+                                    "NOME_EXPRESS", "NOME_EXPRESS_NORM", "DATA_EXPRESS_DT", "NOTA_NORM", "VALIDAÇÃO", "VALIDACAO"
+                                ]
+                                cols_debug = [c for c in cols_debug if c in express_debug.columns]
+                                amostra_debug = express_debug.copy()
+                                if "DATA_EXPRESS_DT" in amostra_debug.columns and amostra_debug["DATA_EXPRESS_DT"].notna().any():
+                                    amostra_debug = amostra_debug[amostra_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y") == valor_periodo].copy()
+                                amostra_debug["RECURSO_DEPARA"] = amostra_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("") if "NOME_EXPRESS_NORM" in amostra_debug.columns else ""
+                                cols_debug = cols_debug + ["RECURSO_DEPARA"]
+                                st.dataframe(amostra_debug[cols_debug].head(80), use_container_width=True, hide_index=True)
+                        else:
+                            st.error("Arquivo pagamento_express.xlsx não localizado na pasta dashboard nem na raiz do app.")
 
             media_notas_executor = total_notas_exec / total_executores if total_executores else 0
 
