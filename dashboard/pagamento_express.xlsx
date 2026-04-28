@@ -927,6 +927,34 @@ DEPARA_NOME_RECURSO_EXPRESS = {
 }
 
 
+
+
+# Carro STC estimado - só conta quando os DOIS nomes da dupla aparecem na mesma linha.
+# O recurso vai explícito como JUN58xx-EMP e o valor do express é R$ 38,18.
+DUPLAS_CARRO_EXPRESS = {
+    tuple(sorted([normalizar_nome_pessoa("ANDERSON GOMES DA SILVA"), normalizar_nome_pessoa("IGOR TORRES BEZERRA")])): "JUN5808-EMP",
+    tuple(sorted([normalizar_nome_pessoa("EDUARDO DOS SANTOS"), normalizar_nome_pessoa("CARLOS LEANDRO LOPES DE SOUZA")])): "JUN5812-EMP",
+    tuple(sorted([normalizar_nome_pessoa("JULIANO CESAR DOS SANTOS"), normalizar_nome_pessoa("JOAO PAULO ROMANHA DOS SANTOS")])): "JUN5803-EMP",
+    tuple(sorted([normalizar_nome_pessoa("ALEXANDRE LUIZ SANTANA PRAJELAS"), normalizar_nome_pessoa("FELIPE HENRIQUE DE SOUZA FERREIRA")])): "JUN5802-EMP",
+    tuple(sorted([normalizar_nome_pessoa("LUIS FELIPE SA DOS SANTOS"), normalizar_nome_pessoa("WESLEY APARECIDO DE SA SOUZA")])): "JUN5817-EMP",
+    tuple(sorted([normalizar_nome_pessoa("LUCIANO HENRIQUE DE SOUZA"), normalizar_nome_pessoa("ORLANDO MANOEL DE SOUZA JANSEN")])): "JUN5814-EMP",
+    tuple(sorted([normalizar_nome_pessoa("ANDERSON PEREIRA SANTOS"), normalizar_nome_pessoa("DIOLENO CONCEICAO NOGUEIRA")])): "JUN5801-EMP",
+    tuple(sorted([normalizar_nome_pessoa("ANDERSON SILVA LEONARDO"), normalizar_nome_pessoa("JEFERSON E SILVA GOMES")])): "JUN5820-EMP",
+    tuple(sorted([normalizar_nome_pessoa("LUCAS EDUARDO LOPES DE SOUZA"), normalizar_nome_pessoa("JHONATAN MATHEUS LOPES DE SOUZA")])): "JUN5810-EMP",
+    tuple(sorted([normalizar_nome_pessoa("ADILSON APARECIDO VASCO"), normalizar_nome_pessoa("RILDO AUGUSTO DOS SANTOS")])): "JUN5806-EMP",
+    tuple(sorted([normalizar_nome_pessoa("MARISTON OLIVEIRA NASCIMENTO"), normalizar_nome_pessoa("VALDECI SARDELA")])): "JUN5807-EMP",
+}
+
+
+def resolver_recurso_carro_por_dupla(nome_1_norm, nome_2_norm):
+    """Retorna JUN58xx-EMP somente se os dois nomes da dupla do carro estiverem presentes."""
+    nome_1_norm = str(nome_1_norm).strip()
+    nome_2_norm = str(nome_2_norm).strip()
+    if not nome_1_norm or not nome_2_norm:
+        return ""
+    return DUPLAS_CARRO_EXPRESS.get(tuple(sorted([nome_1_norm, nome_2_norm])), "")
+
+
 def contrato_por_recurso_express(recurso):
     recurso = str(recurso).strip().upper()
     if eh_disjuntor_jundiai(recurso):
@@ -1034,12 +1062,11 @@ def ler_pagamento_express(caminho):
     """
     Lê a planilha manual do Pagamento Express.
 
-    Versão robusta:
-    - não depende de acento no nome das colunas;
-    - aplica filtro de VALIDAÇÃO de forma não destrutiva;
-    - se o filtro de validação zerar o arquivo, mantém as linhas e mostra auditoria;
-    - lê DT_REFERENCIA mesmo quando a coluna vem como data real do Excel;
-    - usa NOME_EXECUTOR_01/02 para o DE/PARA Nome -> Recurso.
+    Ajuste importante:
+    - preserva NOME_EXECUTOR_01 e NOME_EXECUTOR_02 separadamente;
+    - continua criando NOME_EXPRESS/NOME_EXPRESS_NORM pelo executor 01 para Jundiaí/Santa Cruz;
+    - cria NOME_EXPRESS_1_NORM e NOME_EXPRESS_2_NORM para validar as duplas do Carro;
+    - mantém filtro de VALIDAÇÃO robusto e não destrutivo.
     """
     if not caminho:
         return pd.DataFrame()
@@ -1076,7 +1103,6 @@ def ler_pagamento_express(caminho):
         return None
 
     # Filtro de validação NÃO destrutivo.
-    # Seu arquivo já é um arquivo de pagamento express; o filtro só é usado se encontrar linhas.
     col_validacao = achar_coluna("VALIDAÇÃO", "VALIDACAO")
     linhas_brutas = len(df)
     linhas_pos_validacao = None
@@ -1086,41 +1112,44 @@ def ler_pagamento_express(caminho):
         linhas_pos_validacao = int(mascara_express.sum())
         if linhas_pos_validacao > 0:
             df = df[mascara_express].copy()
-        else:
-            # Se o filtro não encontrou nada, não zera o arquivo.
-            df = df.copy()
 
     df.attrs["EXPRESS_LINHAS_BRUTAS"] = linhas_brutas
     df.attrs["EXPRESS_LINHAS_POS_VALIDACAO"] = linhas_pos_validacao
 
-    # NOTA/OS fica disponível para auditoria, mas a contabilização usa o nome.
+    # NOTA/OS fica disponível para auditoria, mas a contabilização usa os nomes.
     col_nota = achar_coluna("NOTA", "ORDEM_DE_SERVICO", "ORDEM DE SERVICO", "OS")
     if col_nota:
         df["NOTA_NORM"] = df[col_nota].apply(normalizar_ordem_servico)
     else:
         df["NOTA_NORM"] = ""
 
-    # Nome principal da pessoa no arquivo Express.
     col_nome_1 = achar_coluna("NOME_EXECUTOR_01", "NOME EXECUTOR 01", "NOME_EXECUTOR", "NOME EXECUTOR")
     col_nome_2 = achar_coluna("NOME_EXECUTOR_02", "NOME EXECUTOR 02")
     col_executor = achar_coluna("EXECUTOR")
 
     if col_nome_1:
-        df["NOME_EXPRESS"] = df[col_nome_1].fillna("").astype(str).str.strip()
+        df["NOME_EXPRESS_1"] = df[col_nome_1].fillna("").astype(str).str.strip()
     elif col_executor:
-        df["NOME_EXPRESS"] = df[col_executor].fillna("").astype(str).str.strip()
+        df["NOME_EXPRESS_1"] = df[col_executor].fillna("").astype(str).str.strip()
     else:
-        df["NOME_EXPRESS"] = ""
+        df["NOME_EXPRESS_1"] = ""
 
     if col_nome_2:
-        mascara_vazia = df["NOME_EXPRESS"].eq("") | df["NOME_EXPRESS"].str.upper().eq("NAN")
-        df.loc[mascara_vazia, "NOME_EXPRESS"] = (
-            df.loc[mascara_vazia, col_nome_2].fillna("").astype(str).str.strip()
-        )
+        df["NOME_EXPRESS_2"] = df[col_nome_2].fillna("").astype(str).str.strip()
+    else:
+        df["NOME_EXPRESS_2"] = ""
 
-    df["NOME_EXPRESS"] = df["NOME_EXPRESS"].replace({"nan": "", "NaN": "", "None": ""})
+    # Compatibilidade com a lógica que já funcionava para Jundiaí/Santa Cruz.
+    df["NOME_EXPRESS"] = df["NOME_EXPRESS_1"].replace({"nan": "", "NaN": "", "None": ""})
+    mascara_vazia = df["NOME_EXPRESS"].eq("") | df["NOME_EXPRESS"].str.upper().eq("NAN")
+    df.loc[mascara_vazia, "NOME_EXPRESS"] = df.loc[mascara_vazia, "NOME_EXPRESS_2"]
+
     df["NOME_EXPRESS_NORM"] = df["NOME_EXPRESS"].apply(normalizar_nome_pessoa)
-    df = df[df["NOME_EXPRESS_NORM"] != ""].copy()
+    df["NOME_EXPRESS_1_NORM"] = df["NOME_EXPRESS_1"].apply(normalizar_nome_pessoa)
+    df["NOME_EXPRESS_2_NORM"] = df["NOME_EXPRESS_2"].apply(normalizar_nome_pessoa)
+
+    # Mantém linhas que tenham pelo menos um nome. Carro depois exige os dois nomes.
+    df = df[(df["NOME_EXPRESS_1_NORM"] != "") | (df["NOME_EXPRESS_2_NORM"] != "")].copy()
 
     # Data de referência do Express.
     col_data = achar_coluna(
@@ -1150,6 +1179,7 @@ def ler_pagamento_express(caminho):
     df.attrs["EXPRESS_COL_VALIDACAO"] = col_validacao or ""
     df.attrs["EXPRESS_COL_DATA"] = col_data or ""
     df.attrs["EXPRESS_COL_NOME_1"] = col_nome_1 or ""
+    df.attrs["EXPRESS_COL_NOME_2"] = col_nome_2 or ""
 
     return df
 
@@ -1188,14 +1218,18 @@ def mapa_executor_recurso(notas):
 
 def valor_express_por_contrato(contrato):
     """
-    Express faturado como religue para equipes de disjuntor.
-    Carro é diferente; por enquanto fica zerado no faturamento express.
+    Valor do pagamento express por contrato.
+    - Disjuntor Jundiaí: mesmo valor do religue.
+    - Disjuntor Santa Cruz: mesmo valor do religue.
+    - Contrato Carro STC estimado: R$ 38,18 por nota express.
     """
     contrato = str(contrato)
     if contrato == "Disjuntor Jundiaí":
         return 27.43
     if contrato == "Disjuntor Santa Cruz":
         return 23.97
+    if contrato == "Contrato Carro STC estimado":
+        return 38.18
     return 0.0
 
 
@@ -1203,9 +1237,11 @@ def calcular_express_mensal(notas, mes):
     """
     Calcula Pagamento Express por RECURSO para o mês escolhido.
 
-    Regra definitiva: usa o DE/PARA manual Nome -> Recurso.
-    Isso evita depender de executor, recurso vindo no Excel ou casamento por OS
-    quando a nota não bate exatamente com a base atual.
+    Mantém a regra que já funcionava para Jundiaí/Santa Cruz por nome individual
+    e adiciona Carro STC por dupla completa:
+    - NOME_EXECUTOR_01 + NOME_EXECUTOR_02 precisam bater com uma dupla cadastrada;
+    - se só um nome vier preenchido, não conta como Carro;
+    - Carro fatura R$ 38,18 por express.
     """
     caminho = caminho_pagamento_express()
 
@@ -1223,19 +1259,43 @@ def calcular_express_mensal(notas, mes):
         data_max = express["DATA_EXPRESS_DT"].max()
         data_max_txt = data_max.strftime("%d/%m/%Y") if pd.notna(data_max) else ""
 
-    # Se a planilha não tiver data válida, não joga tudo fora: deixa a auditoria mostrar
-    # o que foi lido. Para este arquivo específico, DT_REFERENCIA deve filtrar 03/2026.
     if express.empty:
         return pd.DataFrame(), data_max_txt, pd.DataFrame(), str(caminho)
 
     mapa_codigo_recurso = mapa_codigo_para_recurso_real(notas)
-    express["RECURSO_DEPARA"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS).fillna("")
-    express["RECURSO"] = express["RECURSO_DEPARA"].apply(lambda v: resolver_recurso_depara(v, mapa_codigo_recurso))
+
+    # 1) Regra já existente: Jundiaí/Santa Cruz por nome individual.
+    express["RECURSO_INDIVIDUAL_DEPARA"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS).fillna("")
+    express["RECURSO_INDIVIDUAL"] = express["RECURSO_INDIVIDUAL_DEPARA"].apply(
+        lambda v: resolver_recurso_depara(v, mapa_codigo_recurso)
+    )
+    express["RECURSO_INDIVIDUAL"] = express["RECURSO_INDIVIDUAL"].fillna("").astype(str).str.strip().str.upper()
+    express["CONTRATO_INDIVIDUAL"] = express["RECURSO_INDIVIDUAL"].apply(contrato_por_recurso_express)
+
+    # 2) Regra nova: Carro por dupla completa. A dupla tem prioridade apenas quando bate.
+    if "NOME_EXPRESS_1_NORM" not in express.columns:
+        express["NOME_EXPRESS_1_NORM"] = express["NOME_EXPRESS_NORM"]
+    if "NOME_EXPRESS_2_NORM" not in express.columns:
+        express["NOME_EXPRESS_2_NORM"] = ""
+
+    express["RECURSO_CARRO"] = express.apply(
+        lambda r: resolver_recurso_carro_por_dupla(
+            r.get("NOME_EXPRESS_1_NORM", ""),
+            r.get("NOME_EXPRESS_2_NORM", ""),
+        ),
+        axis=1,
+    )
+    express["RECURSO_CARRO"] = express["RECURSO_CARRO"].fillna("").astype(str).str.strip().str.upper()
+
+    # Resultado final: se for dupla de Carro, usa Carro; caso contrário, usa individual.
+    express["RECURSO"] = express["RECURSO_CARRO"]
+    mascara_nao_carro = express["RECURSO"].eq("")
+    express.loc[mascara_nao_carro, "RECURSO"] = express.loc[mascara_nao_carro, "RECURSO_INDIVIDUAL"]
     express["RECURSO"] = express["RECURSO"].fillna("").astype(str).str.strip().str.upper()
     express["CONTRATO"] = express["RECURSO"].apply(contrato_por_recurso_express)
 
-    sem_vinculo = express[express["RECURSO"] == ""].copy()
-    express_ok = express[express["RECURSO"] != ""].copy()
+    sem_vinculo = express[(express["RECURSO"] == "") | (express["CONTRATO"] == "")].copy()
+    express_ok = express[(express["RECURSO"] != "") & (express["CONTRATO"] != "")].copy()
 
     if express_ok.empty:
         return pd.DataFrame(), data_max_txt, sem_vinculo, str(caminho)
