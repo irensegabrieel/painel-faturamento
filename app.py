@@ -867,6 +867,7 @@ DEPARA_NOME_RECURSO_EXPRESS = {
     normalizar_nome_pessoa("CHARMONE DIONATAS PINHEIRO RODRIGUES"): "JUN5993-EMP",
     normalizar_nome_pessoa("JEFERSON DE SOUZA DA SILVA"): "JUN5990-EMP",
     normalizar_nome_pessoa("THAINA MORAIS DIAS"): "JUN5991-EMP",
+    normalizar_nome_pessoa("THAINA DE MORAIS DIAS"): "JUN5991-EMP",
     normalizar_nome_pessoa("IVANA LAIS DE PAULA OLIVEIRA"): "JUN5992-EMP",
     normalizar_nome_pessoa("SIDNEI DE MORAIS SOARES"): "SAL5500-EMP",
     normalizar_nome_pessoa("RAFAEL DELFINO DA SILVA"): "SAL5504-EMP",
@@ -937,34 +938,6 @@ def caminho_pagamento_express():
     return None
 
 
-
-
-def coluna_data_referencia_express(df):
-    """Detecta a coluna de data referência do Excel de Pagamento Express.
-
-    No modelo atual, a data referência vem na coluna P como DT_REFERENCIA.
-    Mantemos alternativas para evitar quebra caso o cabeçalho mude levemente.
-    """
-    nomes_possiveis = [
-        "DT_REFERENCIA",
-        "DATA_REFERENCIA",
-        "DATA REFERENCIA",
-        "DATA_REF",
-        "REFERENCIA",
-        "MÊS REFERÊNCIA",
-        "MES REFERENCIA",
-    ]
-
-    for nome in nomes_possiveis:
-        if nome in df.columns:
-            return nome
-
-    # Coluna P = índice 15, quando existir.
-    if len(df.columns) > 15:
-        return df.columns[15]
-
-    return None
-
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def ler_pagamento_express(caminho):
     """
@@ -981,7 +954,7 @@ def ler_pagamento_express(caminho):
 
     try:
         if caminho.lower().endswith(".xlsx"):
-            df = pd.read_excel(caminho)
+            df = pd.read_excel(caminho, engine="openpyxl")
         else:
             try:
                 df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
@@ -1027,15 +1000,33 @@ def ler_pagamento_express(caminho):
     df["NOME_EXPRESS_NORM"] = df["NOME_EXPRESS"].apply(normalizar_nome_pessoa)
     df = df[df["NOME_EXPRESS_NORM"] != ""].copy()
 
-    coluna_data_ref = coluna_data_referencia_express(df)
-    if coluna_data_ref:
-        df["DATA_EXPRESS_DT"] = pd.to_datetime(df[coluna_data_ref], dayfirst=True, errors="coerce")
-    elif "DATA" in df.columns:
-        df["DATA_EXPRESS_DT"] = pd.to_datetime(df["DATA"], dayfirst=True, errors="coerce")
+    # Data de referência do Express.
+    # No arquivo atual ela vem em DT_REFERENCIA, mas este trecho também aceita
+    # variações como DATA REFERENCIA, DATA_REFERÊNCIA, DT REFERÊNCIA, etc.
+    col_data = None
+    candidatos_data = ["DT_REFERENCIA", "DT REFERENCIA", "DT_REFERÊNCIA", "DT REFERÊNCIA", "DATA_REFERENCIA", "DATA REFERENCIA", "DATA_REFERÊNCIA", "DATA REFERÊNCIA", "DATA"]
+    for candidato in candidatos_data:
+        if candidato in df.columns:
+            col_data = candidato
+            break
+
+    if col_data is None:
+        for col in df.columns:
+            col_norm = normalizar_nome_pessoa(col)
+            if ("REFERENCIA" in col_norm or "REF" in col_norm) and ("DATA" in col_norm or "DT" in col_norm):
+                col_data = col
+                break
+
+    if col_data is not None:
+        serie_data = df[col_data]
+        df["DATA_EXPRESS_DT"] = pd.to_datetime(serie_data, dayfirst=True, errors="coerce")
+
+        # Fallback para datas numéricas do Excel, caso o pandas não converta direto.
+        if df["DATA_EXPRESS_DT"].isna().all():
+            serie_num = pd.to_numeric(serie_data, errors="coerce")
+            df["DATA_EXPRESS_DT"] = pd.to_datetime(serie_num, unit="D", origin="1899-12-30", errors="coerce")
     else:
         df["DATA_EXPRESS_DT"] = pd.NaT
-
-    df["MES_EXPRESS"] = df["DATA_EXPRESS_DT"].dt.strftime("%m/%Y")
 
     return df
 
@@ -1102,16 +1093,15 @@ def calcular_express_mensal(notas, mes):
     if express.empty:
         return pd.DataFrame(), "", pd.DataFrame(), str(caminho)
 
-    # Atenção ao mês: o Express só entra no mês selecionado no ranking.
-    # A referência vem da coluna P do Excel (normalmente DT_REFERENCIA).
+    data_max_txt = ""
     if "DATA_EXPRESS_DT" in express.columns and express["DATA_EXPRESS_DT"].notna().any():
-        periodo_mes = pd.Period(f"{mes[3:7]}-{mes[0:2]}", freq="M")
-        express = express[express["DATA_EXPRESS_DT"].dt.to_period("M") == periodo_mes].copy()
+        express["MES_EXPRESS"] = express["DATA_EXPRESS_DT"].dt.strftime("%m/%Y")
+        express = express[express["MES_EXPRESS"] == mes].copy()
         data_max = express["DATA_EXPRESS_DT"].max()
         data_max_txt = data_max.strftime("%d/%m/%Y") if pd.notna(data_max) else ""
-    else:
-        data_max_txt = ""
 
+    # Se a planilha não tiver data válida, não joga tudo fora: deixa a auditoria mostrar
+    # o que foi lido. Para este arquivo específico, DT_REFERENCIA deve filtrar 03/2026.
     if express.empty:
         return pd.DataFrame(), data_max_txt, pd.DataFrame(), str(caminho)
 
@@ -1965,27 +1955,6 @@ with aba_ranking:
 
                 if not express_sem_vinculo.empty:
                     st.warning(f"Pagamento Express: {numero(len(express_sem_vinculo))} linha(s) não encontraram nome no DE/PARA Nome → Recurso.")
-
-                with st.expander("Auditoria do Pagamento Express", expanded=False):
-                    if express_caminho:
-                        st.caption(f"Arquivo lido: {express_caminho}")
-                    if express_resumo_recurso.empty:
-                        st.info("Nenhum Express encontrado para o mês selecionado após aplicar o DE/PARA.")
-                    else:
-                        st.markdown("**Express por recurso no mês selecionado**")
-                        st.dataframe(
-                            preparar_tabela_ranking(express_resumo_recurso.sort_values("EXPRESS", ascending=False)),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-                    if not express_sem_vinculo.empty:
-                        st.markdown("**Nomes sem vínculo no DE/PARA**")
-                        cols_auditoria = [c for c in ["NOME_EXPRESS", "NOME_EXPRESS_NORM", "MES_EXPRESS", "NOTA_NORM"] if c in express_sem_vinculo.columns]
-                        st.dataframe(
-                            express_sem_vinculo[cols_auditoria].drop_duplicates().sort_values(cols_auditoria[:1]),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
 
             media_notas_executor = total_notas_exec / total_executores if total_executores else 0
 
