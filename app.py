@@ -927,28 +927,30 @@ DEPARA_NOME_RECURSO_EXPRESS = {
 }
 
 
-def chave_dupla_carro(nome1, nome2):
-    """Cria uma chave estável para dupla do carro, independente da ordem dos nomes."""
-    n1 = normalizar_nome_pessoa(nome1)
-    n2 = normalizar_nome_pessoa(nome2)
-    if not n1 or not n2:
-        return tuple()
-    return tuple(sorted([n1, n2]))
-
-
+# Carro STC estimado - só conta quando a dupla completa bate.
+# O valor mapeado é só o número; o app transforma em JUN58xx-EMP.
 DEPARA_DUPLA_CARRO_EXPRESS = {
-    chave_dupla_carro("ANDERSON GOMES DA SILVA", "IGOR TORRES BEZERRA"): "5808",
-    chave_dupla_carro("EDUARDO DOS SANTOS", "CARLOS LEANDRO LOPES DE SOUZA"): "5812",
-    chave_dupla_carro("JULIANO CESAR DOS SANTOS", "JOAO PAULO ROMANHA DOS SANTOS"): "5803",
-    chave_dupla_carro("ALEXANDRE LUIZ SANTANA PRAJELAS", "FELIPE HENRIQUE DE SOUZA FERREIRA"): "5802",
-    chave_dupla_carro("LUIS FELIPE SÁ DOS SANTOS", "WESLEY APARECIDO DE SÁ SOUZA"): "5817",
-    chave_dupla_carro("LUCIANO HENRIQUE DE SOUZA", "ORLANDO MANOEL DE SOUZA JANSEN"): "5814",
-    chave_dupla_carro("ANDERSON PEREIRA SANTOS", "DIOLENO CONCEICAO NOGUEIRA"): "5801",
-    chave_dupla_carro("ANDERSON SILVA LEONARDO", "JEFERSON E SILVA GOMES"): "5820",
-    chave_dupla_carro("LUCAS EDUARDO LOPES DE SOUZA", "JHONATAN MATHEUS LOPES DE SOUZA"): "5810",
-    chave_dupla_carro("ADILSON APARECIDO VASCO", "RILDO AUGUSTO DOS SANTOS"): "5806",
-    chave_dupla_carro("MARISTON OLIVEIRA NASCIMENTO", "VALDECI SARDELA"): "5807",
+    frozenset([normalizar_nome_pessoa("ANDERSON GOMES DA SILVA"), normalizar_nome_pessoa("IGOR TORRES BEZERRA")]): "5808",
+    frozenset([normalizar_nome_pessoa("EDUARDO DOS SANTOS"), normalizar_nome_pessoa("CARLOS LEANDRO LOPES DE SOUZA")]): "5812",
+    frozenset([normalizar_nome_pessoa("JULIANO CESAR DOS SANTOS"), normalizar_nome_pessoa("JOAO PAULO ROMANHA DOS SANTOS")]): "5803",
+    frozenset([normalizar_nome_pessoa("ALEXANDRE LUIZ SANTANA PRAJELAS"), normalizar_nome_pessoa("FELIPE HENRIQUE DE SOUZA FERREIRA")]): "5802",
+    frozenset([normalizar_nome_pessoa("LUIS FELIPE SA DOS SANTOS"), normalizar_nome_pessoa("WESLEY APARECIDO DE SA SOUZA")]): "5817",
+    frozenset([normalizar_nome_pessoa("LUCIANO HENRIQUE DE SOUZA"), normalizar_nome_pessoa("ORLANDO MANOEL DE SOUZA JANSEN")]): "5814",
+    frozenset([normalizar_nome_pessoa("ANDERSON PEREIRA SANTOS"), normalizar_nome_pessoa("DIOLENO CONCEICAO NOGUEIRA")]): "5801",
+    frozenset([normalizar_nome_pessoa("ANDERSON SILVA LEONARDO"), normalizar_nome_pessoa("JEFERSON E SILVA GOMES")]): "5820",
+    frozenset([normalizar_nome_pessoa("LUCAS EDUARDO LOPES DE SOUZA"), normalizar_nome_pessoa("JHONATAN MATHEUS LOPES DE SOUZA")]): "5810",
+    frozenset([normalizar_nome_pessoa("ADILSON APARECIDO VASCO"), normalizar_nome_pessoa("RILDO AUGUSTO DOS SANTOS")]): "5806",
+    frozenset([normalizar_nome_pessoa("MARISTON OLIVEIRA NASCIMENTO"), normalizar_nome_pessoa("VALDECI SARDELA")]): "5807",
 }
+
+
+def recurso_carro_por_dupla(nome_1_norm, nome_2_norm):
+    """Retorna o recurso do Carro quando os DOIS nomes da dupla batem."""
+    nome_1_norm = str(nome_1_norm).strip()
+    nome_2_norm = str(nome_2_norm).strip()
+    if not nome_1_norm or not nome_2_norm:
+        return ""
+    return DEPARA_DUPLA_CARRO_EXPRESS.get(frozenset([nome_1_norm, nome_2_norm]), "")
 
 
 def contrato_por_recurso_express(recurso):
@@ -1012,6 +1014,10 @@ def resolver_recurso_depara(valor, mapa_codigo_recurso):
     if recurso == "" or recurso in ["NAN", "NONE"]:
         return ""
     if recurso.isdigit():
+        # Santa Cruz normalmente é resolvido pelo mapa da base (MOC/ITN/etc.).
+        # Para Carro, se a base não tiver o recurso no mapa, força o padrão JUN58xx-EMP.
+        if recurso.startswith("58"):
+            return mapa_codigo_recurso.get(recurso, f"JUN{recurso}-EMP")
         return mapa_codigo_recurso.get(recurso, recurso)
     return recurso
 
@@ -1136,14 +1142,21 @@ def ler_pagamento_express(caminho):
     else:
         df["NOME_EXPRESS"] = ""
 
+    # Mantém o segundo nome separado para o contrato Carro.
+    # Importante: não misturar NOME_EXECUTOR_02 dentro do NOME_EXPRESS principal,
+    # porque Jundiaí/Santa Cruz continuam usando o nome 01 individualmente.
     if col_nome_2:
         df["NOME_EXPRESS_02"] = df[col_nome_2].fillna("").astype(str).str.strip()
+    else:
+        df["NOME_EXPRESS_02"] = ""
+
+    # Se o nome 01 vier vazio, aí sim usa o nome 02 como fallback para não perder
+    # linhas antigas que tinham só uma coluna de executor.
+    if col_nome_2:
         mascara_vazia = df["NOME_EXPRESS"].eq("") | df["NOME_EXPRESS"].str.upper().eq("NAN")
         df.loc[mascara_vazia, "NOME_EXPRESS"] = (
             df.loc[mascara_vazia, col_nome_2].fillna("").astype(str).str.strip()
         )
-    else:
-        df["NOME_EXPRESS_02"] = ""
 
     df["NOME_EXPRESS"] = df["NOME_EXPRESS"].replace({"nan": "", "NaN": "", "None": ""})
     df["NOME_EXPRESS_02"] = df["NOME_EXPRESS_02"].replace({"nan": "", "NaN": "", "None": ""})
@@ -1230,23 +1243,6 @@ def valor_express_por_contrato(contrato):
     return 0.0
 
 
-def resolver_recurso_express_linha(row, mapa_codigo_recurso):
-    """Resolve o recurso do Express por dupla do carro ou por nome individual."""
-    nome1 = row.get("NOME_EXPRESS_NORM", "")
-    nome2 = row.get("NOME_EXPRESS_02_NORM", "")
-
-    # Carro: só conta se os DOIS nomes existirem e baterem com uma dupla cadastrada.
-    chave_carro = chave_dupla_carro(nome1, nome2)
-    if chave_carro in DEPARA_DUPLA_CARRO_EXPRESS:
-        return resolver_recurso_depara(DEPARA_DUPLA_CARRO_EXPRESS[chave_carro], mapa_codigo_recurso)
-
-    # Disjuntor Jundiaí/Santa Cruz: usa o primeiro nome; se estiver vazio, tenta o segundo.
-    recurso_depara = DEPARA_NOME_RECURSO_EXPRESS.get(nome1, "")
-    if not recurso_depara:
-        recurso_depara = DEPARA_NOME_RECURSO_EXPRESS.get(nome2, "")
-    return resolver_recurso_depara(recurso_depara, mapa_codigo_recurso)
-
-
 def calcular_express_mensal(notas, mes):
     """
     Calcula Pagamento Express por RECURSO para o mês escolhido.
@@ -1277,15 +1273,33 @@ def calcular_express_mensal(notas, mes):
         return pd.DataFrame(), data_max_txt, pd.DataFrame(), str(caminho)
 
     mapa_codigo_recurso = mapa_codigo_para_recurso_real(notas)
-    express["RECURSO"] = express.apply(
-        lambda row: resolver_recurso_express_linha(row, mapa_codigo_recurso),
+
+    # Jundiaí/Santa Cruz: mantêm exatamente a lógica que já funcionava, por nome individual.
+    express["RECURSO_DEPARA"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS).fillna("")
+
+    # Carro: regra adicional, sem interferir nos outros contratos.
+    # Só conta se houver NOME_EXECUTOR_01 e NOME_EXECUTOR_02 e a dupla completa bater.
+    if "NOME_EXPRESS_02_NORM" not in express.columns:
+        express["NOME_EXPRESS_02_NORM"] = ""
+
+    express["RECURSO_CARRO"] = express.apply(
+        lambda r: recurso_carro_por_dupla(
+            r.get("NOME_EXPRESS_NORM", ""),
+            r.get("NOME_EXPRESS_02_NORM", ""),
+        ),
         axis=1,
     )
+
+    # O Carro tem prioridade apenas quando a dupla bate; caso contrário, permanece o DE/PARA antigo.
+    mascara_carro = express["RECURSO_CARRO"].fillna("").astype(str).str.strip() != ""
+    express.loc[mascara_carro, "RECURSO_DEPARA"] = express.loc[mascara_carro, "RECURSO_CARRO"]
+
+    express["RECURSO"] = express["RECURSO_DEPARA"].apply(lambda v: resolver_recurso_depara(v, mapa_codigo_recurso))
     express["RECURSO"] = express["RECURSO"].fillna("").astype(str).str.strip().str.upper()
     express["CONTRATO"] = express["RECURSO"].apply(contrato_por_recurso_express)
 
-    sem_vinculo = express[express["RECURSO"] == ""].copy()
-    express_ok = express[express["RECURSO"] != ""].copy()
+    sem_vinculo = express[(express["RECURSO"] == "") | (express["CONTRATO"] == "")].copy()
+    express_ok = express[(express["RECURSO"] != "") & (express["CONTRATO"] != "")].copy()
 
     if express_ok.empty:
         return pd.DataFrame(), data_max_txt, sem_vinculo, str(caminho)
