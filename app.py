@@ -900,6 +900,30 @@ DEPARA_NOME_RECURSO_EXPRESS = {
     normalizar_nome_pessoa("LEANDRO DOS SANTOS"): "JUN5980-EMP",
     normalizar_nome_pessoa("ADRIANO ROSA DA SILVA"): "JUN5971-EMP",
     normalizar_nome_pessoa("TIAGO CALANDRINI DE OLIVEIRA"): "JUN5979-EMP",
+
+
+    # Santa Cruz - DE/PARA por número da equipe. O app resolve automaticamente
+    # o prefixo correto da base (ex.: 8913 -> MOC8913-EMP).
+    normalizar_nome_pessoa("ELDER FABIANO DOS SANTOS"): "8901",
+    normalizar_nome_pessoa("REGINALDO APARECIDO RODRIGUES"): "8903",
+    normalizar_nome_pessoa("JORGE HUGO DE SOUZA"): "8904",
+    normalizar_nome_pessoa("ITN8905"): "8905",
+    normalizar_nome_pessoa("LUCAS ALVES CARRIEL"): "8906",
+    normalizar_nome_pessoa("LEANDRO APARECIDO"): "8907",
+    normalizar_nome_pessoa("PAMELA SALLES AFONSO"): "8933",
+    normalizar_nome_pessoa("RAUL VINICIUS BUZZO BARBOSA"): "8902",
+    normalizar_nome_pessoa("RAUL VINICIUS BUZZO BARBOSA."): "8902",
+    normalizar_nome_pessoa("FERNANDO HERNANDES JESUINO"): "8913",
+    normalizar_nome_pessoa("CRISTIAN KAUAN SILVA DE ALMEIDA"): "8909",
+    normalizar_nome_pessoa("YURI DA COSTA PAULA"): "2002",
+    normalizar_nome_pessoa("ANTONIO CESAR"): "8910",
+    normalizar_nome_pessoa("LUIS GUSTAVO SALES ALVES"): "8911",
+    normalizar_nome_pessoa("WAGNER BALDUINO DA ROCHA"): "8914",
+    normalizar_nome_pessoa("PAULO HENRIQUE DA SILVA"): "8999",
+    normalizar_nome_pessoa("JOAO VINICIUS DA SILVA"): "8916",
+    normalizar_nome_pessoa("THIAGO CARLOS DA SILVA DE MELLO"): "8932",
+    normalizar_nome_pessoa("HENRY DE ALMEIDA"): "8922",
+    normalizar_nome_pessoa("LUCAS CAMARGO"): "8921",
 }
 
 
@@ -912,6 +936,60 @@ def contrato_por_recurso_express(recurso):
     if recurso.startswith("JUN58"):
         return "Contrato Carro STC estimado"
     return ""
+
+
+def codigo_numerico_recurso(valor):
+    """Extrai o código numérico de um recurso/equipe, ex.: MOC8913-EMP -> 8913."""
+    import re
+    texto = str(valor).strip().upper()
+    m = re.search(r"(\d+)", texto)
+    return m.group(1) if m else ""
+
+
+@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
+def mapa_codigo_para_recurso_real(notas):
+    """
+    Monta um mapa código numérico -> RECURSO real encontrado na base.
+    Isso permite cadastrar Santa Cruz só como 8913 e converter para MOC8913-EMP,
+    ITN8922-EMP etc., conforme aparece no ranking.
+    """
+    parcial = preparar_parcial_do_dia(notas, incluir_recusas=True)
+    if parcial.empty or "RECURSO" not in parcial.columns:
+        return {}
+
+    tmp = parcial[["RECURSO"]].copy()
+    tmp["RECURSO"] = tmp["RECURSO"].fillna("").astype(str).str.strip().str.upper()
+    tmp = tmp[tmp["RECURSO"] != ""].copy()
+    if tmp.empty:
+        return {}
+
+    tmp["CODIGO_RECURSO"] = tmp["RECURSO"].apply(codigo_numerico_recurso)
+    tmp = tmp[tmp["CODIGO_RECURSO"] != ""].copy()
+    if tmp.empty:
+        return {}
+
+    contagem = (
+        tmp.groupby(["CODIGO_RECURSO", "RECURSO"])
+        .size()
+        .reset_index(name="QTD")
+        .sort_values(["CODIGO_RECURSO", "QTD"], ascending=[True, False])
+    )
+    contagem = contagem.drop_duplicates(subset=["CODIGO_RECURSO"], keep="first")
+    return dict(zip(contagem["CODIGO_RECURSO"], contagem["RECURSO"]))
+
+
+def resolver_recurso_depara(valor, mapa_codigo_recurso):
+    """
+    Resolve o valor do DE/PARA para o recurso real do ranking.
+    - Se vier completo (SAL5508-EMP), mantém.
+    - Se vier só número (8913), busca na base e vira MOC8913-EMP/ITN8913-EMP etc.
+    """
+    recurso = str(valor).strip().upper()
+    if recurso == "" or recurso in ["NAN", "NONE"]:
+        return ""
+    if recurso.isdigit():
+        return mapa_codigo_recurso.get(recurso, recurso)
+    return recurso
 
 
 def caminho_pagamento_express():
@@ -1150,7 +1228,9 @@ def calcular_express_mensal(notas, mes):
     if express.empty:
         return pd.DataFrame(), data_max_txt, pd.DataFrame(), str(caminho)
 
-    express["RECURSO"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS)
+    mapa_codigo_recurso = mapa_codigo_para_recurso_real(notas)
+    express["RECURSO_DEPARA"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS).fillna("")
+    express["RECURSO"] = express["RECURSO_DEPARA"].apply(lambda v: resolver_recurso_depara(v, mapa_codigo_recurso))
     express["RECURSO"] = express["RECURSO"].fillna("").astype(str).str.strip().str.upper()
     express["CONTRATO"] = express["RECURSO"].apply(contrato_por_recurso_express)
 
