@@ -736,6 +736,16 @@ def resumo_por_periodo(notas, meses_escolhidos, contrato_escolhido="Todos"):
         .reset_index()
     )
 
+    resumo_contrato = aplicar_express_no_resumo_contrato(
+        resumo_contrato,
+        notas,
+        meses_escolhidos,
+        contrato_escolhido,
+    )
+
+    if not resumo_contrato.empty and "FATURAMENTO" in resumo_contrato.columns:
+        resumo_contrato = resumo_contrato.sort_values("FATURAMENTO", ascending=False)
+
     return resumo_contrato, resumo_grupo
 
 
@@ -749,6 +759,8 @@ def calcular_resumo_mensal(notas, mes, contrato_escolhido="Todos"):
             "TOTAL_NOTAS": 0,
             "CORTES": 0,
             "RELIGUES": 0,
+            "EXPRESS": 0,
+            "FATURAMENTO_EXPRESS": 0.0,
             "FATURAMENTO_MIN": 0.0,
             "FATURAMENTO_MAX": 0.0,
         }
@@ -758,6 +770,8 @@ def calcular_resumo_mensal(notas, mes, contrato_escolhido="Todos"):
         "TOTAL_NOTAS": int(resumo_contrato["TOTAL_NOTAS"].sum()),
         "CORTES": int(resumo_contrato["CORTES"].sum()),
         "RELIGUES": int(resumo_contrato["RELIGUES"].sum()),
+        "EXPRESS": int(resumo_contrato["EXPRESS"].sum()) if "EXPRESS" in resumo_contrato.columns else 0,
+        "FATURAMENTO_EXPRESS": float(resumo_contrato["FATURAMENTO_EXPRESS"].sum()) if "FATURAMENTO_EXPRESS" in resumo_contrato.columns else 0.0,
         "FATURAMENTO_MIN": float(resumo_contrato["FATURAMENTO_MIN"].sum()),
         "FATURAMENTO_MAX": float(resumo_contrato["FATURAMENTO_MAX"].sum()),
     }
@@ -1159,6 +1173,91 @@ def calcular_express_mensal(notas, mes):
     )
 
     return resumo, data_max_txt, sem_vinculo, str(caminho)
+
+
+def resumo_express_periodo(notas, meses, contrato_escolhido="Todos"):
+    """
+    Resume o Pagamento Express por contrato para um ou mais meses.
+
+    O Express usa a coluna DT_REFERENCIA da planilha para cair no mês certo
+    e o DE/PARA Nome -> Recurso para descobrir o contrato.
+    """
+    if not meses:
+        return pd.DataFrame(columns=["CONTRATO", "EXPRESS", "FATURAMENTO_EXPRESS"])
+
+    partes = []
+    for mes in meses:
+        express_resumo, _, _, _ = calcular_express_mensal(notas, mes)
+        if express_resumo.empty:
+            continue
+        tmp = express_resumo.copy()
+        if contrato_escolhido != "Todos" and "CONTRATO" in tmp.columns:
+            tmp = tmp[tmp["CONTRATO"] == contrato_escolhido].copy()
+        if not tmp.empty:
+            partes.append(tmp)
+
+    if not partes:
+        return pd.DataFrame(columns=["CONTRATO", "EXPRESS", "FATURAMENTO_EXPRESS"])
+
+    express = pd.concat(partes, ignore_index=True)
+    resumo = (
+        express.groupby("CONTRATO", dropna=False)
+        .agg(
+            EXPRESS=("EXPRESS", "sum"),
+            FATURAMENTO_EXPRESS=("FATURAMENTO_EXPRESS", "sum"),
+        )
+        .reset_index()
+    )
+    resumo["EXPRESS"] = pd.to_numeric(resumo["EXPRESS"], errors="coerce").fillna(0).astype(int)
+    resumo["FATURAMENTO_EXPRESS"] = pd.to_numeric(resumo["FATURAMENTO_EXPRESS"], errors="coerce").fillna(0.0)
+    return resumo
+
+
+def aplicar_express_no_resumo_contrato(resumo_contrato, notas, meses, contrato_escolhido="Todos"):
+    """Soma Express ao resumo financeiro mensal/por período."""
+    resumo = resumo_contrato.copy()
+
+    if "EXPRESS" not in resumo.columns:
+        resumo["EXPRESS"] = 0
+    if "FATURAMENTO_EXPRESS" not in resumo.columns:
+        resumo["FATURAMENTO_EXPRESS"] = 0.0
+
+    express = resumo_express_periodo(notas, meses, contrato_escolhido)
+    if express.empty:
+        return resumo
+
+    resumo = resumo.merge(express, on="CONTRATO", how="outer", suffixes=("", "_NOVO"))
+
+    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES"]:
+        if col not in resumo.columns:
+            resumo[col] = 0
+        resumo[col] = pd.to_numeric(resumo[col], errors="coerce").fillna(0).astype(int)
+
+    for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
+        if col not in resumo.columns:
+            resumo[col] = 0.0
+        resumo[col] = pd.to_numeric(resumo[col], errors="coerce").fillna(0.0)
+
+    resumo["EXPRESS"] = pd.to_numeric(resumo.get("EXPRESS", 0), errors="coerce").fillna(0).astype(int)
+    resumo["EXPRESS_NOVO"] = pd.to_numeric(resumo.get("EXPRESS_NOVO", 0), errors="coerce").fillna(0).astype(int)
+    resumo["FATURAMENTO_EXPRESS"] = pd.to_numeric(resumo.get("FATURAMENTO_EXPRESS", 0), errors="coerce").fillna(0.0)
+    resumo["FATURAMENTO_EXPRESS_NOVO"] = pd.to_numeric(resumo.get("FATURAMENTO_EXPRESS_NOVO", 0), errors="coerce").fillna(0.0)
+
+    resumo["EXPRESS"] = resumo["EXPRESS"] + resumo["EXPRESS_NOVO"]
+    resumo["FATURAMENTO_EXPRESS"] = resumo["FATURAMENTO_EXPRESS"] + resumo["FATURAMENTO_EXPRESS_NOVO"]
+
+    # Express entra no total de notas e no faturamento mensal do contrato.
+    resumo["TOTAL_NOTAS"] = resumo["TOTAL_NOTAS"] + resumo["EXPRESS"]
+    resumo["FATURAMENTO"] = resumo["FATURAMENTO"] + resumo["FATURAMENTO_EXPRESS"]
+    resumo["FATURAMENTO_MIN"] = resumo["FATURAMENTO_MIN"] + resumo["FATURAMENTO_EXPRESS"]
+    resumo["FATURAMENTO_MAX"] = resumo["FATURAMENTO_MAX"] + resumo["FATURAMENTO_EXPRESS"]
+
+    resumo = resumo.drop(columns=[c for c in ["EXPRESS_NOVO", "FATURAMENTO_EXPRESS_NOVO"] if c in resumo.columns])
+
+    if "CONTRATO" in resumo.columns:
+        resumo["CONTRATO"] = resumo["CONTRATO"].fillna(contrato_escolhido if contrato_escolhido != "Todos" else "")
+
+    return resumo
 
 
 def aplicar_express_no_ranking_mensal(ranking, notas, mes, contrato_ranking):
@@ -1669,8 +1768,8 @@ with aba_resumo:
 
         st.markdown("**Detalhamento por contrato no período**")
         colunas_detalhe_resumo = [
-            "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES",
-            "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
+            "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "EXPRESS",
+            "FATURAMENTO", "FATURAMENTO_EXPRESS", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
         ]
         colunas_detalhe_resumo = [c for c in colunas_detalhe_resumo if c in resumo_contrato_periodo.columns]
         st.dataframe(
@@ -2179,7 +2278,7 @@ with aba_ranking:
 
 with aba_comparativo:
     st.subheader("Comparativo mensal")
-    st.caption("Compara o mês escolhido com o mês anterior, usando a base acumulada de notas.")
+    st.caption("Compara o mês escolhido com o mês anterior, somando Pagamento Express pelo mês de referência.")
 
     meses_base_comp = meses_disponiveis_da_base(notas)
 
@@ -2207,17 +2306,20 @@ with aba_comparativo:
                     f"Os dados vão até {data_max_comp.strftime('%d/%m/%Y')}."
                 )
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Faturamento", dinheiro(atual["FATURAMENTO"]), variacao_percentual(atual["FATURAMENTO"], anterior["FATURAMENTO"]))
         c2.metric("Notas", numero(atual["TOTAL_NOTAS"]), variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"]))
         c3.metric("Cortes", numero(atual["CORTES"]), variacao_percentual(atual["CORTES"], anterior["CORTES"]))
         c4.metric("Religues", numero(atual["RELIGUES"]), variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"]))
+        c5.metric("Express", numero(atual.get("EXPRESS", 0)), variacao_percentual(atual.get("EXPRESS", 0), anterior.get("EXPRESS", 0)))
 
         tabela_comparativo = pd.DataFrame([
             {"Indicador": "Faturamento", mes_escolhido: dinheiro(atual["FATURAMENTO"]), mes_anterior: dinheiro(anterior["FATURAMENTO"]), "Variação": variacao_percentual(atual["FATURAMENTO"], anterior["FATURAMENTO"])},
             {"Indicador": "Notas", mes_escolhido: numero(atual["TOTAL_NOTAS"]), mes_anterior: numero(anterior["TOTAL_NOTAS"]), "Variação": variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"])},
             {"Indicador": "Cortes", mes_escolhido: numero(atual["CORTES"]), mes_anterior: numero(anterior["CORTES"]), "Variação": variacao_percentual(atual["CORTES"], anterior["CORTES"])},
             {"Indicador": "Religues", mes_escolhido: numero(atual["RELIGUES"]), mes_anterior: numero(anterior["RELIGUES"]), "Variação": variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"])},
+            {"Indicador": "Express", mes_escolhido: numero(atual.get("EXPRESS", 0)), mes_anterior: numero(anterior.get("EXPRESS", 0)), "Variação": variacao_percentual(atual.get("EXPRESS", 0), anterior.get("EXPRESS", 0))},
+            {"Indicador": "Faturamento Express", mes_escolhido: dinheiro(atual.get("FATURAMENTO_EXPRESS", 0)), mes_anterior: dinheiro(anterior.get("FATURAMENTO_EXPRESS", 0)), "Variação": variacao_percentual(atual.get("FATURAMENTO_EXPRESS", 0), anterior.get("FATURAMENTO_EXPRESS", 0))},
         ])
         st.dataframe(tabela_comparativo, use_container_width=True, hide_index=True)
 
@@ -2231,6 +2333,8 @@ with aba_comparativo:
                 "NOTAS": r["TOTAL_NOTAS"],
                 "CORTES": r["CORTES"],
                 "RELIGUES": r["RELIGUES"],
+                "EXPRESS": r.get("EXPRESS", 0),
+                "FATURAMENTO_EXPRESS": r.get("FATURAMENTO_EXPRESS", 0),
             })
         evolucao = pd.DataFrame(linhas_evolucao)
 
@@ -2243,7 +2347,7 @@ with aba_comparativo:
         if resumo_mes.empty:
             st.info("Nenhum dado encontrado para esse mês.")
         else:
-            colunas = ["CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]
+            colunas = ["CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "EXPRESS", "FATURAMENTO", "FATURAMENTO_EXPRESS", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]
             colunas = [c for c in colunas if c in resumo_mes.columns]
             st.dataframe(formatar_tabela(resumo_mes[colunas]), use_container_width=True, hide_index=True)
 
