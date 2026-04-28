@@ -927,6 +927,30 @@ DEPARA_NOME_RECURSO_EXPRESS = {
 }
 
 
+def chave_dupla_carro(nome1, nome2):
+    """Cria uma chave estável para dupla do carro, independente da ordem dos nomes."""
+    n1 = normalizar_nome_pessoa(nome1)
+    n2 = normalizar_nome_pessoa(nome2)
+    if not n1 or not n2:
+        return tuple()
+    return tuple(sorted([n1, n2]))
+
+
+DEPARA_DUPLA_CARRO_EXPRESS = {
+    chave_dupla_carro("ANDERSON GOMES DA SILVA", "IGOR TORRES BEZERRA"): "5808",
+    chave_dupla_carro("EDUARDO DOS SANTOS", "CARLOS LEANDRO LOPES DE SOUZA"): "5812",
+    chave_dupla_carro("JULIANO CESAR DOS SANTOS", "JOAO PAULO ROMANHA DOS SANTOS"): "5803",
+    chave_dupla_carro("ALEXANDRE LUIZ SANTANA PRAJELAS", "FELIPE HENRIQUE DE SOUZA FERREIRA"): "5802",
+    chave_dupla_carro("LUIS FELIPE SÁ DOS SANTOS", "WESLEY APARECIDO DE SÁ SOUZA"): "5817",
+    chave_dupla_carro("LUCIANO HENRIQUE DE SOUZA", "ORLANDO MANOEL DE SOUZA JANSEN"): "5814",
+    chave_dupla_carro("ANDERSON PEREIRA SANTOS", "DIOLENO CONCEICAO NOGUEIRA"): "5801",
+    chave_dupla_carro("ANDERSON SILVA LEONARDO", "JEFERSON E SILVA GOMES"): "5820",
+    chave_dupla_carro("LUCAS EDUARDO LOPES DE SOUZA", "JHONATAN MATHEUS LOPES DE SOUZA"): "5810",
+    chave_dupla_carro("ADILSON APARECIDO VASCO", "RILDO AUGUSTO DOS SANTOS"): "5806",
+    chave_dupla_carro("MARISTON OLIVEIRA NASCIMENTO", "VALDECI SARDELA"): "5807",
+}
+
+
 def contrato_por_recurso_express(recurso):
     recurso = str(recurso).strip().upper()
     if eh_disjuntor_jundiai(recurso):
@@ -1113,14 +1137,19 @@ def ler_pagamento_express(caminho):
         df["NOME_EXPRESS"] = ""
 
     if col_nome_2:
+        df["NOME_EXPRESS_02"] = df[col_nome_2].fillna("").astype(str).str.strip()
         mascara_vazia = df["NOME_EXPRESS"].eq("") | df["NOME_EXPRESS"].str.upper().eq("NAN")
         df.loc[mascara_vazia, "NOME_EXPRESS"] = (
             df.loc[mascara_vazia, col_nome_2].fillna("").astype(str).str.strip()
         )
+    else:
+        df["NOME_EXPRESS_02"] = ""
 
     df["NOME_EXPRESS"] = df["NOME_EXPRESS"].replace({"nan": "", "NaN": "", "None": ""})
+    df["NOME_EXPRESS_02"] = df["NOME_EXPRESS_02"].replace({"nan": "", "NaN": "", "None": ""})
     df["NOME_EXPRESS_NORM"] = df["NOME_EXPRESS"].apply(normalizar_nome_pessoa)
-    df = df[df["NOME_EXPRESS_NORM"] != ""].copy()
+    df["NOME_EXPRESS_02_NORM"] = df["NOME_EXPRESS_02"].apply(normalizar_nome_pessoa)
+    df = df[(df["NOME_EXPRESS_NORM"] != "") | (df["NOME_EXPRESS_02_NORM"] != "")].copy()
 
     # Data de referência do Express.
     col_data = achar_coluna(
@@ -1196,7 +1225,26 @@ def valor_express_por_contrato(contrato):
         return 27.43
     if contrato == "Disjuntor Santa Cruz":
         return 23.97
+    if contrato == "Contrato Carro STC estimado":
+        return 38.18
     return 0.0
+
+
+def resolver_recurso_express_linha(row, mapa_codigo_recurso):
+    """Resolve o recurso do Express por dupla do carro ou por nome individual."""
+    nome1 = row.get("NOME_EXPRESS_NORM", "")
+    nome2 = row.get("NOME_EXPRESS_02_NORM", "")
+
+    # Carro: só conta se os DOIS nomes existirem e baterem com uma dupla cadastrada.
+    chave_carro = chave_dupla_carro(nome1, nome2)
+    if chave_carro in DEPARA_DUPLA_CARRO_EXPRESS:
+        return resolver_recurso_depara(DEPARA_DUPLA_CARRO_EXPRESS[chave_carro], mapa_codigo_recurso)
+
+    # Disjuntor Jundiaí/Santa Cruz: usa o primeiro nome; se estiver vazio, tenta o segundo.
+    recurso_depara = DEPARA_NOME_RECURSO_EXPRESS.get(nome1, "")
+    if not recurso_depara:
+        recurso_depara = DEPARA_NOME_RECURSO_EXPRESS.get(nome2, "")
+    return resolver_recurso_depara(recurso_depara, mapa_codigo_recurso)
 
 
 def calcular_express_mensal(notas, mes):
@@ -1229,8 +1277,10 @@ def calcular_express_mensal(notas, mes):
         return pd.DataFrame(), data_max_txt, pd.DataFrame(), str(caminho)
 
     mapa_codigo_recurso = mapa_codigo_para_recurso_real(notas)
-    express["RECURSO_DEPARA"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS).fillna("")
-    express["RECURSO"] = express["RECURSO_DEPARA"].apply(lambda v: resolver_recurso_depara(v, mapa_codigo_recurso))
+    express["RECURSO"] = express.apply(
+        lambda row: resolver_recurso_express_linha(row, mapa_codigo_recurso),
+        axis=1,
+    )
     express["RECURSO"] = express["RECURSO"].fillna("").astype(str).str.strip().str.upper()
     express["CONTRATO"] = express["RECURSO"].apply(contrato_por_recurso_express)
 
