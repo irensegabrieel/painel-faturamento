@@ -833,6 +833,72 @@ def normalizar_ordem_servico(valor):
     return apenas_digitos or texto.upper()
 
 
+def normalizar_nome_pessoa(valor):
+    """Normaliza nome para fazer o DE/PARA do Pagamento Express sem depender de acentos/caixa/espaços."""
+    import re
+    import unicodedata
+
+    if pd.isna(valor):
+        return ""
+
+    texto = str(valor).strip().upper()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    texto = re.sub(r"\s+", " ", texto)
+    return texto.strip()
+
+
+DEPARA_NOME_RECURSO_EXPRESS = {
+    normalizar_nome_pessoa("FERNANDO LOPES TEIXEIRA"): "JUN5537-EMP",
+    normalizar_nome_pessoa("MATHEUS RIBEIRO SILVA"): "JUN5994-EMP",
+    normalizar_nome_pessoa("IVANILSON ANTONIO DA SILVA"): "SAL5507-EMP",
+    normalizar_nome_pessoa("JESSICA TAYANE DE SOUZA PEREIRA"): "JUN5983-EMP",
+    normalizar_nome_pessoa("NATAN GONCALVES GARCIA"): "JUN5539-EMP",
+    normalizar_nome_pessoa("WESLEY BRUNO MESSIAS PEREIRA"): "SAL5505-EMP",
+    normalizar_nome_pessoa("RENATO DE LIMA"): "JUN5972-EMP",
+    normalizar_nome_pessoa("GUILHERME VINICIUS DOS SANTOS"): "JUN5973-EMP",
+    normalizar_nome_pessoa("JEANDERSON LUIZ NEVES DE JESUS"): "JUN5974-EMP",
+    normalizar_nome_pessoa("JOSE DANILO SANTOS DA SILVA"): "JUN5975-EMP",
+    normalizar_nome_pessoa("FRANCISCO JOSE DE SOUSA FILHO"): "JUN5976-EMP",
+    normalizar_nome_pessoa("FRANCISCO JOSE DE SOUZA FILHO"): "JUN5976-EMP",
+    normalizar_nome_pessoa("MISAEL DE SOUZA ESTRELA"): "JUN5977-EMP",
+    normalizar_nome_pessoa("JENIFFER RODRIGUES"): "JUN5981-EMP",
+    normalizar_nome_pessoa("KEMERSON JAQUES DA CRUZ"): "JUN5982-EMP",
+    normalizar_nome_pessoa("CHARMONE DIONATAS PINHEIRO RODRIGUES"): "JUN5993-EMP",
+    normalizar_nome_pessoa("JEFERSON DE SOUZA DA SILVA"): "JUN5990-EMP",
+    normalizar_nome_pessoa("THAINA MORAIS DIAS"): "JUN5991-EMP",
+    normalizar_nome_pessoa("IVANA LAIS DE PAULA OLIVEIRA"): "JUN5992-EMP",
+    normalizar_nome_pessoa("SIDNEI DE MORAIS SOARES"): "SAL5500-EMP",
+    normalizar_nome_pessoa("RAFAEL DELFINO DA SILVA"): "SAL5504-EMP",
+    normalizar_nome_pessoa("ELIO CALDEIRA RIBEIRO JUNIOR"): "JUN5929",
+    normalizar_nome_pessoa("EVANDRO GOMES ANASTACIO"): "SAL5506-EMP",
+    normalizar_nome_pessoa("RONALDO CESAR JACINTO FRANCISCO"): "JUN5995-EMP",
+    normalizar_nome_pessoa("ANDERSON ALEXANDRE NORONHA CAMARGO"): "SAL5508-EMP",
+    normalizar_nome_pessoa("HENRIQUE SOTTO MARTINS"): "SAL5509-EMP",
+    normalizar_nome_pessoa("BRUNO LEONARDO CAETANO DE OLIVEIRA"): "JUN5925",
+    normalizar_nome_pessoa("JOSE DANILO DA SILVA SANTOS"): "JUN5927",
+    normalizar_nome_pessoa("ELSON ALESSANDRO RODRIGUES"): "SAL5515-EMP",
+    normalizar_nome_pessoa("RENE DA SILVA PEREIRA"): "SAL5520-EMP",
+    normalizar_nome_pessoa("CLEITON MEDRADO SILVA"): "SAL5521-EMP",
+    normalizar_nome_pessoa("LUCAS CHAGAS"): "JUN5970-EMP",
+    normalizar_nome_pessoa("JARBAS PEREIRA DOS SANTOS"): "JUN5978-EMP",
+    normalizar_nome_pessoa("LEANDRO DOS SANTOS"): "JUN5980-EMP",
+    normalizar_nome_pessoa("ADRIANO ROSA DA SILVA"): "JUN5971-EMP",
+    normalizar_nome_pessoa("TIAGO CALANDRINI DE OLIVEIRA"): "JUN5979-EMP",
+}
+
+
+def contrato_por_recurso_express(recurso):
+    recurso = str(recurso).strip().upper()
+    if eh_disjuntor_jundiai(recurso):
+        return "Disjuntor Jundiaí"
+    if eh_disjuntor_santa_cruz(recurso):
+        return "Disjuntor Santa Cruz"
+    if recurso.startswith("JUN58"):
+        return "Contrato Carro STC estimado"
+    return ""
+
+
 def caminho_pagamento_express():
     """
     Procura a planilha manual de Pagamento Express.
@@ -876,14 +942,9 @@ def ler_pagamento_express(caminho):
     """
     Lê a planilha manual do Pagamento Express.
 
-    Formato esperado da planilha:
-    - coluna NOTA, contendo a Ordem de Serviço/nota;
-    - opcionalmente VALIDAÇÃO/VALIDACAO contendo PAGAMENTO EXPRESS;
-    - opcionalmente DT_REFERENCIA ou DATA para filtro mensal.
-
-    O painel NÃO usa nome, executor ou recurso vindos da planilha Express.
-    O vínculo correto é feito por:
-        express.NOTA -> notas.ORDEM_DE_SERVICO
+    Agora a prioridade é o DE/PARA Nome -> Recurso informado manualmente.
+    A coluna NOTA/OS continua sendo lida para auditoria, mas não é obrigatória
+    para contabilizar o Express.
     """
     if not caminho:
         return pd.DataFrame()
@@ -908,11 +969,35 @@ def ler_pagamento_express(caminho):
     elif "VALIDACAO" in df.columns:
         df = df[df["VALIDACAO"].astype(str).str.upper().str.contains("PAGAMENTO EXPRESS", na=False)].copy()
 
-    if "NOTA" not in df.columns:
-        return pd.DataFrame()
+    # NOTA/OS fica disponível para auditoria, mas a contabilização usa o nome.
+    if "NOTA" in df.columns:
+        df["NOTA_NORM"] = df["NOTA"].apply(normalizar_ordem_servico)
+    elif "ORDEM_DE_SERVICO" in df.columns:
+        df["NOTA_NORM"] = df["ORDEM_DE_SERVICO"].apply(normalizar_ordem_servico)
+    elif "OS" in df.columns:
+        df["NOTA_NORM"] = df["OS"].apply(normalizar_ordem_servico)
+    else:
+        df["NOTA_NORM"] = ""
 
-    df["NOTA_NORM"] = df["NOTA"].apply(normalizar_ordem_servico)
-    df = df[df["NOTA_NORM"] != ""].copy()
+    # Nome principal da pessoa no arquivo Express.
+    if "NOME_EXECUTOR_01" in df.columns:
+        df["NOME_EXPRESS"] = df["NOME_EXECUTOR_01"].fillna("").astype(str).str.strip()
+    elif "NOME_EXECUTOR" in df.columns:
+        df["NOME_EXPRESS"] = df["NOME_EXECUTOR"].fillna("").astype(str).str.strip()
+    elif "EXECUTOR" in df.columns:
+        df["NOME_EXPRESS"] = df["EXECUTOR"].fillna("").astype(str).str.strip()
+    else:
+        df["NOME_EXPRESS"] = ""
+
+    if "NOME_EXECUTOR_02" in df.columns:
+        mascara_vazia = df["NOME_EXPRESS"].eq("") | df["NOME_EXPRESS"].str.upper().eq("NAN")
+        df.loc[mascara_vazia, "NOME_EXPRESS"] = (
+            df.loc[mascara_vazia, "NOME_EXECUTOR_02"].fillna("").astype(str).str.strip()
+        )
+
+    df["NOME_EXPRESS"] = df["NOME_EXPRESS"].replace({"nan": "", "NaN": "", "None": ""})
+    df["NOME_EXPRESS_NORM"] = df["NOME_EXPRESS"].apply(normalizar_nome_pessoa)
+    df = df[df["NOME_EXPRESS_NORM"] != ""].copy()
 
     if "DT_REFERENCIA" in df.columns:
         df["DATA_EXPRESS_DT"] = pd.to_datetime(df["DT_REFERENCIA"], dayfirst=True, errors="coerce")
@@ -973,12 +1058,9 @@ def calcular_express_mensal(notas, mes):
     """
     Calcula Pagamento Express por RECURSO para o mês escolhido.
 
-    A conciliação é feita pela Ordem de Serviço:
-        pagamento_express.NOTA -> notas.ORDEM_DE_SERVICO
-
-    Assim, o arquivo Express pode trazer apenas o nome da pessoa; o RECURSO e o
-    CONTRATO são recuperados da base de notas, inclusive quando a nota original
-    era uma recusa que depois virou Conta Paga/Pagamento Express.
+    Regra definitiva: usa o DE/PARA manual Nome -> Recurso.
+    Isso evita depender de executor, recurso vindo no Excel ou casamento por OS
+    quando a nota não bate exatamente com a base atual.
     """
     caminho = caminho_pagamento_express()
 
@@ -1000,46 +1082,15 @@ def calcular_express_mensal(notas, mes):
     if express.empty:
         return pd.DataFrame(), data_max_txt, pd.DataFrame(), str(caminho)
 
-    base = preparar_parcial_do_dia(notas, incluir_recusas=True)
-    if base.empty:
-        return pd.DataFrame(), data_max_txt, express.copy(), str(caminho)
+    express["RECURSO"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS)
+    express["RECURSO"] = express["RECURSO"].fillna("").astype(str).str.strip().str.upper()
+    express["CONTRATO"] = express["RECURSO"].apply(contrato_por_recurso_express)
 
-    base = base.copy()
-    base["ORDEM_NORM"] = base["ORDEM_DE_SERVICO"].apply(normalizar_ordem_servico)
-    base["MES_BASE"] = base["DATA_DT"].dt.strftime("%m/%Y")
-
-    # Se o Excel Express não tem data válida, o mês é definido pela data da nota na base.
-    if not data_max_txt:
-        base = base[base["MES_BASE"] == mes].copy()
-
-    # Evita duplicar a mesma OS se ela aparecer mais de uma vez na base com o mesmo recurso.
-    colunas_base = [
-        "ORDEM_NORM", "ORDEM_DE_SERVICO", "RECURSO", "CONTRATO", "GRUPO_NOTA",
-        "DATA", "DATA_DT", "EH_RECUSA", "RECUSA"
-    ]
-    colunas_base = [c for c in colunas_base if c in base.columns]
-    base_os = base[colunas_base].drop_duplicates(subset=["ORDEM_NORM", "RECURSO", "CONTRATO"]).copy()
-
-    merged = express.merge(
-        base_os,
-        left_on="NOTA_NORM",
-        right_on="ORDEM_NORM",
-        how="left",
-        suffixes=("_EXPRESS", "_BASE"),
-    )
-
-    sem_vinculo = merged[
-        merged["RECURSO"].isna() | (merged["RECURSO"].astype(str).str.strip() == "")
-    ].copy()
-
-    express_ok = merged.dropna(subset=["RECURSO"]).copy()
-    express_ok = express_ok[express_ok["RECURSO"].astype(str).str.strip() != ""].copy()
+    sem_vinculo = express[express["RECURSO"] == ""].copy()
+    express_ok = express[express["RECURSO"] != ""].copy()
 
     if express_ok.empty:
         return pd.DataFrame(), data_max_txt, sem_vinculo, str(caminho)
-
-    express_ok["RECURSO"] = express_ok["RECURSO"].fillna("").astype(str).str.strip().str.upper()
-    express_ok["CONTRATO"] = express_ok["CONTRATO"].fillna("").astype(str).str.strip()
 
     resumo = (
         express_ok.groupby(["RECURSO", "CONTRATO"], dropna=False)
@@ -1873,14 +1924,14 @@ with aba_ranking:
             if tipo_periodo == "Mês" and valor_periodo:
                 if express_caminho:
                     if express_data_max:
-                        st.info(f"Pagamento Express conciliado por NOTA/ORDEM_DE_SERVICO até {express_data_max}.")
+                        st.info(f"Pagamento Express conciliado por DE/PARA Nome → Recurso até {express_data_max}.")
                     else:
-                        st.info("Pagamento Express conciliado por NOTA/ORDEM_DE_SERVICO. A planilha não trouxe data válida para exibir o limite.")
+                        st.info("Pagamento Express conciliado por DE/PARA Nome → Recurso. A planilha não trouxe data válida para exibir o limite.")
                 else:
                     st.caption("Pagamento Express: arquivo não localizado.")
 
                 if not express_sem_vinculo.empty:
-                    st.warning(f"Pagamento Express: {numero(len(express_sem_vinculo))} linha(s) não encontraram ORDEM_DE_SERVICO na base de notas.")
+                    st.warning(f"Pagamento Express: {numero(len(express_sem_vinculo))} linha(s) não encontraram nome no DE/PARA Nome → Recurso.")
 
             media_notas_executor = total_notas_exec / total_executores if total_executores else 0
 
