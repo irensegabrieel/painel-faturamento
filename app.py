@@ -942,9 +942,12 @@ def ler_pagamento_express(caminho):
     """
     Lê a planilha manual do Pagamento Express.
 
-    Agora a prioridade é o DE/PARA Nome -> Recurso informado manualmente.
-    A coluna NOTA/OS continua sendo lida para auditoria, mas não é obrigatória
-    para contabilizar o Express.
+    Versão robusta:
+    - não depende de acento no nome das colunas;
+    - aplica filtro de VALIDAÇÃO de forma não destrutiva;
+    - se o filtro de validação zerar o arquivo, mantém as linhas e mostra auditoria;
+    - lê DT_REFERENCIA mesmo quando a coluna vem como data real do Excel;
+    - usa NOME_EXECUTOR_01/02 para o DE/PARA Nome -> Recurso.
     """
     if not caminho:
         return pd.DataFrame()
@@ -953,46 +956,74 @@ def ler_pagamento_express(caminho):
 
     try:
         if caminho.lower().endswith(".xlsx"):
-            df = pd.read_excel(caminho, engine="openpyxl")
+            df_original = pd.read_excel(caminho, engine="openpyxl")
         else:
             try:
-                df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
+                df_original = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
             except Exception:
-                df = pd.read_csv(caminho, sep=",", encoding="utf-8-sig")
-    except Exception:
+                df_original = pd.read_csv(caminho, sep=",", encoding="utf-8-sig")
+    except Exception as e:
+        df_erro = pd.DataFrame()
+        df_erro.attrs["ERRO_LEITURA_EXPRESS"] = str(e)
+        return df_erro
+
+    if df_original.empty:
         return pd.DataFrame()
 
+    df = df_original.copy()
     df.columns = [str(c).strip().upper() for c in df.columns]
 
-    if "VALIDAÇÃO" in df.columns:
-        df = df[df["VALIDAÇÃO"].astype(str).str.upper().str.contains("PAGAMENTO EXPRESS", na=False)].copy()
-    elif "VALIDACAO" in df.columns:
-        df = df[df["VALIDACAO"].astype(str).str.upper().str.contains("PAGAMENTO EXPRESS", na=False)].copy()
+    # Mapa de colunas normalizadas, tolerando acento/espaço.
+    colunas_norm = {normalizar_nome_pessoa(c): c for c in df.columns}
+
+    def achar_coluna(*nomes):
+        for nome in nomes:
+            chave = normalizar_nome_pessoa(nome)
+            if chave in colunas_norm:
+                return colunas_norm[chave]
+        return None
+
+    # Filtro de validação NÃO destrutivo.
+    # Seu arquivo já é um arquivo de pagamento express; o filtro só é usado se encontrar linhas.
+    col_validacao = achar_coluna("VALIDAÇÃO", "VALIDACAO")
+    linhas_brutas = len(df)
+    linhas_pos_validacao = None
+    if col_validacao:
+        validacao_txt = df[col_validacao].fillna("").astype(str).apply(normalizar_nome_pessoa)
+        mascara_express = validacao_txt.str.contains("PAGAMENTO", na=False) & validacao_txt.str.contains("EXPRESS", na=False)
+        linhas_pos_validacao = int(mascara_express.sum())
+        if linhas_pos_validacao > 0:
+            df = df[mascara_express].copy()
+        else:
+            # Se o filtro não encontrou nada, não zera o arquivo.
+            df = df.copy()
+
+    df.attrs["EXPRESS_LINHAS_BRUTAS"] = linhas_brutas
+    df.attrs["EXPRESS_LINHAS_POS_VALIDACAO"] = linhas_pos_validacao
 
     # NOTA/OS fica disponível para auditoria, mas a contabilização usa o nome.
-    if "NOTA" in df.columns:
-        df["NOTA_NORM"] = df["NOTA"].apply(normalizar_ordem_servico)
-    elif "ORDEM_DE_SERVICO" in df.columns:
-        df["NOTA_NORM"] = df["ORDEM_DE_SERVICO"].apply(normalizar_ordem_servico)
-    elif "OS" in df.columns:
-        df["NOTA_NORM"] = df["OS"].apply(normalizar_ordem_servico)
+    col_nota = achar_coluna("NOTA", "ORDEM_DE_SERVICO", "ORDEM DE SERVICO", "OS")
+    if col_nota:
+        df["NOTA_NORM"] = df[col_nota].apply(normalizar_ordem_servico)
     else:
         df["NOTA_NORM"] = ""
 
     # Nome principal da pessoa no arquivo Express.
-    if "NOME_EXECUTOR_01" in df.columns:
-        df["NOME_EXPRESS"] = df["NOME_EXECUTOR_01"].fillna("").astype(str).str.strip()
-    elif "NOME_EXECUTOR" in df.columns:
-        df["NOME_EXPRESS"] = df["NOME_EXECUTOR"].fillna("").astype(str).str.strip()
-    elif "EXECUTOR" in df.columns:
-        df["NOME_EXPRESS"] = df["EXECUTOR"].fillna("").astype(str).str.strip()
+    col_nome_1 = achar_coluna("NOME_EXECUTOR_01", "NOME EXECUTOR 01", "NOME_EXECUTOR", "NOME EXECUTOR")
+    col_nome_2 = achar_coluna("NOME_EXECUTOR_02", "NOME EXECUTOR 02")
+    col_executor = achar_coluna("EXECUTOR")
+
+    if col_nome_1:
+        df["NOME_EXPRESS"] = df[col_nome_1].fillna("").astype(str).str.strip()
+    elif col_executor:
+        df["NOME_EXPRESS"] = df[col_executor].fillna("").astype(str).str.strip()
     else:
         df["NOME_EXPRESS"] = ""
 
-    if "NOME_EXECUTOR_02" in df.columns:
+    if col_nome_2:
         mascara_vazia = df["NOME_EXPRESS"].eq("") | df["NOME_EXPRESS"].str.upper().eq("NAN")
         df.loc[mascara_vazia, "NOME_EXPRESS"] = (
-            df.loc[mascara_vazia, "NOME_EXECUTOR_02"].fillna("").astype(str).str.strip()
+            df.loc[mascara_vazia, col_nome_2].fillna("").astype(str).str.strip()
         )
 
     df["NOME_EXPRESS"] = df["NOME_EXPRESS"].replace({"nan": "", "NaN": "", "None": ""})
@@ -1000,14 +1031,10 @@ def ler_pagamento_express(caminho):
     df = df[df["NOME_EXPRESS_NORM"] != ""].copy()
 
     # Data de referência do Express.
-    # No arquivo atual ela vem em DT_REFERENCIA, mas este trecho também aceita
-    # variações como DATA REFERENCIA, DATA_REFERÊNCIA, DT REFERÊNCIA, etc.
-    col_data = None
-    candidatos_data = ["DT_REFERENCIA", "DT REFERENCIA", "DT_REFERÊNCIA", "DT REFERÊNCIA", "DATA_REFERENCIA", "DATA REFERENCIA", "DATA_REFERÊNCIA", "DATA REFERÊNCIA", "DATA"]
-    for candidato in candidatos_data:
-        if candidato in df.columns:
-            col_data = candidato
-            break
+    col_data = achar_coluna(
+        "DT_REFERENCIA", "DT REFERENCIA", "DT_REFERÊNCIA", "DT REFERÊNCIA",
+        "DATA_REFERENCIA", "DATA REFERENCIA", "DATA_REFERÊNCIA", "DATA REFERÊNCIA", "DATA"
+    )
 
     if col_data is None:
         for col in df.columns:
@@ -1020,14 +1047,20 @@ def ler_pagamento_express(caminho):
         serie_data = df[col_data]
         df["DATA_EXPRESS_DT"] = pd.to_datetime(serie_data, dayfirst=True, errors="coerce")
 
-        # Fallback para datas numéricas do Excel, caso o pandas não converta direto.
+        # Fallback para datas numéricas do Excel.
         if df["DATA_EXPRESS_DT"].isna().all():
             serie_num = pd.to_numeric(serie_data, errors="coerce")
             df["DATA_EXPRESS_DT"] = pd.to_datetime(serie_num, unit="D", origin="1899-12-30", errors="coerce")
     else:
         df["DATA_EXPRESS_DT"] = pd.NaT
 
+    df.attrs["EXPRESS_COLUNAS"] = list(df_original.columns)
+    df.attrs["EXPRESS_COL_VALIDACAO"] = col_validacao or ""
+    df.attrs["EXPRESS_COL_DATA"] = col_data or ""
+    df.attrs["EXPRESS_COL_NOME_1"] = col_nome_1 or ""
+
     return df
+
 
 
 @st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
