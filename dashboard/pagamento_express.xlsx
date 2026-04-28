@@ -952,13 +952,23 @@ DEPARA_DUPLA_CARRO_EXPRESS = {
 
 
 def contrato_por_recurso_express(recurso):
+    """Identifica o contrato do Express a partir do recurso real ou só do código numérico."""
     recurso = str(recurso).strip().upper()
+    codigo = codigo_numerico_recurso(recurso)
+
     if eh_disjuntor_jundiai(recurso):
         return "Disjuntor Jundiaí"
     if eh_disjuntor_santa_cruz(recurso):
         return "Disjuntor Santa Cruz"
-    if recurso.startswith("JUN58"):
+
+    # Carro STC: no DE/PARA ele pode vir só como 5808, 5812 etc.
+    if recurso.startswith("JUN58") or codigo.startswith("58"):
         return "Contrato Carro STC estimado"
+
+    # Santa Cruz: no DE/PARA pode vir só como 8901, 2002 etc.
+    if codigo.startswith("89") or codigo.startswith("20"):
+        return "Disjuntor Santa Cruz"
+
     return ""
 
 
@@ -1007,12 +1017,17 @@ def resolver_recurso_depara(valor, mapa_codigo_recurso):
     Resolve o valor do DE/PARA para o recurso real do ranking.
     - Se vier completo (SAL5508-EMP), mantém.
     - Se vier só número (8913), busca na base e vira MOC8913-EMP/ITN8913-EMP etc.
+    - Para carro (58xx), se não achar na base, usa JUN58xx-EMP para não perder o Express.
     """
     recurso = str(valor).strip().upper()
     if recurso == "" or recurso in ["NAN", "NONE"]:
         return ""
     if recurso.isdigit():
-        return mapa_codigo_recurso.get(recurso, recurso)
+        if recurso in mapa_codigo_recurso:
+            return mapa_codigo_recurso[recurso]
+        if recurso.startswith("58"):
+            return f"JUN{recurso}-EMP"
+        return recurso
     return recurso
 
 
@@ -2233,7 +2248,7 @@ with aba_ranking:
                         if caminho_debug:
                             express_debug = ler_pagamento_express(str(caminho_debug))
                             if express_debug.empty:
-                                st.warning("O arquivo foi encontrado, mas ficou vazio após o filtro de VALIDAÇÃO = PAGAMENTO EXPRESS ou sem nome de executor.")
+                                st.warning("O arquivo foi encontrado, mas a leitura ficou vazia. Isso geralmente indica que o arquivo no GitHub não é o Excel esperado, está corrompido, ou nenhuma linha tem nome em NOME_EXECUTOR_01/02 após a leitura.")
                             else:
                                 total_linhas_debug = len(express_debug)
                                 datas_validas_debug = int(express_debug.get("DATA_EXPRESS_DT", pd.Series(dtype=object)).notna().sum()) if "DATA_EXPRESS_DT" in express_debug.columns else 0
@@ -2241,10 +2256,11 @@ with aba_ranking:
                                     "linhas_lidas": total_linhas_debug,
                                     "datas_validas": datas_validas_debug,
                                     "meses_no_excel": express_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y").value_counts(dropna=False).to_dict() if "DATA_EXPRESS_DT" in express_debug.columns and express_debug["DATA_EXPRESS_DT"].notna().any() else {},
-                                    "nomes_mapeados": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
+                                    "nomes_mapeados_individual": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
+                                    "linhas_com_segundo_nome": int(express_debug.get("NOME_EXPRESS_02_NORM", pd.Series(dtype=object)).fillna("").ne("").sum()) if "NOME_EXPRESS_02_NORM" in express_debug.columns else 0,
                                 })
                                 cols_debug = [
-                                    "NOME_EXPRESS", "NOME_EXPRESS_NORM", "DATA_EXPRESS_DT", "NOTA_NORM", "VALIDAÇÃO", "VALIDACAO"
+                                    "NOME_EXPRESS", "NOME_EXPRESS_02", "NOME_EXPRESS_NORM", "NOME_EXPRESS_02_NORM", "DATA_EXPRESS_DT", "NOTA_NORM", "VALIDAÇÃO", "VALIDACAO"
                                 ]
                                 cols_debug = [c for c in cols_debug if c in express_debug.columns]
                                 amostra_debug = express_debug.copy()
