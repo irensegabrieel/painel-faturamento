@@ -927,48 +927,14 @@ DEPARA_NOME_RECURSO_EXPRESS = {
 }
 
 
-def chave_dupla_carro(nome1, nome2):
-    """Cria uma chave estável para dupla do carro, independente da ordem dos nomes."""
-    n1 = normalizar_nome_pessoa(nome1)
-    n2 = normalizar_nome_pessoa(nome2)
-    if not n1 or not n2:
-        return tuple()
-    return tuple(sorted([n1, n2]))
-
-
-DEPARA_DUPLA_CARRO_EXPRESS = {
-    chave_dupla_carro("ANDERSON GOMES DA SILVA", "IGOR TORRES BEZERRA"): "5808",
-    chave_dupla_carro("EDUARDO DOS SANTOS", "CARLOS LEANDRO LOPES DE SOUZA"): "5812",
-    chave_dupla_carro("JULIANO CESAR DOS SANTOS", "JOAO PAULO ROMANHA DOS SANTOS"): "5803",
-    chave_dupla_carro("ALEXANDRE LUIZ SANTANA PRAJELAS", "FELIPE HENRIQUE DE SOUZA FERREIRA"): "5802",
-    chave_dupla_carro("LUIS FELIPE SÁ DOS SANTOS", "WESLEY APARECIDO DE SÁ SOUZA"): "5817",
-    chave_dupla_carro("LUCIANO HENRIQUE DE SOUZA", "ORLANDO MANOEL DE SOUZA JANSEN"): "5814",
-    chave_dupla_carro("ANDERSON PEREIRA SANTOS", "DIOLENO CONCEICAO NOGUEIRA"): "5801",
-    chave_dupla_carro("ANDERSON SILVA LEONARDO", "JEFERSON E SILVA GOMES"): "5820",
-    chave_dupla_carro("LUCAS EDUARDO LOPES DE SOUZA", "JHONATAN MATHEUS LOPES DE SOUZA"): "5810",
-    chave_dupla_carro("ADILSON APARECIDO VASCO", "RILDO AUGUSTO DOS SANTOS"): "5806",
-    chave_dupla_carro("MARISTON OLIVEIRA NASCIMENTO", "VALDECI SARDELA"): "5807",
-}
-
-
 def contrato_por_recurso_express(recurso):
-    """Identifica o contrato do Express a partir do recurso real ou só do código numérico."""
     recurso = str(recurso).strip().upper()
-    codigo = codigo_numerico_recurso(recurso)
-
     if eh_disjuntor_jundiai(recurso):
         return "Disjuntor Jundiaí"
     if eh_disjuntor_santa_cruz(recurso):
         return "Disjuntor Santa Cruz"
-
-    # Carro STC: no DE/PARA ele pode vir só como 5808, 5812 etc.
-    if recurso.startswith("JUN58") or codigo.startswith("58"):
+    if recurso.startswith("JUN58"):
         return "Contrato Carro STC estimado"
-
-    # Santa Cruz: no DE/PARA pode vir só como 8901, 2002 etc.
-    if codigo.startswith("89") or codigo.startswith("20"):
-        return "Disjuntor Santa Cruz"
-
     return ""
 
 
@@ -1017,17 +983,12 @@ def resolver_recurso_depara(valor, mapa_codigo_recurso):
     Resolve o valor do DE/PARA para o recurso real do ranking.
     - Se vier completo (SAL5508-EMP), mantém.
     - Se vier só número (8913), busca na base e vira MOC8913-EMP/ITN8913-EMP etc.
-    - Para carro (58xx), se não achar na base, usa JUN58xx-EMP para não perder o Express.
     """
     recurso = str(valor).strip().upper()
     if recurso == "" or recurso in ["NAN", "NONE"]:
         return ""
     if recurso.isdigit():
-        if recurso in mapa_codigo_recurso:
-            return mapa_codigo_recurso[recurso]
-        if recurso.startswith("58"):
-            return f"JUN{recurso}-EMP"
-        return recurso
+        return mapa_codigo_recurso.get(recurso, recurso)
     return recurso
 
 
@@ -1152,19 +1113,14 @@ def ler_pagamento_express(caminho):
         df["NOME_EXPRESS"] = ""
 
     if col_nome_2:
-        df["NOME_EXPRESS_02"] = df[col_nome_2].fillna("").astype(str).str.strip()
         mascara_vazia = df["NOME_EXPRESS"].eq("") | df["NOME_EXPRESS"].str.upper().eq("NAN")
         df.loc[mascara_vazia, "NOME_EXPRESS"] = (
             df.loc[mascara_vazia, col_nome_2].fillna("").astype(str).str.strip()
         )
-    else:
-        df["NOME_EXPRESS_02"] = ""
 
     df["NOME_EXPRESS"] = df["NOME_EXPRESS"].replace({"nan": "", "NaN": "", "None": ""})
-    df["NOME_EXPRESS_02"] = df["NOME_EXPRESS_02"].replace({"nan": "", "NaN": "", "None": ""})
     df["NOME_EXPRESS_NORM"] = df["NOME_EXPRESS"].apply(normalizar_nome_pessoa)
-    df["NOME_EXPRESS_02_NORM"] = df["NOME_EXPRESS_02"].apply(normalizar_nome_pessoa)
-    df = df[(df["NOME_EXPRESS_NORM"] != "") | (df["NOME_EXPRESS_02_NORM"] != "")].copy()
+    df = df[df["NOME_EXPRESS_NORM"] != ""].copy()
 
     # Data de referência do Express.
     col_data = achar_coluna(
@@ -1240,26 +1196,7 @@ def valor_express_por_contrato(contrato):
         return 27.43
     if contrato == "Disjuntor Santa Cruz":
         return 23.97
-    if contrato == "Contrato Carro STC estimado":
-        return 38.18
     return 0.0
-
-
-def resolver_recurso_express_linha(row, mapa_codigo_recurso):
-    """Resolve o recurso do Express por dupla do carro ou por nome individual."""
-    nome1 = row.get("NOME_EXPRESS_NORM", "")
-    nome2 = row.get("NOME_EXPRESS_02_NORM", "")
-
-    # Carro: só conta se os DOIS nomes existirem e baterem com uma dupla cadastrada.
-    chave_carro = chave_dupla_carro(nome1, nome2)
-    if chave_carro in DEPARA_DUPLA_CARRO_EXPRESS:
-        return resolver_recurso_depara(DEPARA_DUPLA_CARRO_EXPRESS[chave_carro], mapa_codigo_recurso)
-
-    # Disjuntor Jundiaí/Santa Cruz: usa o primeiro nome; se estiver vazio, tenta o segundo.
-    recurso_depara = DEPARA_NOME_RECURSO_EXPRESS.get(nome1, "")
-    if not recurso_depara:
-        recurso_depara = DEPARA_NOME_RECURSO_EXPRESS.get(nome2, "")
-    return resolver_recurso_depara(recurso_depara, mapa_codigo_recurso)
 
 
 def calcular_express_mensal(notas, mes):
@@ -1292,10 +1229,8 @@ def calcular_express_mensal(notas, mes):
         return pd.DataFrame(), data_max_txt, pd.DataFrame(), str(caminho)
 
     mapa_codigo_recurso = mapa_codigo_para_recurso_real(notas)
-    express["RECURSO"] = express.apply(
-        lambda row: resolver_recurso_express_linha(row, mapa_codigo_recurso),
-        axis=1,
-    )
+    express["RECURSO_DEPARA"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS).fillna("")
+    express["RECURSO"] = express["RECURSO_DEPARA"].apply(lambda v: resolver_recurso_depara(v, mapa_codigo_recurso))
     express["RECURSO"] = express["RECURSO"].fillna("").astype(str).str.strip().str.upper()
     express["CONTRATO"] = express["RECURSO"].apply(contrato_por_recurso_express)
 
@@ -2248,7 +2183,7 @@ with aba_ranking:
                         if caminho_debug:
                             express_debug = ler_pagamento_express(str(caminho_debug))
                             if express_debug.empty:
-                                st.warning("O arquivo foi encontrado, mas a leitura ficou vazia. Isso geralmente indica que o arquivo no GitHub não é o Excel esperado, está corrompido, ou nenhuma linha tem nome em NOME_EXECUTOR_01/02 após a leitura.")
+                                st.warning("O arquivo foi encontrado, mas ficou vazio após o filtro de VALIDAÇÃO = PAGAMENTO EXPRESS ou sem nome de executor.")
                             else:
                                 total_linhas_debug = len(express_debug)
                                 datas_validas_debug = int(express_debug.get("DATA_EXPRESS_DT", pd.Series(dtype=object)).notna().sum()) if "DATA_EXPRESS_DT" in express_debug.columns else 0
@@ -2256,11 +2191,10 @@ with aba_ranking:
                                     "linhas_lidas": total_linhas_debug,
                                     "datas_validas": datas_validas_debug,
                                     "meses_no_excel": express_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y").value_counts(dropna=False).to_dict() if "DATA_EXPRESS_DT" in express_debug.columns and express_debug["DATA_EXPRESS_DT"].notna().any() else {},
-                                    "nomes_mapeados_individual": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
-                                    "linhas_com_segundo_nome": int(express_debug.get("NOME_EXPRESS_02_NORM", pd.Series(dtype=object)).fillna("").ne("").sum()) if "NOME_EXPRESS_02_NORM" in express_debug.columns else 0,
+                                    "nomes_mapeados": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
                                 })
                                 cols_debug = [
-                                    "NOME_EXPRESS", "NOME_EXPRESS_02", "NOME_EXPRESS_NORM", "NOME_EXPRESS_02_NORM", "DATA_EXPRESS_DT", "NOTA_NORM", "VALIDAÇÃO", "VALIDACAO"
+                                    "NOME_EXPRESS", "NOME_EXPRESS_NORM", "DATA_EXPRESS_DT", "NOTA_NORM", "VALIDAÇÃO", "VALIDACAO"
                                 ]
                                 cols_debug = [c for c in cols_debug if c in express_debug.columns]
                                 amostra_debug = express_debug.copy()
