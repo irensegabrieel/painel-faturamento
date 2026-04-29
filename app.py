@@ -412,19 +412,6 @@ def mostrar_base_leitura(base_nome):
     else:
         st.caption(f"Arquivo: {caminho}")
 
-    chart_df = df.copy().sort_values("% EXECUTADO", ascending=True)
-    chart = (
-        alt.Chart(chart_df)
-        .mark_bar()
-        .encode(
-            x=alt.X("% EXECUTADO:Q", title="% Executado"),
-            y=alt.Y("AGENTE COMERCIAL:N", sort="x", title="Equipe"),
-            tooltip=["AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "% EXECUTADO"],
-        )
-        .properties(height=max(260, min(700, 24 * len(chart_df))))
-    )
-    st.altair_chart(chart, use_container_width=True)
-
     tabela = df.copy()
     tabela["% EXECUTADO"] = tabela["% EXECUTADO"].apply(lambda v: f"{float(v):.0f}%")
     st.dataframe(tabela, use_container_width=True, hide_index=True)
@@ -1897,22 +1884,37 @@ contratos_lista = sorted(set(contratos_lista))
 if "contrato_escolhido" not in st.session_state:
     st.session_state.contrato_escolhido = "Todos"
 
-st.sidebar.markdown("### Contratos")
+if "modo_painel" not in st.session_state:
+    st.session_state.modo_painel = "corte"
+
+st.sidebar.markdown("### Contratos - Corte")
 
 if st.sidebar.button("📊 Todos", use_container_width=True):
+    st.session_state.modo_painel = "corte"
     st.session_state.contrato_escolhido = "Todos"
 
 for contrato_nome in contratos_lista:
     if st.sidebar.button(f"🔹 {contrato_nome}", use_container_width=True):
+        st.session_state.modo_painel = "corte"
         st.session_state.contrato_escolhido = contrato_nome
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Contratos - Leitura (em testes)")
+
+if st.sidebar.button("📖 Americana e Piracicaba", use_container_width=True):
+    st.session_state.modo_painel = "leitura"
+
+modo_painel = st.session_state.modo_painel
 contrato_escolhido = st.session_state.contrato_escolhido
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Contrato selecionado:**")
-st.sidebar.info(contrato_escolhido)
+st.sidebar.markdown("**Tela selecionada:**")
+if modo_painel == "leitura":
+    st.sidebar.info("Leitura (em testes)")
+else:
+    st.sidebar.info(contrato_escolhido)
 
-if not notas.empty:
+if modo_painel == "corte" and not notas.empty:
     mostrar_status_atualizacao(notas, contrato_escolhido)
 
 # Este período vale para a tela inicial "Resumo".
@@ -1951,6 +1953,15 @@ carro = carro_original.copy()
 dias = dias_original.copy()
 carro_dias = carro_dias_original.copy()
 
+if modo_painel == "leitura":
+    st.subheader("📖 Contrato Leitura (em testes)")
+    st.caption("Parciais separadas de Americana e Piracicaba, lidas dos Excels gerados pelo extrator CWSI.")
+
+    mostrar_base_leitura("Americana")
+    st.markdown("---")
+    mostrar_base_leitura("Piracicaba")
+    st.stop()
+
 if contrato_escolhido != "Todos":
     if not contratos.empty and "CONTRATO" in contratos.columns:
         contratos = contratos[contratos["CONTRATO"] == contrato_escolhido]
@@ -1968,7 +1979,7 @@ mostrar_carro = not carro.empty
 
 mostrar_aba_carro = contrato_escolhido in ["Todos", "Contrato Carro STC estimado"]
 
-nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana", "Leitura (em testes)"]
+nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana"]
 if mostrar_aba_carro:
     nomes_abas.append("Carro estimado")
 nomes_abas += ["Notas", "Downloads"]
@@ -1979,15 +1990,14 @@ aba_parcial = abas[1]
 aba_ranking = abas[2]
 aba_comparativo = abas[3]
 aba_dias = abas[4]
-aba_leitura = abas[5]
 
 if mostrar_aba_carro:
-    aba_carro = abas[6]
-    aba_notas = abas[7]
-    aba_download = abas[8]
-else:
+    aba_carro = abas[5]
     aba_notas = abas[6]
     aba_download = abas[7]
+else:
+    aba_notas = abas[5]
+    aba_download = abas[6]
 
 # ==============================
 # ABA RESUMO
@@ -2712,19 +2722,6 @@ if mostrar_aba_carro:
             st.dataframe(tabela_carro.style.format(dinheiro), use_container_width=True)
         else:
             st.info("Nenhum dado diário do carro para o contrato selecionado.")
-
-# ==============================
-# ABA LEITURA
-# ==============================
-
-with aba_leitura:
-    st.subheader("📖 Contrato Leitura (em testes)")
-    st.caption("Parciais separadas de Americana e Piracicaba, lidas dos Excels gerados pelo extrator CWSI.")
-
-    mostrar_base_leitura("Americana")
-    st.markdown("---")
-    mostrar_base_leitura("Piracicaba")
-
 
 # ==============================
 # ABA NOTAS
