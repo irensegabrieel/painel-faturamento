@@ -253,6 +253,25 @@ ARQUIVOS = {
     "carro_dias": "faturamento_carro_dias_dashboard.csv",
 }
 
+# ==============================
+# CONTRATO LEITURA (em testes)
+# ==============================
+# No PC da operação, o extrator de leitura grava aqui.
+# No Streamlit Cloud, o app só consegue ler se os arquivos forem enviados ao GitHub,
+# preferencialmente em dashboard/leitura/.
+PASTAS_LEITURA = [
+    Path(r"C:\Users\user\Desktop\LEITURA\saida"),
+    PASTA_DASHBOARD / "leitura",
+    PASTA_DASHBOARD,
+    PASTA_ATUAL / "leitura",
+    PASTA_ATUAL,
+]
+
+ARQUIVOS_LEITURA = {
+    "Americana": ["Parcial_Americana.xlsx", "Parcial_Americana*.xlsx"],
+    "Piracicaba": ["Parcial_Piracicaba.xlsx", "Parcial_Piracicaba*.xlsx"],
+}
+
 ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 
 # Como dias anteriores não mudam, mantemos o carregamento geral em 15 minutos
@@ -286,6 +305,130 @@ def caminho_arquivo(nome):
 
     achados = list(PASTA_ATUAL.glob(nome.replace(".csv", "*.csv"))) + list(PASTA_DASHBOARD.glob(nome.replace(".csv", "*.csv")))
     return achados[0] if achados else None
+
+
+def caminho_leitura(base_nome):
+    """Localiza a parcial de leitura mais recente para Americana ou Piracicaba."""
+    padroes = ARQUIVOS_LEITURA.get(base_nome, [])
+    candidatos = []
+
+    for pasta in PASTAS_LEITURA:
+        try:
+            if not pasta.exists():
+                continue
+        except Exception:
+            continue
+
+        for padrao in padroes:
+            if "*" in padrao:
+                candidatos.extend(list(pasta.glob(padrao)))
+            else:
+                caminho = pasta / padrao
+                if caminho.exists():
+                    candidatos.append(caminho)
+
+    candidatos = [c for c in candidatos if c.is_file() and c.suffix.lower() in [".xlsx", ".xls"]]
+    if not candidatos:
+        return None
+
+    return max(candidatos, key=lambda p: p.stat().st_mtime)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def ler_parcial_leitura(caminho):
+    """Lê a parcial de leitura gerada pelo extrator CWSI."""
+    df = pd.read_excel(caminho, engine="openpyxl")
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    mapa_colunas = {}
+    for col in df.columns:
+        col_norm = str(col).strip().upper()
+        if col_norm in ["AGENTE COMERCIAL", "AGENTE"]:
+            mapa_colunas[col] = "AGENTE COMERCIAL"
+        elif col_norm in ["T. INSTALA", "T INSTALA", "TOTAL INSTALA", "INSTALA"]:
+            mapa_colunas[col] = "T. INSTALA"
+        elif col_norm in ["T. VISITADA", "T VISITADA", "TOTAL VISITADA", "VISITADA"]:
+            mapa_colunas[col] = "T. VISITADA"
+        elif col_norm in ["FALTAM", "FALTAM "]:
+            mapa_colunas[col] = "FALTAM"
+        elif "%" in col_norm and "EXEC" in col_norm:
+            mapa_colunas[col] = "% EXECUTADO"
+
+    df = df.rename(columns=mapa_colunas)
+
+    for col in ["AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA"]:
+        if col not in df.columns:
+            df[col] = "" if col == "AGENTE COMERCIAL" else 0
+
+    df["AGENTE COMERCIAL"] = df["AGENTE COMERCIAL"].fillna("").astype(str).str.strip()
+    df = df[df["AGENTE COMERCIAL"] != ""].copy()
+
+    df["T. INSTALA"] = pd.to_numeric(df["T. INSTALA"], errors="coerce").fillna(0).astype(int)
+    df["T. VISITADA"] = pd.to_numeric(df["T. VISITADA"], errors="coerce").fillna(0).astype(int)
+
+    df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0).astype(int)
+    df["% EXECUTADO"] = 0.0
+    mask = df["T. INSTALA"] > 0
+    df.loc[mask, "% EXECUTADO"] = ((df.loc[mask, "T. VISITADA"] / df.loc[mask, "T. INSTALA"]) * 100).round(2)
+
+    df = df[["AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "% EXECUTADO"]]
+    return df.sort_values(["% EXECUTADO", "FALTAM"], ascending=[True, False]).reset_index(drop=True)
+
+
+def mostrar_base_leitura(base_nome):
+    caminho = caminho_leitura(base_nome)
+
+    st.markdown(f"### {base_nome}")
+    if not caminho:
+        st.warning(f"Parcial de {base_nome} não encontrada. Procure por Parcial_{base_nome}.xlsx em C:\\Users\\user\\Desktop\\LEITURA\\saida ou em dashboard/leitura no GitHub.")
+        return
+
+    try:
+        df = ler_parcial_leitura(str(caminho))
+    except Exception as e:
+        st.error(f"Não foi possível ler a parcial de {base_nome}: {e}")
+        st.caption(f"Arquivo encontrado: {caminho}")
+        return
+
+    if df.empty:
+        st.info(f"A parcial de {base_nome} foi encontrada, mas está vazia.")
+        st.caption(f"Arquivo encontrado: {caminho}")
+        return
+
+    total_instala = int(df["T. INSTALA"].sum())
+    total_visitada = int(df["T. VISITADA"].sum())
+    total_faltam = int(df["FALTAM"].sum())
+    percentual = (total_visitada / total_instala * 100) if total_instala else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("T. Instala", numero(total_instala))
+    c2.metric("T. Visitada", numero(total_visitada))
+    c3.metric("Faltam", numero(total_faltam))
+    c4.metric("% Executado", f"{percentual:.1f}%".replace(".", ","))
+
+    mtime = arquivo_mtime_datetime(caminho)
+    if mtime:
+        st.caption(f"Arquivo: {caminho} • atualizado em {mtime.strftime('%d/%m/%Y %H:%M:%S')}")
+    else:
+        st.caption(f"Arquivo: {caminho}")
+
+    chart_df = df.copy().sort_values("% EXECUTADO", ascending=True)
+    chart = (
+        alt.Chart(chart_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("% EXECUTADO:Q", title="% Executado"),
+            y=alt.Y("AGENTE COMERCIAL:N", sort="x", title="Equipe"),
+            tooltip=["AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "% EXECUTADO"],
+        )
+        .properties(height=max(260, min(700, 24 * len(chart_df))))
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+    tabela = df.copy()
+    tabela["% EXECUTADO"] = tabela["% EXECUTADO"].apply(lambda v: f"{float(v):.0f}%")
+    st.dataframe(tabela, use_container_width=True, hide_index=True)
+
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
@@ -1825,7 +1968,7 @@ mostrar_carro = not carro.empty
 
 mostrar_aba_carro = contrato_escolhido in ["Todos", "Contrato Carro STC estimado"]
 
-nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana"]
+nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana", "Leitura (em testes)"]
 if mostrar_aba_carro:
     nomes_abas.append("Carro estimado")
 nomes_abas += ["Notas", "Downloads"]
@@ -1836,14 +1979,15 @@ aba_parcial = abas[1]
 aba_ranking = abas[2]
 aba_comparativo = abas[3]
 aba_dias = abas[4]
+aba_leitura = abas[5]
 
 if mostrar_aba_carro:
-    aba_carro = abas[5]
+    aba_carro = abas[6]
+    aba_notas = abas[7]
+    aba_download = abas[8]
+else:
     aba_notas = abas[6]
     aba_download = abas[7]
-else:
-    aba_notas = abas[5]
-    aba_download = abas[6]
 
 # ==============================
 # ABA RESUMO
@@ -2568,6 +2712,19 @@ if mostrar_aba_carro:
             st.dataframe(tabela_carro.style.format(dinheiro), use_container_width=True)
         else:
             st.info("Nenhum dado diário do carro para o contrato selecionado.")
+
+# ==============================
+# ABA LEITURA
+# ==============================
+
+with aba_leitura:
+    st.subheader("📖 Contrato Leitura (em testes)")
+    st.caption("Parciais separadas de Americana e Piracicaba, lidas dos Excels gerados pelo extrator CWSI.")
+
+    mostrar_base_leitura("Americana")
+    st.markdown("---")
+    mostrar_base_leitura("Piracicaba")
+
 
 # ==============================
 # ABA NOTAS
