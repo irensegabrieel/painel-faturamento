@@ -505,8 +505,8 @@ def mostrar_podio_ranking(ranking, nome_coluna="RECURSO"):
 
 @st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
 def montar_base_executores(notas):
-    """Monta base de ranking por RECURSO/equipe, não por código de eletricista."""
-    parcial = preparar_parcial_do_dia(notas)
+    """Monta base de ranking por RECURSO/equipe, incluindo recusas para auditoria."""
+    parcial = preparar_parcial_do_dia(notas, incluir_recusas=True)
 
     if parcial.empty:
         return pd.DataFrame()
@@ -520,6 +520,14 @@ def montar_base_executores(notas):
 
     if base.empty:
         return pd.DataFrame()
+
+    if "EH_RECUSA" not in base.columns:
+        base["EH_RECUSA"] = 0
+    base["EH_RECUSA"] = pd.to_numeric(base["EH_RECUSA"], errors="coerce").fillna(0).astype(int)
+
+    base["ORDEM_SERVICO_PAGAVEL"] = base["ORDEM_DE_SERVICO"].where(base["EH_RECUSA"] == 0, pd.NA)
+    base["ORDEM_SERVICO_RECUSA"] = base["ORDEM_DE_SERVICO"].where(base["EH_RECUSA"] == 1, pd.NA)
+    base["DATA_PAGAVEL"] = base["DATA"].where(base["EH_RECUSA"] == 0, pd.NA)
 
     base["FATURAMENTO_ATRIBUÍDO"] = pd.to_numeric(base.get("FATURAMENTO", 0), errors="coerce").fillna(0)
     base["FATURAMENTO_MIN_ATRIBUÍDO"] = pd.to_numeric(base.get("FATURAMENTO_MIN", 0), errors="coerce").fillna(0)
@@ -551,13 +559,19 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
     if base_filtrada.empty:
         return pd.DataFrame()
 
+    base_calc = base_filtrada.copy()
+    for col in ["ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]:
+        if col not in base_calc.columns:
+            base_calc[col] = pd.NA
+
     ranking = (
-        base_filtrada.groupby("RECURSO", dropna=False)
+        base_calc.groupby("RECURSO", dropna=False)
         .agg(
-            NOTAS=("ORDEM_DE_SERVICO", "nunique"),
+            NOTAS=("ORDEM_SERVICO_PAGAVEL", "nunique"),
+            RECUSAS=("ORDEM_SERVICO_RECUSA", "nunique"),
             CORTES=("EH_CORTE", "sum"),
             RELIGUES=("EH_RELIGUE", "sum"),
-            DIAS_ATIVOS=("DATA", "nunique"),
+            DIAS_ATIVOS=("DATA_PAGAVEL", "nunique"),
             QTD_EQUIPES=("RECURSO", "nunique"),
             FATURAMENTO_ATRIBUÍDO=("FATURAMENTO_ATRIBUÍDO", "sum"),
             FATURAMENTO_MIN_ATRIBUÍDO=("FATURAMENTO_MIN_ATRIBUÍDO", "sum"),
@@ -577,10 +591,34 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
     )
 
     coluna_ordem = "NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO"
-    ranking = ranking.sort_values([coluna_ordem, "NOTAS"], ascending=False).reset_index(drop=True)
+    ranking = ranking.sort_values([coluna_ordem, "NOTAS", "RECUSAS"], ascending=[False, False, False]).reset_index(drop=True)
     ranking.insert(0, "POSIÇÃO", range(1, len(ranking) + 1))
 
     return ranking
+
+
+def calcular_recusas_por_tipo(base_filtrada):
+    """Resume as recusas por equipe e por motivo no período filtrado."""
+    if base_filtrada.empty or "EH_RECUSA" not in base_filtrada.columns:
+        return pd.DataFrame(columns=["RECURSO", "CONTRATO", "RECUSA", "QTD_RECUSAS"])
+
+    recusas = base_filtrada.copy()
+    recusas["EH_RECUSA"] = pd.to_numeric(recusas.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
+    recusas = recusas[recusas["EH_RECUSA"] == 1].copy()
+
+    if recusas.empty:
+        return pd.DataFrame(columns=["RECURSO", "CONTRATO", "RECUSA", "QTD_RECUSAS"])
+
+    recusas["RECUSA"] = recusas.get("RECUSA", "").fillna("").astype(str).str.strip()
+    recusas.loc[recusas["RECUSA"] == "", "RECUSA"] = "Não informado"
+
+    resumo = (
+        recusas.groupby(["RECURSO", "CONTRATO", "RECUSA"], dropna=False)
+        .agg(QTD_RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
+        .reset_index()
+        .sort_values(["RECURSO", "QTD_RECUSAS", "RECUSA"], ascending=[True, False, True])
+    )
+    return resumo
 
 
 @st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
@@ -2506,7 +2544,7 @@ with aba_ranking:
 
             st.markdown('<div class="section-title">Ranking detalhado</div>', unsafe_allow_html=True)
             colunas_ranking = [
-                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "EXPRESS", "DIAS_ATIVOS",
+                "POSIÇÃO", "RECURSO", "NOTAS", "RECUSAS", "CORTES", "RELIGUES", "EXPRESS", "DIAS_ATIVOS",
                 "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
                 "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE", "QTD_EQUIPES"
             ]
@@ -2523,7 +2561,10 @@ with aba_ranking:
                     "GRUPO_NOTA", "FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"
                 ]
                 detalhe_cols = [c for c in detalhe_cols if c in base_filtrada_exec.columns]
-                detalhe = base_filtrada_exec[detalhe_cols].sort_values(["DATA", "RECURSO"], ascending=[False, True])
+                detalhe_base = base_filtrada_exec.copy()
+                if "EH_RECUSA" in detalhe_base.columns:
+                    detalhe_base = detalhe_base[pd.to_numeric(detalhe_base["EH_RECUSA"], errors="coerce").fillna(0).astype(int) == 0].copy()
+                detalhe = detalhe_base[detalhe_cols].sort_values(["DATA", "RECURSO"], ascending=[False, True])
                 st.dataframe(
                     preparar_tabela_ranking(detalhe, colunas_moeda=["FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"]),
                     use_container_width=True,
@@ -2537,6 +2578,19 @@ with aba_ranking:
                 )
                 st.dataframe(
                     formatar_tabela(tabela_express_recurso[["RECURSO", "CONTRATO", "EXPRESS", "FATURAMENTO_EXPRESS"]]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.markdown('<div class="section-title">Tipos de recusa por equipe</div>', unsafe_allow_html=True)
+            recusas_tipo = calcular_recusas_por_tipo(base_filtrada_exec)
+            if recusas_tipo.empty:
+                st.success("Nenhuma recusa encontrada para os filtros selecionados.")
+            else:
+                total_recusas_periodo = int(recusas_tipo["QTD_RECUSAS"].sum())
+                st.caption(f"Total de recusas no período filtrado: {numero(total_recusas_periodo)}")
+                st.dataframe(
+                    preparar_tabela_ranking(recusas_tipo),
                     use_container_width=True,
                     hide_index=True,
                 )
