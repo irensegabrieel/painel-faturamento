@@ -1935,6 +1935,14 @@ def _extrair_mes_chat(pergunta, meses_disponiveis):
         if candidato in meses_disponiveis:
             return candidato
 
+    # Entende frases curtas como "mês 03", "mes 3", "em 03" e usa o ano mais recente disponível.
+    achado_mes_num = re.search(r"(?:\bMES\b|\bEM\b|\bNO MES\b|\bMES DE\b)\s*(0?[1-9]|1[0-2])\b", pergunta_norm)
+    if achado_mes_num:
+        numero_mes = f"{int(achado_mes_num.group(1)):02d}"
+        for mes_disp in meses_disponiveis:
+            if mes_disp.startswith(numero_mes + "/"):
+                return mes_disp
+
     mapa_meses = {
         "JANEIRO": "01", "FEVEREIRO": "02", "MARCO": "03", "MARÇO": "03", "ABRIL": "04",
         "MAIO": "05", "JUNHO": "06", "JULHO": "07", "AGOSTO": "08", "SETEMBRO": "09",
@@ -2052,9 +2060,16 @@ def _express_chat_periodo(notas, mes, contrato=None, recurso=None):
 def _pergunta_eh_complemento_chat(pergunta_norm):
     termos = [
         "MAS", "ISSO", "ESSE", "ESSA", "TAMBEM", "TAMBÉM", "INCLUI", "INCLUIR",
-        "CONTAR", "CONTA", "COM EXPRESS", "PAGAMENTO EXPRESS", "E O EXPRESS", "E EXPRESS"
+        "CONTAR", "CONTA", "COM EXPRESS", "PAGAMENTO EXPRESS", "E O EXPRESS", "E EXPRESS",
+        "E NO MES", "NO MES", "MES 0", "MES 1"
     ]
-    return any(t in pergunta_norm for t in termos)
+    return pergunta_norm.startswith("E ") or any(t in pergunta_norm for t in termos)
+
+
+def _pergunta_ultimos_meses_chat(pergunta_norm):
+    return any(t in pergunta_norm for t in [
+        "ULTIMOS MESES", "ULTIMOS 3 MESES", "ULTIMOS 6 MESES", "NOS MESES", "POR MES", "MENSAL DOS", "MESES?", "MESES"
+    ])
 
 
 def responder_chatbot_painel(pergunta, notas):
@@ -2126,6 +2141,42 @@ def responder_chatbot_painel(pergunta, notas):
             "contrato": contrato,
             "recurso": recurso,
         }
+
+    # Perguntas como "faturamento do contrato Carro nos últimos meses" precisam mostrar mês a mês,
+    # e não apenas o mês atual. Mantém o mesmo escopo de contrato/equipe.
+    if _pergunta_ultimos_meses_chat(pergunta_norm) and not recurso:
+        df_meses = base.copy()
+        if contrato:
+            df_meses = df_meses[df_meses["CONTRATO"] == contrato].copy()
+        eh_recusa_m = pd.to_numeric(df_meses.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
+        pagaveis_m = df_meses[eh_recusa_m == 0].copy()
+        if pagaveis_m.empty:
+            return f"Não encontrei notas pagáveis para {escopo_txt} nos últimos meses."
+
+        pagaveis_m["MES"] = pagaveis_m["DATA_DT"].dt.strftime("%m/%Y")
+        pagaveis_m["PERIODO"] = pagaveis_m["DATA_DT"].dt.to_period("M")
+        mensal = (
+            pagaveis_m.groupby(["MES", "PERIODO"], dropna=False)
+            .agg(
+                NOTAS=("ORDEM_DE_SERVICO", "nunique"),
+                CORTES=("EH_CORTE", "sum"),
+                RELIGUES=("EH_RELIGUE", "sum"),
+                FATURAMENTO=("FATURAMENTO", "sum"),
+            )
+            .reset_index()
+            .sort_values("PERIODO", ascending=False)
+            .head(6)
+            .sort_values("PERIODO", ascending=True)
+        )
+        linhas = [f"**Faturamento{escopo_txt} nos últimos meses:**", ""]
+        for row in mensal.itertuples(index=False):
+            linhas.append(
+                f"- **{row.MES}:** {dinheiro(row.FATURAMENTO)} • {numero(row.NOTAS)} notas "
+                f"({numero(row.CORTES)} cortes / {numero(row.RELIGUES)} religues)"
+            )
+        if hasattr(st, "session_state"):
+            st.session_state["chatbot_painel_contexto"] = {"mes": mes, "contrato": contrato, "recurso": recurso}
+        return "\n".join(linhas)
 
     if df.empty and not (quer_express and express_info.get("tem_base")):
         return f"Não encontrei dados para {escopo_txt} em **{periodo_txt}**."
