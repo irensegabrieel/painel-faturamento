@@ -1053,6 +1053,13 @@ DEPARA_NOME_RECURSO_EXPRESS = {
     normalizar_nome_pessoa("JOAO VINICIUS DA SILVA"): "8916",
     normalizar_nome_pessoa("THIAGO CARLOS DA SILVA DE MELLO"): "8932",
     normalizar_nome_pessoa("HENRY DE ALMEIDA"): "8922",
+    normalizar_nome_pessoa("HENRY ALESSANDRO ANTUNES DE ALMEIDA"): "ITN8922-EMP",
+    normalizar_nome_pessoa("JOAO VICTOR OLIVEIRA SABOROSA"): "ITN8905-EMP",
+    normalizar_nome_pessoa("JOÃO VICTOR OLIVEIRA SABOROSA"): "ITN8905-EMP",
+    normalizar_nome_pessoa("PAMELLA SALLES AFONSO"): "ITN8933-EMP",
+    normalizar_nome_pessoa("PAMELLA SALLES AFONSO ITN8933"): "ITN8933-EMP",
+    normalizar_nome_pessoa("JOAO VINICIUS DOMINGOS QUILICE DA SILVA"): "SJD8916-EMP",
+    normalizar_nome_pessoa("JOÃO VINICIUS DOMINGOS QUILICE DA SILVA"): "SJD8916-EMP",
     normalizar_nome_pessoa("LUCAS CAMARGO"): "8921",
 }
 
@@ -2447,44 +2454,6 @@ with aba_ranking:
             else:
                 m4.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
 
-            if tipo_periodo == "Mês" and valor_periodo and not express_resumo_recurso.empty:
-                st.markdown('<div class="section-title">Pagamento Express conciliado por recurso</div>', unsafe_allow_html=True)
-
-                grafico_express_recurso = (
-                    alt.Chart(express_resumo_recurso.head(15))
-                    .mark_bar(
-                        cornerRadiusTopLeft=8,
-                        cornerRadiusTopRight=8,
-                    )
-                    .encode(
-                        x=alt.X(
-                            "RECURSO:N",
-                            sort=alt.SortField(field="EXPRESS", order="descending"),
-                            title="Recurso",
-                            axis=alt.Axis(labelAngle=-90),
-                        ),
-                        y=alt.Y("EXPRESS:Q", title="Express"),
-                        tooltip=[
-                            alt.Tooltip("RECURSO:N", title="Recurso"),
-                            alt.Tooltip("CONTRATO:N", title="Contrato"),
-                            alt.Tooltip("EXPRESS:Q", title="Notas Express"),
-                            alt.Tooltip("FATURAMENTO_EXPRESS:Q", title="Faturamento Express", format=",.2f"),
-                        ],
-                    )
-                    .properties(height=360)
-                )
-
-                st.altair_chart(grafico_express_recurso, use_container_width=True)
-
-                tabela_express_recurso = express_resumo_recurso.copy().sort_values(
-                    ["EXPRESS", "FATURAMENTO_EXPRESS"], ascending=False
-                )
-                st.dataframe(
-                    formatar_tabela(tabela_express_recurso[["RECURSO", "CONTRATO", "EXPRESS", "FATURAMENTO_EXPRESS"]]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
             if tipo_periodo == "Mês" and valor_periodo and not express_sem_vinculo.empty:
                 with st.expander("Ver Express sem vínculo de Ordem de Serviço"):
                     cols_sem_vinculo = [
@@ -2557,6 +2526,17 @@ with aba_ranking:
                 detalhe = base_filtrada_exec[detalhe_cols].sort_values(["DATA", "RECURSO"], ascending=[False, True])
                 st.dataframe(
                     preparar_tabela_ranking(detalhe, colunas_moeda=["FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            if tipo_periodo == "Mês" and valor_periodo and not express_resumo_recurso.empty:
+                st.markdown('<div class="section-title">Pagamento Express conciliado por recurso</div>', unsafe_allow_html=True)
+                tabela_express_recurso = express_resumo_recurso.copy().sort_values(
+                    ["EXPRESS", "FATURAMENTO_EXPRESS"], ascending=False
+                )
+                st.dataframe(
+                    formatar_tabela(tabela_express_recurso[["RECURSO", "CONTRATO", "EXPRESS", "FATURAMENTO_EXPRESS"]]),
                     use_container_width=True,
                     hide_index=True,
                 )
