@@ -2110,26 +2110,33 @@ def mostrar_chatbot_popup(notas):
     st.markdown(
         """
         <style>
-        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor) {
-            position: fixed;
-            right: 22px;
-            bottom: 22px;
-            width: min(420px, calc(100vw - 44px));
-            z-index: 9999;
+        /*
+        O seletor antigo pegava blocos grandes do Streamlit e empurrava o painel inteiro
+        para a direita. Este seletor pega somente o bloco MAIS INTERNO que contém a âncora
+        do chatbot, sem afetar .stApp, sidebar, gráficos ou tabelas.
+        */
+        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) {
+            position: fixed !important;
+            right: 22px !important;
+            bottom: 22px !important;
+            width: min(420px, calc(100vw - 44px)) !important;
+            max-height: min(620px, calc(100vh - 44px));
+            overflow: auto;
+            z-index: 9999 !important;
             background: rgba(15, 23, 42, 0.96);
             border: 1px solid rgba(147, 197, 253, 0.26);
             border-radius: 22px;
             padding: 10px 12px 12px 12px;
             box-shadow: 0 20px 55px rgba(0,0,0,0.35);
         }
-        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor) details {
+        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) details {
             border: 0 !important;
         }
-        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor) summary {
+        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) summary {
             font-weight: 900;
         }
-        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor) [data-testid="stMarkdownContainer"] p,
-        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor) [data-testid="stMarkdownContainer"] li {
+        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) [data-testid="stMarkdownContainer"] p,
+        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) [data-testid="stMarkdownContainer"] li {
             font-size: 0.92rem;
         }
         </style>
