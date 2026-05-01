@@ -761,7 +761,7 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
                 faturamento_max = faturamento
 
         elif str(recurso).startswith("JUN58") and qtd_exec >= 2:
-            contrato = "Contrato Carro STC estimado"
+            contrato = "STC Jundiai"
             if not eh_recusa:
                 faturamento_min = {"CORTE": 38.18, "RELIGUE": 36.36}.get(grupo, 0.0)
                 faturamento_max = {"CORTE": 45.45, "RELIGUE": 50.91}.get(grupo, 0.0)
@@ -1135,7 +1135,7 @@ def contrato_por_recurso_express(recurso):
     if eh_disjuntor_santa_cruz(recurso):
         return "Disjuntor Santa Cruz"
     if recurso.startswith("JUN58"):
-        return "Contrato Carro STC estimado"
+        return "STC Jundiai"
     return ""
 
 
@@ -1413,7 +1413,7 @@ def valor_express_por_contrato(contrato):
         return 27.43
     if contrato == "Disjuntor Santa Cruz":
         return 23.97
-    if contrato == "Contrato Carro STC estimado":
+    if contrato == "STC Jundiai":
         return 38.18
     return 0.0
 
@@ -1889,6 +1889,288 @@ def mostrar_status_atualizacao(notas, contrato_escolhido):
 # CARREGAMENTO
 # ==============================
 
+
+
+# ==============================
+# ASSISTENTE DO PAINEL (CHATBOT LOCAL)
+# ==============================
+
+def _normalizar_chat(texto):
+    """Normaliza texto para comparação simples, sem depender de IA/API externa."""
+    import unicodedata
+    import re
+    texto = "" if texto is None else str(texto)
+    texto = unicodedata.normalize("NFKD", texto).encode("ASCII", "ignore").decode("ASCII")
+    texto = texto.upper().strip()
+    texto = re.sub(r"\s+", " ", texto)
+    return texto
+
+
+def _meses_chat_disponiveis(base):
+    if base.empty or "DATA_DT" not in base.columns:
+        return []
+    meses = (
+        base[["DATA_DT"]]
+        .dropna()
+        .assign(MES=lambda d: d["DATA_DT"].dt.strftime("%m/%Y"), PERIODO=lambda d: d["DATA_DT"].dt.to_period("M"))
+        [["MES", "PERIODO"]]
+        .drop_duplicates()
+        .sort_values("PERIODO", ascending=False)["MES"]
+        .tolist()
+    )
+    return meses
+
+
+def _extrair_mes_chat(pergunta, meses_disponiveis):
+    import re
+    pergunta_norm = _normalizar_chat(pergunta)
+
+    achado = re.search(r"\b(0?[1-9]|1[0-2])[/\-](20\d{2}|\d{2})\b", pergunta_norm)
+    if achado:
+        mes = int(achado.group(1))
+        ano = int(achado.group(2))
+        if ano < 100:
+            ano += 2000
+        candidato = f"{mes:02d}/{ano}"
+        if candidato in meses_disponiveis:
+            return candidato
+
+    mapa_meses = {
+        "JANEIRO": "01", "FEVEREIRO": "02", "MARCO": "03", "MARÇO": "03", "ABRIL": "04",
+        "MAIO": "05", "JUNHO": "06", "JULHO": "07", "AGOSTO": "08", "SETEMBRO": "09",
+        "OUTUBRO": "10", "NOVEMBRO": "11", "DEZEMBRO": "12",
+    }
+    for nome, numero_mes in mapa_meses.items():
+        if nome in pergunta_norm:
+            ano = None
+            achado_ano = re.search(r"\b(20\d{2})\b", pergunta_norm)
+            if achado_ano:
+                ano = achado_ano.group(1)
+            else:
+                for mes_disp in meses_disponiveis:
+                    if mes_disp.startswith(numero_mes + "/"):
+                        return mes_disp
+            candidato = f"{numero_mes}/{ano}" if ano else None
+            if candidato in meses_disponiveis:
+                return candidato
+
+    if "MES" in pergunta_norm or "MENSAL" in pergunta_norm or "ESSE MES" in pergunta_norm or "ATUAL" in pergunta_norm:
+        return meses_disponiveis[0] if meses_disponiveis else None
+
+    return meses_disponiveis[0] if meses_disponiveis else None
+
+
+def _identificar_contrato_chat(pergunta, contratos_disponiveis):
+    pergunta_norm = _normalizar_chat(pergunta)
+    if "TODOS" in pergunta_norm or "GERAL" in pergunta_norm:
+        return None
+    atalhos = {
+        "STC JUNDIAI": "STC Jundiai",
+        "STC": "STC Jundiai",
+        "CARRO": "STC Jundiai",
+        "JUNDIAI": "Disjuntor Jundiaí",
+        "JUNDIA": "Disjuntor Jundiaí",
+        "SANTA CRUZ": "Disjuntor Santa Cruz",
+    }
+    for chave, contrato in atalhos.items():
+        if chave in pergunta_norm and contrato in contratos_disponiveis:
+            return contrato
+    for contrato in contratos_disponiveis:
+        if _normalizar_chat(contrato) in pergunta_norm:
+            return contrato
+    return None
+
+
+def _identificar_recurso_chat(pergunta, recursos_disponiveis):
+    import re
+    pergunta_norm = _normalizar_chat(pergunta)
+    recursos_norm = {str(r).upper().strip(): r for r in recursos_disponiveis if str(r).strip()}
+
+    for recurso_norm, recurso_original in recursos_norm.items():
+        if recurso_norm in pergunta_norm:
+            return recurso_original
+        if recurso_norm.replace("-", "") in pergunta_norm.replace("-", ""):
+            return recurso_original
+
+    codigos = re.findall(r"\b\d{4}\b", pergunta_norm)
+    for codigo in codigos:
+        candidatos = [r for rn, r in recursos_norm.items() if codigo in rn]
+        if len(candidatos) == 1:
+            return candidatos[0]
+    return None
+
+
+def _resumo_numerico_chat(df):
+    if df.empty:
+        return {
+            "notas": 0, "recusas": 0, "cortes": 0, "religues": 0, "express": 0,
+            "faturamento": 0.0, "recursos": 0,
+        }
+    eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
+    pagaveis = df[eh_recusa == 0].copy()
+    recusas = df[eh_recusa == 1].copy()
+    return {
+        "notas": int(pagaveis["ORDEM_DE_SERVICO"].nunique()) if "ORDEM_DE_SERVICO" in pagaveis.columns else int(len(pagaveis)),
+        "recusas": int(recusas["ORDEM_DE_SERVICO"].nunique()) if "ORDEM_DE_SERVICO" in recusas.columns else int(len(recusas)),
+        "cortes": int(pd.to_numeric(pagaveis.get("EH_CORTE", 0), errors="coerce").fillna(0).sum()),
+        "religues": int(pd.to_numeric(pagaveis.get("EH_RELIGUE", 0), errors="coerce").fillna(0).sum()),
+        "express": int(pd.to_numeric(pagaveis.get("EXPRESS", 0), errors="coerce").fillna(0).sum()) if "EXPRESS" in pagaveis.columns else 0,
+        "faturamento": float(pd.to_numeric(pagaveis.get("FATURAMENTO", 0), errors="coerce").fillna(0).sum()),
+        "recursos": int(pagaveis["RECURSO"].nunique()) if "RECURSO" in pagaveis.columns else 0,
+    }
+
+
+def responder_chatbot_painel(pergunta, notas):
+    """Responde perguntas operacionais usando os CSVs já carregados no painel."""
+    pergunta = str(pergunta or "").strip()
+    if not pergunta:
+        return "Digite uma pergunta. Exemplo: `produção da equipe JUN5802 no mês`"
+
+    base = preparar_parcial_do_dia(notas, incluir_recusas=True)
+    if base.empty:
+        return "Ainda não encontrei dados suficientes para responder. Confira se o `notas_dashboard.csv` foi carregado."
+
+    meses = _meses_chat_disponiveis(base)
+    mes = _extrair_mes_chat(pergunta, meses)
+    contratos_disp = sorted(base["CONTRATO"].dropna().unique().tolist()) if "CONTRATO" in base.columns else []
+    recursos_disp = sorted(base["RECURSO"].dropna().unique().tolist()) if "RECURSO" in base.columns else []
+
+    contrato = _identificar_contrato_chat(pergunta, contratos_disp)
+    recurso = _identificar_recurso_chat(pergunta, recursos_disp)
+
+    df = base.copy()
+    if mes:
+        df = df[df["DATA_DT"].dt.strftime("%m/%Y") == mes].copy()
+    if contrato:
+        df = df[df["CONTRATO"] == contrato].copy()
+    if recurso:
+        df = df[df["RECURSO"] == recurso].copy()
+
+    pergunta_norm = _normalizar_chat(pergunta)
+    periodo_txt = mes or "todo o histórico"
+    escopo = []
+    if contrato:
+        escopo.append(f"contrato **{contrato}**")
+    if recurso:
+        escopo.append(f"equipe **{recurso}**")
+    escopo_txt = " da " + " / ".join(escopo) if escopo else " geral"
+
+    if df.empty:
+        return f"Não encontrei dados para {escopo_txt} em **{periodo_txt}**."
+
+    if any(p in pergunta_norm for p in ["QUEM MAIS", "TOP", "MAIOR PRODU", "RANKING", "LIDER"]):
+        eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
+        pagaveis = df[eh_recusa == 0].copy()
+        if pagaveis.empty:
+            return f"Não há notas pagáveis para montar ranking em **{periodo_txt}**."
+        ranking = (
+            pagaveis.groupby("RECURSO", dropna=False)
+            .agg(NOTAS=("ORDEM_DE_SERVICO", "nunique"), FATURAMENTO=("FATURAMENTO", "sum"))
+            .reset_index()
+            .sort_values(["NOTAS", "FATURAMENTO"], ascending=[False, False])
+            .head(5)
+        )
+        linhas = [f"**Top 5 recursos em {periodo_txt}:**"]
+        for i, row in enumerate(ranking.itertuples(index=False), start=1):
+            linhas.append(f"{i}. **{row.RECURSO}** — {numero(row.NOTAS)} notas • {dinheiro(row.FATURAMENTO)}")
+        return "\n".join(linhas)
+
+    if "RECUSA" in pergunta_norm or "RECUSAS" in pergunta_norm:
+        eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
+        recusas = df[eh_recusa == 1].copy()
+        if recusas.empty:
+            return f"Não encontrei recusas para {escopo_txt} em **{periodo_txt}**."
+        resumo = (
+            recusas.groupby("RECUSA", dropna=False)
+            .agg(QTD=("ORDEM_DE_SERVICO", "nunique"))
+            .reset_index()
+            .sort_values(["QTD", "RECUSA"], ascending=[False, True])
+        )
+        total = int(resumo["QTD"].sum())
+        linhas = [f"Foram **{numero(total)} recusas**{escopo_txt} em **{periodo_txt}**.", "", "**Por tipo:**"]
+        for row in resumo.itertuples(index=False):
+            motivo = row.RECUSA if str(row.RECUSA).strip() else "Não informado"
+            linhas.append(f"- {motivo}: **{numero(row.QTD)}**")
+        return "\n".join(linhas)
+
+    resumo = _resumo_numerico_chat(df)
+    linhas = [f"Resumo{escopo_txt} em **{periodo_txt}**:", ""]
+    linhas.append(f"- **Notas feitas:** {numero(resumo['notas'])}")
+    linhas.append(f"- **Cortes:** {numero(resumo['cortes'])}")
+    linhas.append(f"- **Religues:** {numero(resumo['religues'])}")
+    linhas.append(f"- **Recusas:** {numero(resumo['recusas'])}")
+    linhas.append(f"- **Faturamento:** {dinheiro(resumo['faturamento'])}")
+    if not recurso:
+        linhas.append(f"- **Recursos ativos:** {numero(resumo['recursos'])}")
+    return "\n".join(linhas)
+
+
+def mostrar_chatbot_popup(notas):
+    """Mostra um assistente em formato de popup fixo no canto inferior direito."""
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor) {
+            position: fixed;
+            right: 22px;
+            bottom: 22px;
+            width: min(420px, calc(100vw - 44px));
+            z-index: 9999;
+            background: rgba(15, 23, 42, 0.96);
+            border: 1px solid rgba(147, 197, 253, 0.26);
+            border-radius: 22px;
+            padding: 10px 12px 12px 12px;
+            box-shadow: 0 20px 55px rgba(0,0,0,0.35);
+        }
+        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor) details {
+            border: 0 !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor) summary {
+            font-weight: 900;
+        }
+        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor) [data-testid="stMarkdownContainer"] p,
+        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor) [data-testid="stMarkdownContainer"] li {
+            font-size: 0.92rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container():
+        st.markdown('<span class="chatbot-popup-anchor"></span>', unsafe_allow_html=True)
+        with st.expander("🤖 Assistente do painel", expanded=False):
+            st.caption("Pergunte sobre produção, faturamento, ranking ou recusas.")
+            if "chatbot_painel_historico" not in st.session_state:
+                st.session_state.chatbot_painel_historico = []
+
+            for item in st.session_state.chatbot_painel_historico[-4:]:
+                st.markdown(f"**Você:** {item['pergunta']}")
+                st.markdown(item["resposta"])
+                st.markdown("---")
+
+            pergunta = st.text_input(
+                "Pergunta",
+                placeholder="Ex: produção da equipe JUN5802 no mês",
+                key="chatbot_painel_pergunta",
+                label_visibility="collapsed",
+            )
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                enviar = st.button("Perguntar", use_container_width=True, key="chatbot_painel_enviar")
+            with col2:
+                limpar = st.button("Limpar", use_container_width=True, key="chatbot_painel_limpar")
+
+            if limpar:
+                st.session_state.chatbot_painel_historico = []
+                st.rerun()
+
+            if enviar and pergunta.strip():
+                resposta = responder_chatbot_painel(pergunta, notas)
+                st.session_state.chatbot_painel_historico.append({"pergunta": pergunta, "resposta": resposta})
+                st.rerun()
+
+
 bases, faltando = carregar_bases()
 
 st.title("📊 Painel de Faturamento")
@@ -1906,6 +2188,10 @@ carro_original = bases.get("carro", pd.DataFrame())
 dias_original = bases.get("dias", pd.DataFrame())
 carro_dias_original = bases.get("carro_dias", pd.DataFrame())
 notas = bases.get("notas", pd.DataFrame())
+
+# Popup do assistente: usa os mesmos dados do painel, sem depender de API externa.
+if not notas.empty:
+    mostrar_chatbot_popup(notas)
 
 # ==============================
 # FILTROS EM BOTÕES
@@ -2022,7 +2308,7 @@ if contrato_escolhido != "Todos":
 
 mostrar_carro = not carro.empty
 
-mostrar_aba_carro = contrato_escolhido in ["Todos", "Contrato Carro STC estimado"]
+mostrar_aba_carro = contrato_escolhido in ["Todos", "STC Jundiai"]
 
 nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana"]
 if mostrar_aba_carro:
@@ -2065,7 +2351,7 @@ with aba_resumo:
         qtd_notas = int(resumo_contrato_periodo["TOTAL_NOTAS"].sum())
 
         carro_periodo = resumo_contrato_periodo[
-            resumo_contrato_periodo["CONTRATO"] == "Contrato Carro STC estimado"
+            resumo_contrato_periodo["CONTRATO"] == "STC Jundiai"
         ].copy()
 
         mostrar_carro_periodo = not carro_periodo.empty
@@ -2173,7 +2459,7 @@ with aba_parcial:
                 c5.metric("Recusas", numero(total_recusas))
 
                 tem_carro_no_dia = "CONTRATO" in parcial_dia.columns and (
-                    parcial_dia["CONTRATO"] == "Contrato Carro STC estimado"
+                    parcial_dia["CONTRATO"] == "STC Jundiai"
                 ).any()
 
                 if tem_carro_no_dia:
@@ -2292,7 +2578,7 @@ with aba_parcial:
                     st.altair_chart(grafico_parcial, use_container_width=True)
 
                     def faturamento_linha_equipe(row):
-                        if row.get("CONTRATO") == "Contrato Carro STC estimado":
+                        if row.get("CONTRATO") == "STC Jundiai":
                             return f"{dinheiro(row.get('FATURAMENTO_MIN', 0))} a {dinheiro(row.get('FATURAMENTO_MAX', 0))}"
                         return dinheiro(row.get("FATURAMENTO", 0))
 
