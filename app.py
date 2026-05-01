@@ -761,7 +761,7 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
                 faturamento_max = faturamento
 
         elif str(recurso).startswith("JUN58") and qtd_exec >= 2:
-            contrato = "STC Jundiai"
+            contrato = "Contrato Carro STC estimado"
             if not eh_recusa:
                 faturamento_min = {"CORTE": 38.18, "RELIGUE": 36.36}.get(grupo, 0.0)
                 faturamento_max = {"CORTE": 45.45, "RELIGUE": 50.91}.get(grupo, 0.0)
@@ -1135,7 +1135,7 @@ def contrato_por_recurso_express(recurso):
     if eh_disjuntor_santa_cruz(recurso):
         return "Disjuntor Santa Cruz"
     if recurso.startswith("JUN58"):
-        return "STC Jundiai"
+        return "Contrato Carro STC estimado"
     return ""
 
 
@@ -1413,7 +1413,7 @@ def valor_express_por_contrato(contrato):
         return 27.43
     if contrato == "Disjuntor Santa Cruz":
         return 23.97
-    if contrato == "STC Jundiai":
+    if contrato == "Contrato Carro STC estimado":
         return 38.18
     return 0.0
 
@@ -2022,7 +2022,7 @@ if contrato_escolhido != "Todos":
 
 mostrar_carro = not carro.empty
 
-mostrar_aba_carro = contrato_escolhido in ["Todos", "STC Jundiai"]
+mostrar_aba_carro = contrato_escolhido in ["Todos", "Contrato Carro STC estimado"]
 
 nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana"]
 if mostrar_aba_carro:
@@ -2065,7 +2065,7 @@ with aba_resumo:
         qtd_notas = int(resumo_contrato_periodo["TOTAL_NOTAS"].sum())
 
         carro_periodo = resumo_contrato_periodo[
-            resumo_contrato_periodo["CONTRATO"] == "STC Jundiai"
+            resumo_contrato_periodo["CONTRATO"] == "Contrato Carro STC estimado"
         ].copy()
 
         mostrar_carro_periodo = not carro_periodo.empty
@@ -2173,7 +2173,7 @@ with aba_parcial:
                 c5.metric("Recusas", numero(total_recusas))
 
                 tem_carro_no_dia = "CONTRATO" in parcial_dia.columns and (
-                    parcial_dia["CONTRATO"] == "STC Jundiai"
+                    parcial_dia["CONTRATO"] == "Contrato Carro STC estimado"
                 ).any()
 
                 if tem_carro_no_dia:
@@ -2292,7 +2292,7 @@ with aba_parcial:
                     st.altair_chart(grafico_parcial, use_container_width=True)
 
                     def faturamento_linha_equipe(row):
-                        if row.get("CONTRATO") == "STC Jundiai":
+                        if row.get("CONTRATO") == "Contrato Carro STC estimado":
                             return f"{dinheiro(row.get('FATURAMENTO_MIN', 0))} a {dinheiro(row.get('FATURAMENTO_MAX', 0))}"
                         return dinheiro(row.get("FATURAMENTO", 0))
 
