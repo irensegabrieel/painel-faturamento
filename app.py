@@ -2544,7 +2544,7 @@ with aba_ranking:
 
             st.markdown('<div class="section-title">Ranking detalhado</div>', unsafe_allow_html=True)
             colunas_ranking = [
-                "POSIÇÃO", "RECURSO", "NOTAS", "RECUSAS", "CORTES", "RELIGUES", "EXPRESS", "DIAS_ATIVOS",
+                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "EXPRESS", "RECUSAS", "DIAS_ATIVOS",
                 "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
                 "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE", "QTD_EQUIPES"
             ]
@@ -2582,13 +2582,45 @@ with aba_ranking:
                     hide_index=True,
                 )
 
-            st.markdown('<div class="section-title">Tipos de recusa por equipe</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-title">Resumo de recusas</div>', unsafe_allow_html=True)
             recusas_tipo = calcular_recusas_por_tipo(base_filtrada_exec)
             if recusas_tipo.empty:
                 st.success("Nenhuma recusa encontrada para os filtros selecionados.")
             else:
                 total_recusas_periodo = int(recusas_tipo["QTD_RECUSAS"].sum())
                 st.caption(f"Total de recusas no período filtrado: {numero(total_recusas_periodo)}")
+
+                st.markdown("**Total por tipo de recusa**")
+                total_por_tipo = (
+                    recusas_tipo.groupby("RECUSA", dropna=False)
+                    .agg(QTD_RECUSAS=("QTD_RECUSAS", "sum"))
+                    .reset_index()
+                    .sort_values(["QTD_RECUSAS", "RECUSA"], ascending=[False, True])
+                )
+                st.dataframe(
+                    preparar_tabela_ranking(total_por_tipo),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                st.markdown("**Total por contrato e tipo de recusa**")
+                total_por_contrato = (
+                    recusas_tipo.groupby(["CONTRATO", "RECUSA"], dropna=False)
+                    .agg(QTD_RECUSAS=("QTD_RECUSAS", "sum"))
+                    .reset_index()
+                    .sort_values(["CONTRATO", "QTD_RECUSAS", "RECUSA"], ascending=[True, False, True])
+                )
+                st.dataframe(
+                    preparar_tabela_ranking(total_por_contrato),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                st.markdown("**Detalhamento por equipe, contrato e tipo de recusa**")
+                recusas_tipo = recusas_tipo.sort_values(
+                    ["RECURSO", "CONTRATO", "QTD_RECUSAS", "RECUSA"],
+                    ascending=[True, True, False, True],
+                )
                 st.dataframe(
                     preparar_tabela_ranking(recusas_tipo),
                     use_container_width=True,
