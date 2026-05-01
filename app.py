@@ -2053,28 +2053,17 @@ def mostrar_painel_supervisor_stc(bases):
             pagaveis = df_periodo[pd.to_numeric(df_periodo.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy()
             recusas = df_periodo[pd.to_numeric(df_periodo.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 1].copy()
 
-            express_total = 0
-            for mes in meses_escolhidos:
-                express_resumo, _, _, _ = calcular_express_mensal(notas_stc, mes)
-                if not express_resumo.empty:
-                    express_resumo = express_resumo[express_resumo["CONTRATO"].isin(CONTRATOS_SUPERVISOR_STC)].copy()
-                if contrato_escolhido != "Todos" and not express_resumo.empty:
-                    express_resumo = express_resumo[express_resumo["CONTRATO"] == contrato_escolhido].copy()
-                if not express_resumo.empty:
-                    express_total += int(express_resumo["EXPRESS"].sum())
-
             total_notas = int(pagaveis["ORDEM_DE_SERVICO"].nunique()) if not pagaveis.empty else 0
             total_cortes = int(pagaveis["EH_CORTE"].sum()) if not pagaveis.empty else 0
             total_religues = int(pagaveis["EH_RELIGUE"].sum()) if not pagaveis.empty else 0
             total_recusas = int(recusas["ORDEM_DE_SERVICO"].nunique()) if not recusas.empty else 0
             recursos_ativos = int(pagaveis["RECURSO"].nunique()) if not pagaveis.empty else 0
 
-            c1, c2, c3, c4, c5 = st.columns(5)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Notas feitas", numero(total_notas))
             c2.metric("Cortes", numero(total_cortes))
             c3.metric("Religues", numero(total_religues))
-            c4.metric("Express", numero(express_total))
-            c5.metric("Recusas", numero(total_recusas))
+            c4.metric("Recusas", numero(total_recusas))
             st.metric("Recursos ativos", numero(recursos_ativos))
 
             if not pagaveis.empty:
@@ -2145,39 +2134,9 @@ def mostrar_painel_supervisor_stc(bases):
                 valor_periodo = st.selectbox("Mês", meses_op, key="stc_rank_mes") if meses_op else None
 
             base_filtrada, ranking = ranking_recursos_cacheado(base_exec, "Todos", tipo_periodo, valor_periodo, "Notas")
-            express_resumo_recurso = pd.DataFrame()
-            if tipo_periodo == "Mês" and valor_periodo:
-                express_resumo_recurso, _, _, _ = calcular_express_mensal(notas_stc, valor_periodo)
-                if not express_resumo_recurso.empty:
-                    express_resumo_recurso = express_resumo_recurso[express_resumo_recurso["CONTRATO"].isin(CONTRATOS_SUPERVISOR_STC)].copy()
-                    if contrato_escolhido != "Todos":
-                        express_resumo_recurso = express_resumo_recurso[express_resumo_recurso["CONTRATO"] == contrato_escolhido].copy()
+            # Supervisor STC não visualiza Pagamento Express.
 
-                if "EXPRESS" not in ranking.columns:
-                    ranking["EXPRESS"] = 0
-                ranking["EXPRESS"] = pd.to_numeric(ranking.get("EXPRESS", 0), errors="coerce").fillna(0).astype(int)
-
-                if not express_resumo_recurso.empty:
-                    ranking = ranking.merge(
-                        express_resumo_recurso[["RECURSO", "EXPRESS"]],
-                        on="RECURSO",
-                        how="outer",
-                        suffixes=("", "_NOVO"),
-                    )
-                    for col in ["NOTAS", "CORTES", "RELIGUES", "RECUSAS", "DIAS_ATIVOS"]:
-                        if col not in ranking.columns:
-                            ranking[col] = 0
-                        ranking[col] = pd.to_numeric(ranking[col], errors="coerce").fillna(0)
-                    ranking["EXPRESS_NOVO"] = pd.to_numeric(ranking.get("EXPRESS_NOVO", 0), errors="coerce").fillna(0).astype(int)
-                    ranking["EXPRESS"] = (ranking["EXPRESS"] + ranking["EXPRESS_NOVO"]).astype(int)
-                    ranking["NOTAS"] = (ranking["NOTAS"] + ranking["EXPRESS_NOVO"]).astype(int)
-                    ranking = ranking.drop(columns=[c for c in ["EXPRESS_NOVO", "POSIÇÃO"] if c in ranking.columns])
-                    ranking = ranking.sort_values(["NOTAS", "RECUSAS"], ascending=[False, False]).reset_index(drop=True)
-                    ranking.insert(0, "POSIÇÃO", range(1, len(ranking) + 1))
-                    ranking["DIAS_ATIVOS"] = pd.to_numeric(ranking["DIAS_ATIVOS"], errors="coerce").fillna(0).astype(int)
-                    ranking["MÉDIA_NOTAS_DIA"] = ranking.apply(lambda r: (r["NOTAS"] / r["DIAS_ATIVOS"]) if r["DIAS_ATIVOS"] else 0, axis=1)
-
-            colunas = ["POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "EXPRESS", "RECUSAS", "DIAS_ATIVOS", "MÉDIA_NOTAS_DIA"]
+            colunas = ["POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "DIAS_ATIVOS", "MÉDIA_NOTAS_DIA"]
             colunas = [c for c in colunas if c in ranking.columns]
             st.dataframe(preparar_tabela_ranking(ranking[colunas]), use_container_width=True, hide_index=True)
             if not ranking.empty:
@@ -2191,10 +2150,6 @@ def mostrar_painel_supervisor_stc(bases):
                 st.dataframe(preparar_tabela_ranking(total_tipo), use_container_width=True, hide_index=True)
                 st.markdown("**Detalhamento por equipe, contrato e tipo de recusa**")
                 st.dataframe(preparar_tabela_ranking(recusas_tipo), use_container_width=True, hide_index=True)
-
-            if not express_resumo_recurso.empty:
-                st.markdown("**Pagamento Express por recurso**")
-                st.dataframe(express_resumo_recurso[["RECURSO", "CONTRATO", "EXPRESS"]].sort_values("EXPRESS", ascending=False), use_container_width=True, hide_index=True)
 
     with abas[3]:
         st.subheader("Comparativo mensal operacional")
@@ -2211,30 +2166,22 @@ def mostrar_painel_supervisor_stc(bases):
                     df_mes["MES"] = df_mes["DATA_DT"].dt.strftime("%m/%Y")
                     df_mes = df_mes[df_mes["MES"] == mes_ref].copy()
                 pag = df_mes[pd.to_numeric(df_mes.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy() if not df_mes.empty else pd.DataFrame()
-                express_resumo, _, _, _ = calcular_express_mensal(notas_stc, mes_ref)
-                if not express_resumo.empty:
-                    express_resumo = express_resumo[express_resumo["CONTRATO"].isin(CONTRATOS_SUPERVISOR_STC)].copy()
-                    if contrato_escolhido != "Todos":
-                        express_resumo = express_resumo[express_resumo["CONTRATO"] == contrato_escolhido].copy()
                 return {
                     "TOTAL_NOTAS": int(pag["ORDEM_DE_SERVICO"].nunique()) if not pag.empty else 0,
                     "CORTES": int(pag["EH_CORTE"].sum()) if not pag.empty else 0,
                     "RELIGUES": int(pag["EH_RELIGUE"].sum()) if not pag.empty else 0,
-                    "EXPRESS": int(express_resumo["EXPRESS"].sum()) if not express_resumo.empty else 0,
                 }
 
             atual = resumo_operacional_mes(mes_escolhido)
             anterior = resumo_operacional_mes(mes_anterior)
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3 = st.columns(3)
             c1.metric("Notas", numero(atual["TOTAL_NOTAS"]), variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"]))
             c2.metric("Cortes", numero(atual["CORTES"]), variacao_percentual(atual["CORTES"], anterior["CORTES"]))
             c3.metric("Religues", numero(atual["RELIGUES"]), variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"]))
-            c4.metric("Express", numero(atual.get("EXPRESS", 0)), variacao_percentual(atual.get("EXPRESS", 0), anterior.get("EXPRESS", 0)))
             tabela = pd.DataFrame([
                 {"Indicador": "Notas", mes_escolhido: numero(atual["TOTAL_NOTAS"]), mes_anterior: numero(anterior["TOTAL_NOTAS"]), "Variação": variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"])},
                 {"Indicador": "Cortes", mes_escolhido: numero(atual["CORTES"]), mes_anterior: numero(anterior["CORTES"]), "Variação": variacao_percentual(atual["CORTES"], anterior["CORTES"])},
                 {"Indicador": "Religues", mes_escolhido: numero(atual["RELIGUES"]), mes_anterior: numero(anterior["RELIGUES"]), "Variação": variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"])},
-                {"Indicador": "Express", mes_escolhido: numero(atual.get("EXPRESS", 0)), mes_anterior: numero(anterior.get("EXPRESS", 0)), "Variação": variacao_percentual(atual.get("EXPRESS", 0), anterior.get("EXPRESS", 0))},
             ])
             st.dataframe(tabela, use_container_width=True, hide_index=True)
 
@@ -2590,8 +2537,59 @@ def _filtrar_base_chat(base, mes=None, contrato=None, recurso=None):
     return df
 
 
-def responder_chatbot_painel(pergunta, notas):
+
+def responder_chatbot_leitura(pergunta):
+    """Chat simples para o perfil Leitura, restrito às parciais de leitura."""
+    pergunta_norm = _normalizar_chat(pergunta)
+    bases = []
+    if "AMERICANA" in pergunta_norm:
+        bases = ["Americana"]
+    elif "PIRACICABA" in pergunta_norm:
+        bases = ["Piracicaba"]
+    else:
+        bases = ["Americana", "Piracicaba"]
+
+    linhas = [f"📖 **{NOME_ASSISTENTE} — Contrato Leitura**", ""]
+    encontrou = False
+    for base_nome in bases:
+        caminho = caminho_leitura(base_nome)
+        if not caminho:
+            linhas.append(f"• **{base_nome}:** parcial não encontrada.")
+            continue
+        try:
+            df = ler_parcial_leitura(str(caminho))
+        except Exception as e:
+            linhas.append(f"• **{base_nome}:** não consegui ler a parcial ({e}).")
+            continue
+        if df.empty:
+            linhas.append(f"• **{base_nome}:** parcial vazia.")
+            continue
+        encontrou = True
+        total_instala = int(df["T. INSTALA"].sum())
+        total_visitada = int(df["T. VISITADA"].sum())
+        total_faltam = int(df["FALTAM"].sum())
+        percentual = (total_visitada / total_instala * 100) if total_instala else 0
+        linhas.append(f"### {base_nome}")
+        linhas.append(f"• **T. Instala:** {numero(total_instala)}")
+        linhas.append(f"• **T. Visitada:** {numero(total_visitada)}")
+        linhas.append(f"• **Faltam:** {numero(total_faltam)}")
+        linhas.append(f"• **Executado:** {percentual:.1f}%".replace(".", ","))
+        atrasados = df.sort_values(["FALTAM", "% EXECUTADO"], ascending=[False, True]).head(3)
+        if not atrasados.empty:
+            linhas.append("• **Maiores pendências:** " + "; ".join(
+                f"{r['AGENTE COMERCIAL']} ({numero(r['FALTAM'])})" for _, r in atrasados.iterrows()
+            ))
+        linhas.append("")
+
+    if not encontrou:
+        linhas.append("Não encontrei parciais de leitura disponíveis para consultar.")
+    return "\n".join(linhas)
+
+def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver_express=True, modo_leitura=False):
     """Responde perguntas operacionais usando os CSVs já carregados no painel."""
+    if modo_leitura:
+        return responder_chatbot_leitura(pergunta)
+
     if notas.empty:
         return "Ainda não encontrei dados carregados para consultar."
 
@@ -2632,6 +2630,9 @@ def responder_chatbot_painel(pergunta, notas):
     tipo = _tipo_consulta_chat(pergunta_norm)
     quer_somar_express = "EXPRESS" in pergunta_norm and any(t in pergunta_norm for t in ["CONTAR", "CONTA", "INCLUI", "INCLUIR", "COM", "SOMAR", "TOTAL"])
     quer_express = "EXPRESS" in pergunta_norm or quer_somar_express
+
+    if quer_express and not pode_ver_express:
+        return "Essa informação não está disponível para seu perfil."
 
     if hasattr(st, "session_state"):
         st.session_state["chatbot_painel_contexto"] = {
@@ -2676,18 +2677,19 @@ def responder_chatbot_painel(pergunta, notas):
 
         linhas = [f"📈 **{NOME_ASSISTENTE} — evolução de {escopo_txt}**", ""]
         for row in mensal.itertuples(index=False):
-            express_info = _express_chat_periodo(notas, row.MES, contrato=contrato, recurso=recurso)
+            express_info = _express_chat_periodo(notas, row.MES, contrato=contrato, recurso=recurso) if pode_ver_express else {"express": 0, "faturamento_express": 0.0}
             express_qtd = int(express_info.get("express", 0) or 0)
             fat_total = float(row.FATURAMENTO) + float(express_info.get("faturamento_express", 0.0) or 0.0)
-            linhas.append(
-                f"- **{_nome_mes_chat(row.MES)}:** {numero(row.NOTAS)} notas"
-                + (f" (+{numero(express_qtd)} express)" if express_qtd else "")
-                + f" • {dinheiro(fat_total)}"
-            )
+            linha_mes = f"- **{_nome_mes_chat(row.MES)}:** {numero(row.NOTAS)} notas"
+            if pode_ver_express and express_qtd:
+                linha_mes += f" (+{numero(express_qtd)} express)"
+            if pode_ver_financeiro:
+                linha_mes += f" • {dinheiro(fat_total)}"
+            linhas.append(linha_mes)
         return "\n".join(linhas)
 
     df = _filtrar_base_chat(base, mes=mes, contrato=contrato, recurso=recurso)
-    express_info = _express_chat_periodo(notas, mes, contrato=contrato, recurso=recurso) if mes else {"express": 0, "faturamento_express": 0.0, "tem_base": False}
+    express_info = _express_chat_periodo(notas, mes, contrato=contrato, recurso=recurso) if (mes and pode_ver_express) else {"express": 0, "faturamento_express": 0.0, "tem_base": False}
 
     # Ranking.
     if tipo == "ranking":
@@ -2738,7 +2740,7 @@ def responder_chatbot_painel(pergunta, notas):
     if tipo == "express" and not quer_somar_express:
         linhas = [f"⚡ **{NOME_ASSISTENTE} — pagamento express de {escopo_txt} em {periodo_txt}**", ""]
         linhas.append(f"• Express: **{numero(express_qtd)}**")
-        if faturamento_express:
+        if faturamento_express and pode_ver_financeiro:
             linhas.append(f"• Faturamento express: **{dinheiro(faturamento_express)}**")
         if not express_info.get("tem_base"):
             linhas.append("")
@@ -2754,12 +2756,13 @@ def responder_chatbot_painel(pergunta, notas):
 
     titulo_alvo = recurso or contrato or "Geral"
     linhas = [f"📊 **{titulo_alvo} — {periodo_txt}**", ""]
-    linhas.append(f"• **Produção:** {numero(resumo['notas'])} notas" + (f" (+{numero(express_qtd)} express)" if express_qtd else ""))
+    linhas.append(f"• **Produção:** {numero(resumo['notas'])} notas" + (f" (+{numero(express_qtd)} express)" if (pode_ver_express and express_qtd) else ""))
     linhas.append(f"• **Total de atendimentos:** {numero(total_atendimentos)}")
-    linhas.append(f"• **Faturamento:** {dinheiro(faturamento_total)}")
-    if faturamento_express:
-        linhas.append(f"  - Sem express: {dinheiro(faturamento_base)}")
-        linhas.append(f"  - Express: {dinheiro(faturamento_express)}")
+    if pode_ver_financeiro:
+        linhas.append(f"• **Faturamento:** {dinheiro(faturamento_total)}")
+        if faturamento_express and pode_ver_express:
+            linhas.append(f"  - Sem express: {dinheiro(faturamento_base)}")
+            linhas.append(f"  - Express: {dinheiro(faturamento_express)}")
     linhas.append(f"• **Cortes / religues:** {numero(resumo['cortes'])} / {numero(resumo['religues'])}")
     linhas.append(f"• **Recusas:** {numero(resumo['recusas'])} ({taxa_recusa:.1f}%)".replace(".", ","))
     if resumo["dias_ativos"]:
@@ -2768,7 +2771,7 @@ def responder_chatbot_painel(pergunta, notas):
         linhas.append(f"• **Recursos ativos:** {numero(resumo['recursos'])}")
 
     linhas.append("")
-    for destaque in _destaques_executivos_chat(resumo, express_qtd, resumo_recusas):
+    for destaque in _destaques_executivos_chat(resumo, express_qtd if pode_ver_express else 0, resumo_recusas):
         linhas.append(destaque)
 
     if quer_express and not express_info.get("tem_base"):
@@ -2778,8 +2781,8 @@ def responder_chatbot_painel(pergunta, notas):
     return "\n".join(linhas)
 
 
-def mostrar_chatbot_popup(notas):
-    """Mostra o G.Z.U.S. em formato de popup fixo no canto inferior direito."""
+def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True, modo_leitura=False):
+    """Mostra o G.Z.U.S. em formato de popup fixo no canto inferior direito, respeitando o perfil logado."""
     st.markdown(
         """
         <style>
@@ -2870,7 +2873,13 @@ def mostrar_chatbot_popup(notas):
                 st.rerun()
 
             if enviar and pergunta.strip():
-                resposta = responder_chatbot_painel(pergunta, notas)
+                resposta = responder_chatbot_painel(
+                    pergunta,
+                    notas,
+                    pode_ver_financeiro=pode_ver_financeiro,
+                    pode_ver_express=pode_ver_express,
+                    modo_leitura=modo_leitura,
+                )
                 st.session_state.chatbot_painel_historico.append({"pergunta": pergunta, "resposta": resposta})
                 st.rerun()
 
@@ -2894,10 +2903,13 @@ notas = bases.get("notas", pd.DataFrame())
 # Perfis restritos têm telas próprias para evitar exposição acidental de dados financeiros.
 if PERFIL_ACESSO == "supervisor_leitura":
     mostrar_painel_supervisor_leitura()
+    mostrar_chatbot_popup(pd.DataFrame(), pode_ver_financeiro=False, pode_ver_express=False, modo_leitura=True)
     st.stop()
 
 if PERFIL_ACESSO == "supervisor_stc":
     mostrar_painel_supervisor_stc(bases)
+    if not notas.empty:
+        mostrar_chatbot_popup(notas, pode_ver_financeiro=False, pode_ver_express=False)
     st.stop()
 
 st.title("🤖 G.Z.U.S. — Gestão Inteligente de Serviços")
@@ -2909,7 +2921,7 @@ if faltando:
 
 # Popup do assistente: usa os mesmos dados do painel, sem depender de API externa.
 if PERFIL_ACESSO == "gerente" and not notas.empty:
-    mostrar_chatbot_popup(notas)
+    mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True)
 
 # ==============================
 # FILTROS EM BOTÕES
