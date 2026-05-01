@@ -2004,7 +2004,7 @@ def _resumo_numerico_chat(df):
     if df.empty:
         return {
             "notas": 0, "recusas": 0, "cortes": 0, "religues": 0, "express": 0,
-            "faturamento": 0.0, "recursos": 0,
+            "faturamento": 0.0, "faturamento_express": 0.0, "recursos": 0,
         }
     eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
     pagaveis = df[eh_recusa == 0].copy()
@@ -2016,12 +2016,55 @@ def _resumo_numerico_chat(df):
         "religues": int(pd.to_numeric(pagaveis.get("EH_RELIGUE", 0), errors="coerce").fillna(0).sum()),
         "express": int(pd.to_numeric(pagaveis.get("EXPRESS", 0), errors="coerce").fillna(0).sum()) if "EXPRESS" in pagaveis.columns else 0,
         "faturamento": float(pd.to_numeric(pagaveis.get("FATURAMENTO", 0), errors="coerce").fillna(0).sum()),
+        "faturamento_express": float(pd.to_numeric(pagaveis.get("FATURAMENTO_EXPRESS", 0), errors="coerce").fillna(0).sum()) if "FATURAMENTO_EXPRESS" in pagaveis.columns else 0.0,
         "recursos": int(pagaveis["RECURSO"].nunique()) if "RECURSO" in pagaveis.columns else 0,
     }
 
 
+def _express_chat_periodo(notas, mes, contrato=None, recurso=None):
+    """Busca o pagamento express do mês usando a mesma regra do painel."""
+    if not mes:
+        return {"express": 0, "faturamento_express": 0.0, "tem_base": False}
+    try:
+        express_resumo, _, _, caminho = calcular_express_mensal(notas, mes)
+    except Exception:
+        return {"express": 0, "faturamento_express": 0.0, "tem_base": False}
+
+    if express_resumo is None or express_resumo.empty:
+        return {"express": 0, "faturamento_express": 0.0, "tem_base": bool(caminho)}
+
+    tmp = express_resumo.copy()
+    if contrato and "CONTRATO" in tmp.columns:
+        tmp = tmp[tmp["CONTRATO"] == contrato].copy()
+    if recurso and "RECURSO" in tmp.columns:
+        tmp = tmp[tmp["RECURSO"].fillna("").astype(str).str.upper().str.strip() == str(recurso).upper().strip()].copy()
+
+    if tmp.empty:
+        return {"express": 0, "faturamento_express": 0.0, "tem_base": True}
+
+    return {
+        "express": int(pd.to_numeric(tmp.get("EXPRESS", 0), errors="coerce").fillna(0).sum()),
+        "faturamento_express": float(pd.to_numeric(tmp.get("FATURAMENTO_EXPRESS", 0), errors="coerce").fillna(0).sum()),
+        "tem_base": True,
+    }
+
+
+def _pergunta_eh_complemento_chat(pergunta_norm):
+    termos = [
+        "MAS", "ISSO", "ESSE", "ESSA", "TAMBEM", "TAMBÉM", "INCLUI", "INCLUIR",
+        "CONTAR", "CONTA", "COM EXPRESS", "PAGAMENTO EXPRESS", "E O EXPRESS", "E EXPRESS"
+    ]
+    return any(t in pergunta_norm for t in termos)
+
+
 def responder_chatbot_painel(pergunta, notas):
-    """Responde perguntas operacionais usando os CSVs já carregados no painel."""
+    """Responde perguntas operacionais usando os CSVs já carregados no painel.
+
+    Agora o assistente mantém memória curta do último filtro usado e entende
+    perguntas complementares, por exemplo:
+    - "Quantas notas a equipe 5981 fez em abril?"
+    - "Mas tem que contar o pagamento express"
+    """
     pergunta = str(pergunta or "").strip()
     if not pergunta:
         return "Digite uma pergunta. Exemplo: `produção da equipe JUN5802 no mês`"
@@ -2030,13 +2073,29 @@ def responder_chatbot_painel(pergunta, notas):
     if base.empty:
         return "Ainda não encontrei dados suficientes para responder. Confira se o `notas_dashboard.csv` foi carregado."
 
+    pergunta_norm = _normalizar_chat(pergunta)
     meses = _meses_chat_disponiveis(base)
-    mes = _extrair_mes_chat(pergunta, meses)
     contratos_disp = sorted(base["CONTRATO"].dropna().unique().tolist()) if "CONTRATO" in base.columns else []
     recursos_disp = sorted(base["RECURSO"].dropna().unique().tolist()) if "RECURSO" in base.columns else []
 
+    mes = _extrair_mes_chat(pergunta, meses)
     contrato = _identificar_contrato_chat(pergunta, contratos_disp)
     recurso = _identificar_recurso_chat(pergunta, recursos_disp)
+
+    contexto_anterior = st.session_state.get("chatbot_painel_contexto", {}) if hasattr(st, "session_state") else {}
+    complemento = _pergunta_eh_complemento_chat(pergunta_norm)
+
+    # Se a pergunta for continuação, reaproveita o último escopo encontrado.
+    if complemento and not recurso:
+        recurso = contexto_anterior.get("recurso")
+    if complemento and not contrato:
+        contrato = contexto_anterior.get("contrato")
+    if complemento and not mes:
+        mes = contexto_anterior.get("mes")
+
+    # Se o usuário não informar mês, mantém o mês mais recente da base.
+    if not mes and meses:
+        mes = meses[0]
 
     df = base.copy()
     if mes:
@@ -2046,7 +2105,6 @@ def responder_chatbot_painel(pergunta, notas):
     if recurso:
         df = df[df["RECURSO"] == recurso].copy()
 
-    pergunta_norm = _normalizar_chat(pergunta)
     periodo_txt = mes or "todo o histórico"
     escopo = []
     if contrato:
@@ -2055,7 +2113,21 @@ def responder_chatbot_painel(pergunta, notas):
         escopo.append(f"equipe **{recurso}**")
     escopo_txt = " da " + " / ".join(escopo) if escopo else " geral"
 
-    if df.empty:
+    quer_express = "EXPRESS" in pergunta_norm or "PAGAMENTO EXPRESS" in pergunta_norm
+    quer_somar_express = quer_express and any(t in pergunta_norm for t in ["CONTAR", "CONTA", "INCLUI", "INCLUIR", "COM", "SOMAR", "TOTAL"])
+    pergunta_so_express = quer_express and any(t in pergunta_norm for t in ["QUANTOS", "QUANTO", "QTD", "QUANTIDADE", "FEZ", "FIZERAM"])
+
+    express_info = _express_chat_periodo(notas, mes, contrato=contrato, recurso=recurso) if quer_express or recurso or contrato else {"express": 0, "faturamento_express": 0.0, "tem_base": False}
+
+    # Atualiza memória assim que resolve o escopo; isso permite a próxima pergunta complementar.
+    if hasattr(st, "session_state"):
+        st.session_state["chatbot_painel_contexto"] = {
+            "mes": mes,
+            "contrato": contrato,
+            "recurso": recurso,
+        }
+
+    if df.empty and not (quer_express and express_info.get("tem_base")):
         return f"Não encontrei dados para {escopo_txt} em **{periodo_txt}**."
 
     if any(p in pergunta_norm for p in ["QUEM MAIS", "TOP", "MAIOR PRODU", "RANKING", "LIDER"]):
@@ -2080,30 +2152,61 @@ def responder_chatbot_painel(pergunta, notas):
         recusas = df[eh_recusa == 1].copy()
         if recusas.empty:
             return f"Não encontrei recusas para {escopo_txt} em **{periodo_txt}**."
-        resumo = (
+        resumo_recusas = (
             recusas.groupby("RECUSA", dropna=False)
             .agg(QTD=("ORDEM_DE_SERVICO", "nunique"))
             .reset_index()
             .sort_values(["QTD", "RECUSA"], ascending=[False, True])
         )
-        total = int(resumo["QTD"].sum())
+        total = int(resumo_recusas["QTD"].sum())
         linhas = [f"Foram **{numero(total)} recusas**{escopo_txt} em **{periodo_txt}**.", "", "**Por tipo:**"]
-        for row in resumo.itertuples(index=False):
+        for row in resumo_recusas.itertuples(index=False):
             motivo = row.RECUSA if str(row.RECUSA).strip() else "Não informado"
             linhas.append(f"- {motivo}: **{numero(row.QTD)}**")
         return "\n".join(linhas)
 
-    resumo = _resumo_numerico_chat(df)
-    linhas = [f"Resumo{escopo_txt} em **{periodo_txt}**:", ""]
+    resumo = _resumo_numerico_chat(df) if not df.empty else {
+        "notas": 0, "cortes": 0, "religues": 0, "recusas": 0, "faturamento": 0.0, "recursos": 0
+    }
+    express_qtd = int(express_info.get("express", 0) or 0)
+    faturamento_express = float(express_info.get("faturamento_express", 0.0) or 0.0)
+
+    # Pergunta direta sobre express: responde express, não resumo comum.
+    if pergunta_so_express and not quer_somar_express:
+        linhas = [f"Pagamento express{escopo_txt} em **{periodo_txt}**:", ""]
+        linhas.append(f"- **Express:** {numero(express_qtd)}")
+        if faturamento_express:
+            linhas.append(f"- **Faturamento express:** {dinheiro(faturamento_express)}")
+        if not express_info.get("tem_base"):
+            linhas.append("- Obs.: não encontrei a planilha de Pagamento Express no local configurado.")
+        return "\n".join(linhas)
+
+    titulo_extra = " (incluindo pagamento express)" if quer_somar_express else ""
+    linhas = [f"Resumo{escopo_txt} em **{periodo_txt}**{titulo_extra}:", ""]
     linhas.append(f"- **Notas feitas:** {numero(resumo['notas'])}")
+
+    if quer_express or express_qtd:
+        linhas.append(f"- **Express:** {numero(express_qtd)}")
+        if quer_somar_express:
+            linhas.append(f"- **Total com express:** {numero(resumo['notas'] + express_qtd)}")
+
     linhas.append(f"- **Cortes:** {numero(resumo['cortes'])}")
     linhas.append(f"- **Religues:** {numero(resumo['religues'])}")
     linhas.append(f"- **Recusas:** {numero(resumo['recusas'])}")
-    linhas.append(f"- **Faturamento:** {dinheiro(resumo['faturamento'])}")
+
+    faturamento_total = resumo["faturamento"] + (faturamento_express if quer_somar_express else 0.0)
+    if quer_somar_express and faturamento_express:
+        linhas.append(f"- **Faturamento sem express:** {dinheiro(resumo['faturamento'])}")
+        linhas.append(f"- **Faturamento express:** {dinheiro(faturamento_express)}")
+        linhas.append(f"- **Faturamento total:** {dinheiro(faturamento_total)}")
+    else:
+        linhas.append(f"- **Faturamento:** {dinheiro(resumo['faturamento'])}")
+
     if not recurso:
         linhas.append(f"- **Recursos ativos:** {numero(resumo['recursos'])}")
+    if quer_express and not express_info.get("tem_base"):
+        linhas.append("- Obs.: não encontrei a planilha de Pagamento Express no local configurado.")
     return "\n".join(linhas)
-
 
 def mostrar_chatbot_popup(notas):
     """Mostra um assistente em formato de popup fixo no canto inferior direito."""
