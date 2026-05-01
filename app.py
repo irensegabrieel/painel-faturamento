@@ -246,6 +246,68 @@ USUARIOS_ACESSO = {
 
 CONTRATOS_SUPERVISOR_STC = ["STC Jundiai", "Disjuntor Santa Cruz"]
 
+
+# ==============================
+# AJUSTE MOBILE / RESPONSIVIDADE
+# ==============================
+st.markdown(
+    """
+    <style>
+    @media (max-width: 768px) {
+        html, body, .stApp { background: #0b1220 !important; color: #e5e7eb !important; }
+        .main .block-container {
+            padding-top: 0.75rem !important;
+            padding-left: 0.85rem !important;
+            padding-right: 0.85rem !important;
+            padding-bottom: 7.5rem !important;
+            max-width: 100% !important;
+        }
+        h1 {
+            font-size: 1.55rem !important;
+            line-height: 1.15 !important;
+            margin-bottom: 0.35rem !important;
+            color: #f8fafc !important;
+        }
+        h2 { font-size: 1.28rem !important; color: #f8fafc !important; }
+        h3 { font-size: 1.08rem !important; color: #f8fafc !important; }
+        .stCaption, div[data-testid="stCaptionContainer"] {
+            color: #cbd5e1 !important;
+            font-size: 0.88rem !important;
+        }
+        div[data-testid="stMetric"], .ranking-podium, .status-card, .zero-card {
+            background: rgba(15, 23, 42, 0.96) !important;
+            border-color: rgba(148, 163, 184, 0.28) !important;
+            box-shadow: 0 10px 28px rgba(0,0,0,0.28) !important;
+        }
+        div[data-testid="stMetric"] label, div[data-testid="stMetricValue"] {
+            color: #f8fafc !important;
+        }
+        .executive-card {
+            background: linear-gradient(135deg, #111827 0%, #1d4ed8 100%) !important;
+            border-radius: 20px !important;
+            padding: 16px 18px !important;
+            margin: 8px 0 14px 0 !important;
+            box-shadow: 0 12px 30px rgba(29, 78, 216, 0.22) !important;
+        }
+        .executive-card h3, .executive-card p, .executive-card div, .executive-card span {
+            color: #ffffff !important;
+        }
+        section[data-testid="stSidebar"] {
+            background: #0f172a !important;
+        }
+        div[data-testid="stDataFrame"] {
+            max-width: 100% !important;
+            overflow-x: auto !important;
+        }
+        button[kind="secondary"], button[data-baseweb="tab"] {
+            min-height: 40px !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
@@ -2827,6 +2889,31 @@ def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True
         div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) [data-testid="stMarkdownContainer"] p,
         div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) [data-testid="stMarkdownContainer"] li {
             font-size: 0.92rem;
+        }
+        @media (max-width: 768px) {
+            div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) {
+                left: 10px !important;
+                right: 10px !important;
+                bottom: 10px !important;
+                width: auto !important;
+                max-height: 48vh !important;
+                padding: 8px 10px 10px 10px !important;
+                border-radius: 20px !important;
+                overflow-y: auto !important;
+                background: rgba(15, 23, 42, 0.98) !important;
+                box-shadow: 0 12px 38px rgba(0,0,0,0.48) !important;
+            }
+            div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) summary {
+                font-size: 0.92rem !important;
+                color: #f8fafc !important;
+            }
+            div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) .gzus-brand-card {
+                padding: 10px 12px !important;
+                margin-bottom: 8px !important;
+            }
+            div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) input {
+                font-size: 16px !important;
+            }
         }
         </style>
         """,
