@@ -3606,9 +3606,46 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
         if len(contratos_recurso) == 1:
             contrato = contratos_recurso[0]
 
-    tipo = _tipo_consulta_chat(pergunta_norm)
-    metrica_ranking = _ranking_metrica_chat(pergunta_norm)
-    top_n = _top_n_chat(pergunta_norm, padrao=5)
+    # ==============================
+    # MOTOR LOCAL DE INTENÇÃO / CONTEXTO
+    # ==============================
+    # O chatbot continua sem API externa, mas passa a separar:
+    # 1) o que foi dito agora;
+    # 2) o que deve ser herdado da pergunta anterior;
+    # 3) o que será consultado na base.
+    # Isso corrige continuações como "E em março?", mantendo ranking/contrato/métrica.
+    tipo_detectado = _tipo_consulta_chat(pergunta_norm)
+    metrica_detectada = _ranking_metrica_chat(pergunta_norm)
+    top_n_detectado = _top_n_chat(pergunta_norm, padrao=5)
+
+    tem_intencao_forte = any(t in pergunta_norm for t in [
+        "QUEM MAIS", "QUEM FOI", "TOP", "RANKING", "LIDER", "LÍDER",
+        "MAIS FEZ", "MAIS NOTAS", "CAMPEAO", "CAMPEÃO", "RECUSA",
+        "RECUSAS", "FATUR", "EXPRESS", "COMO FOI", "RESUMO", "QUANTO",
+        "QUANTAS", "QUANTOS", "PRODU", "NOTAS", "COMPARE", "COMPARA",
+        "VS", "VERSUS", "CRESCEU", "CAIU"
+    ])
+
+    tipo = tipo_detectado
+    metrica_ranking = metrica_detectada
+    top_n = top_n_detectado
+
+    if complemento and contexto_anterior:
+        # Perguntas curtas de sequência normalmente só trocam mês/contrato/equipe.
+        # Ex.: "E em março?" mantém "ranking da maior produção no STC".
+        if not tem_intencao_forte or pergunta_norm.startswith(("E ", "E NO", "E EM", "E A", "E O")):
+            tipo = contexto_anterior.get("tipo", tipo) or tipo
+            metrica_ranking = contexto_anterior.get("metrica_ranking", metrica_ranking) or metrica_ranking
+            top_n = int(contexto_anterior.get("top_n", top_n) or top_n)
+
+        # Se a continuação só citou mês, mantém o alvo anterior.
+        if not recurso and not contrato:
+            recurso = contexto_anterior.get("recurso")
+            contrato = contexto_anterior.get("contrato")
+
+        # Se a continuação citou uma equipe, a equipe tem prioridade sobre contrato.
+        if recurso:
+            contrato = None
 
     quer_somar_express = "EXPRESS" in pergunta_norm and any(t in pergunta_norm for t in ["CONTAR", "CONTA", "INCLUI", "INCLUIR", "COM", "SOMAR", "TOTAL"])
     quer_express = "EXPRESS" in pergunta_norm or quer_somar_express
@@ -3625,6 +3662,9 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
             "contrato": contrato,
             "recurso": recurso,
             "tipo": tipo,
+            "metrica_ranking": metrica_ranking,
+            "top_n": top_n,
+            "pergunta_original": pergunta,
         }
 
     escopo_txt = _escopo_texto_chat(contrato, recurso)
@@ -3661,6 +3701,53 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
             if pode_ver_financeiro:
                 linha_mes += f" • {dinheiro(fat_total)}"
             linhas.append(linha_mes)
+        return "\n".join(linhas)
+
+    if tipo == "comparacao":
+        import re
+        # Compara dois meses citados na pergunta ou mês atual vs contexto anterior.
+        meses_citados = []
+        for nome_mes, num_mes in {
+            "JANEIRO": "01", "FEVEREIRO": "02", "MARCO": "03", "MARÇO": "03", "ABRIL": "04",
+            "MAIO": "05", "JUNHO": "06", "JULHO": "07", "AGOSTO": "08", "SETEMBRO": "09",
+            "OUTUBRO": "10", "NOVEMBRO": "11", "DEZEMBRO": "12",
+        }.items():
+            if nome_mes in pergunta_norm:
+                for mes_disp in meses:
+                    if mes_disp.startswith(num_mes + "/") and mes_disp not in meses_citados:
+                        meses_citados.append(mes_disp)
+                        break
+        for m in re.findall(r"\b(0?[1-9]|1[0-2])/(20\d{2})\b", pergunta_norm):
+            candidato = f"{int(m[0]):02d}/{m[1]}"
+            if candidato in meses and candidato not in meses_citados:
+                meses_citados.append(candidato)
+        if len(meses_citados) < 2 and contexto_anterior.get("mes") and mes and contexto_anterior.get("mes") != mes:
+            meses_citados = [contexto_anterior.get("mes"), mes]
+        if len(meses_citados) < 2:
+            return "Para comparar, me diga dois meses. Exemplo: **comparar STC abril vs março**."
+
+        m1, m2 = meses_citados[0], meses_citados[1]
+        df1 = _filtrar_base_chat(base, mes=m1, contrato=contrato, recurso=recurso)
+        df2 = _filtrar_base_chat(base, mes=m2, contrato=contrato, recurso=recurso)
+        r1 = _resumo_numerico_chat(df1)
+        r2 = _resumo_numerico_chat(df2)
+        def var(a, b):
+            if b == 0:
+                return "novo" if a else "0,0%"
+            return f"{((a-b)/b)*100:+.1f}%".replace(".", ",")
+        alvo = recurso or contrato or "Geral"
+        linhas = [f"📊 **Comparativo — {alvo}**", "", f"**{_nome_mes_chat(m1)} → {_nome_mes_chat(m2)}**", ""]
+        linhas.append(f"• Produção: **{numero(r1['notas'])} → {numero(r2['notas'])}** ({var(r2['notas'], r1['notas'])})")
+        linhas.append(f"• Cortes/religues: **{numero(r1['cortes'])}/{numero(r1['religues'])} → {numero(r2['cortes'])}/{numero(r2['religues'])}**")
+        linhas.append(f"• Recusas: **{numero(r1['recusas'])} → {numero(r2['recusas'])}** ({var(r2['recusas'], r1['recusas'])})")
+        if pode_ver_financeiro:
+            linhas.append(f"• Faturamento: **{dinheiro(r1['faturamento'])} → {dinheiro(r2['faturamento'])}** ({var(r2['faturamento'], r1['faturamento'])})")
+        if r2['notas'] > r1['notas']:
+            linhas.append("✅ Tendência: produção cresceu no segundo período.")
+        elif r2['notas'] < r1['notas']:
+            linhas.append("⚠️ Tendência: produção caiu no segundo período.")
+        else:
+            linhas.append("➖ Tendência: produção estável.")
         return "\n".join(linhas)
 
     df = _filtrar_base_chat(base, mes=mes, contrato=contrato, recurso=recurso)
