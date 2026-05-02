@@ -2862,7 +2862,7 @@ def _remover_colunas_financeiras(df):
 
 def mostrar_painel_supervisor_leitura():
     st.title("📖 G.Z.U.S. — Supervisor Leitura")
-    st.caption("Acompanhamento operacional do contrato Leitura.")
+    st.caption("Acesso restrito ao contrato Leitura. Nenhuma tela financeira ou de corte está disponível neste perfil.")
     st.sidebar.header("Supervisor Leitura")
     st.sidebar.info("Contrato Leitura")
     mostrar_base_leitura("Americana")
@@ -2873,7 +2873,7 @@ def mostrar_painel_supervisor_leitura():
 def mostrar_painel_supervisor_stc(bases):
     """Painel operacional STC/Santa Cruz sem qualquer métrica financeira."""
     st.title("🤖 G.Z.U.S. — Supervisor STC")
-    st.caption("Acompanhamento de produção e execução STC.")
+    st.caption("Acompanhamento operacional STC")
 
     notas_stc = bases.get("notas", pd.DataFrame())
     if notas_stc.empty:
@@ -3197,32 +3197,43 @@ def _extrair_mes_chat(pergunta, meses_disponiveis, contexto=None):
 
 
 def _identificar_contrato_chat(pergunta, contratos_disponiveis):
+    """Identifica contrato com regras rígidas.
+
+    - STC / carro / JUN58 = STC Jundiai.
+    - Santa Cruz = Disjuntor Santa Cruz.
+    - Jundiaí sozinho respeita os contratos disponíveis no perfil.
+    """
+    import re
     pergunta_norm = _normalizar_chat(pergunta)
+    disponiveis = set(contratos_disponiveis or [])
 
     if "TODOS" in pergunta_norm or "GERAL" in pergunta_norm:
         return None
 
-    atalhos = {
-        "STC JUNDIAI": "STC Jundiai",
-        "STC JUNDIA": "STC Jundiai",
-        "CARRO": "STC Jundiai",
-        "JUN58": "STC Jundiai",
-        "SANTA CRUZ": "Disjuntor Santa Cruz",
-        "ST CRUZ": "Disjuntor Santa Cruz",
-        "JUNDIAI": "Disjuntor Jundiaí",
-        "JUNDIA": "Disjuntor Jundiaí",
-        "DISJUNTOR JUNDIAI": "Disjuntor Jundiaí",
-        "DISJUNTOR SANTA CRUZ": "Disjuntor Santa Cruz",
-    }
+    def tem_termo(termo):
+        termo_norm = _normalizar_chat(termo)
+        return re.search(rf"(?<![A-Z0-9]){re.escape(termo_norm)}(?![A-Z0-9])", pergunta_norm) is not None
 
-    for chave, contrato in atalhos.items():
-        if chave in pergunta_norm and contrato in contratos_disponiveis:
+    regras = [
+        (["DISJUNTOR SANTA CRUZ", "SANTA CRUZ", "ST CRUZ", "SANTACRUZ"], "Disjuntor Santa Cruz"),
+        (["STC JUNDIAI", "STC JUNDIA", "CONTRATO CARRO", "CARRO", "JUN58"], "STC Jundiai"),
+        (["STC"], "STC Jundiai"),
+        (["DISJUNTOR JUNDIAI", "DISJUNTOR JUNDIA"], "Disjuntor Jundiaí"),
+    ]
+
+    for termos, contrato in regras:
+        if contrato in disponiveis and any(tem_termo(t) for t in termos):
             return contrato
+
+    if any(tem_termo(t) for t in ["JUNDIAI", "JUNDIA"]):
+        if "Disjuntor Jundiaí" in disponiveis:
+            return "Disjuntor Jundiaí"
+        if "STC Jundiai" in disponiveis:
+            return "STC Jundiai"
 
     for contrato in contratos_disponiveis:
         if _normalizar_chat(contrato) in pergunta_norm:
             return contrato
-
     return None
 
 
@@ -3274,24 +3285,118 @@ def _pergunta_ultimos_meses_chat(pergunta_norm):
 
 
 def _tipo_consulta_chat(pergunta_norm):
-    gatilhos_ranking = [
-        "QUEM MAIS", "QUEM FOI", "TOP", "RANKING", "LIDER", "LÍDER",
-        "MAIOR PRODU", "MAIS FEZ", "MAIS NOTAS", "EQUIPE QUE MAIS",
-        "RECURSO QUE MAIS", "CAMPEAO", "CAMPEÃO", "MELHOR EQUIPE", "MAIOR QUANTIDADE"
-    ]
-    quer_ranking = any(t in pergunta_norm for t in gatilhos_ranking)
-
-    if any(t in pergunta_norm for t in ["RECUSA", "RECUSAS", "CONTA PAGA", "SEM ACESSO"]):
-        return "ranking_recusas" if quer_ranking else "recusas"
+    if any(t in pergunta_norm for t in ["COMPARE", "COMPARA", "VS", "VERSUS", "MELHOR QUE", "PIOR QUE", "CRESCEU", "CAIU"]):
+        return "comparacao"
+    if any(t in pergunta_norm for t in ["QUEM MAIS", "QUEM FOI", "TOP", "RANKING", "LIDER", "LÍDER", "MAIOR PRODU", "MAIS FEZ", "MAIS NOTAS", "CAMPEAO", "CAMPEÃO"]):
+        return "ranking"
+    if any(t in pergunta_norm for t in ["RECUSA", "RECUSAS", "CONTA PAGA", "SEM ACESSO", "CASA FECHADA", "CLIENTE"]):
+        return "recusas"
     if "EXPRESS" in pergunta_norm:
         return "express"
-    if any(t in pergunta_norm for t in ["FATUR", "RECEITA", "VALOR", "R$"]):
+    if any(t in pergunta_norm for t in ["FATUR", "RECEITA", "VALOR", "R$", "DINHEIRO"]):
         return "faturamento"
-    if quer_ranking:
-        return "ranking"
-    if any(t in pergunta_norm for t in ["COMO FOI", "RESUMO", "QUANTO", "QUANTAS", "QUANTOS", "FEZ", "PRODU", "NOTAS"]):
+    if any(t in pergunta_norm for t in ["COMO FOI", "RESUMO", "QUANTO", "QUANTAS", "QUANTOS", "FEZ", "PRODU", "NOTAS", "RESULTADO"]):
         return "resumo"
     return "resumo"
+
+
+def _top_n_chat(pergunta_norm, padrao=5):
+    import re
+    m = re.search(r"\bTOP\s*(\d{1,2})\b", pergunta_norm)
+    if not m:
+        m = re.search(r"\b(\d{1,2})\s*(?:PRIMEIR|MELHOR|MAIOR|EQUIPE)", pergunta_norm)
+    if m:
+        try:
+            return max(1, min(int(m.group(1)), 15))
+        except Exception:
+            return padrao
+    if any(t in pergunta_norm for t in ["QUEM", "CAMPEAO", "CAMPEÃO", "LIDER", "LÍDER"]):
+        return 1
+    return padrao
+
+
+def _ranking_metrica_chat(pergunta_norm):
+    if any(t in pergunta_norm for t in ["RECUSA", "RECUSAS", "CONTA PAGA", "CASA FECHADA", "SEM ACESSO"]):
+        return "recusas"
+    if any(t in pergunta_norm for t in ["MEDIA", "MÉDIA", "EFICIEN", "POR DIA"]):
+        return "media"
+    if any(t in pergunta_norm for t in ["FATUR", "VALOR", "RECEITA", "R$"]):
+        return "faturamento"
+    return "notas"
+
+
+def _montar_ranking_chat(df, metrica="notas", pode_ver_financeiro=True):
+    if df.empty:
+        return pd.DataFrame()
+
+    eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
+    base = df.copy()
+    base["_EH_RECUSA"] = eh_recusa.values
+    pagaveis = base[base["_EH_RECUSA"] == 0].copy()
+    recusas = base[base["_EH_RECUSA"] == 1].copy()
+
+    recursos = sorted(base.get("RECURSO", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+    if not recursos:
+        return pd.DataFrame()
+
+    if pagaveis.empty:
+        ranking = pd.DataFrame({"RECURSO": recursos})
+        ranking["NOTAS"] = 0
+        ranking["CORTES"] = 0
+        ranking["RELIGUES"] = 0
+        ranking["DIAS_ATIVOS"] = 0
+        ranking["FATURAMENTO"] = 0.0
+    else:
+        ranking = (
+            pagaveis.groupby("RECURSO", dropna=False)
+            .agg(
+                NOTAS=("ORDEM_DE_SERVICO", "nunique"),
+                CORTES=("EH_CORTE", "sum"),
+                RELIGUES=("EH_RELIGUE", "sum"),
+                DIAS_ATIVOS=("DATA", "nunique"),
+                FATURAMENTO=("FATURAMENTO", "sum"),
+            )
+            .reset_index()
+        )
+
+    if recusas.empty:
+        rec = pd.DataFrame({"RECURSO": recursos, "RECUSAS": 0})
+    else:
+        rec = recusas.groupby("RECURSO", dropna=False).agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique")).reset_index()
+
+    ranking = ranking.merge(rec, on="RECURSO", how="outer").fillna(0)
+    for col in ["NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS", "RECUSAS"]:
+        if col not in ranking.columns:
+            ranking[col] = 0
+        ranking[col] = pd.to_numeric(ranking[col], errors="coerce").fillna(0).astype(int)
+    if "FATURAMENTO" not in ranking.columns:
+        ranking["FATURAMENTO"] = 0.0
+    ranking["FATURAMENTO"] = pd.to_numeric(ranking["FATURAMENTO"], errors="coerce").fillna(0.0)
+    ranking["MEDIA_DIA"] = ranking.apply(lambda r: (r["NOTAS"] / r["DIAS_ATIVOS"]) if r["DIAS_ATIVOS"] else 0, axis=1)
+
+    if metrica == "recusas":
+        ordem = ["RECUSAS", "NOTAS"]
+    elif metrica == "media":
+        ordem = ["MEDIA_DIA", "NOTAS"]
+    elif metrica == "faturamento" and pode_ver_financeiro:
+        ordem = ["FATURAMENTO", "NOTAS"]
+    else:
+        ordem = ["NOTAS", "RECUSAS"]
+
+    ranking = ranking.sort_values(ordem, ascending=[False] * len(ordem)).reset_index(drop=True)
+    ranking.insert(0, "POSICAO", range(1, len(ranking) + 1))
+    return ranking
+
+
+def _principal_recusa_recurso_chat(df, recurso=None):
+    tmp = df.copy()
+    if recurso and "RECURSO" in tmp.columns:
+        tmp = tmp[tmp["RECURSO"] == recurso].copy()
+    resumo = _resumo_recusas_tipo(tmp)
+    if resumo.empty:
+        return ""
+    row = resumo.iloc[0]
+    return f"Principal motivo de recusa: **{row['RECUSA']}** ({numero(int(row['QTD']))})."
 
 
 def _resumo_numerico_chat(df):
@@ -3458,7 +3563,11 @@ def responder_chatbot_leitura(pergunta):
     return "\n".join(linhas)
 
 def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver_express=True, modo_leitura=False):
-    """Responde perguntas operacionais usando os CSVs já carregados no painel."""
+    """Responde perguntas operacionais usando os CSVs já carregados no painel.
+
+    Versão avançada local: entende contrato, equipe, mês, ranking, top N,
+    perguntas curtas e continuações de conversa sem depender de API externa.
+    """
     if modo_leitura:
         return responder_chatbot_leitura(pergunta)
 
@@ -3481,7 +3590,6 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
     contrato = _identificar_contrato_chat(pergunta, contratos_disp)
     recurso = _identificar_recurso_chat(pergunta, recursos_disp)
 
-    # Continuação de conversa: mantém escopo anterior quando a frase é curta ou complementar.
     if complemento:
         if not recurso:
             recurso = contexto_anterior.get("recurso")
@@ -3493,18 +3601,23 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
     if not mes and meses:
         mes = meses[0]
 
-    # Se achou equipe, o contrato vem naturalmente da própria base.
     if recurso and not contrato:
         contratos_recurso = base.loc[base["RECURSO"] == recurso, "CONTRATO"].dropna().unique().tolist()
         if len(contratos_recurso) == 1:
             contrato = contratos_recurso[0]
 
     tipo = _tipo_consulta_chat(pergunta_norm)
+    metrica_ranking = _ranking_metrica_chat(pergunta_norm)
+    top_n = _top_n_chat(pergunta_norm, padrao=5)
+
     quer_somar_express = "EXPRESS" in pergunta_norm and any(t in pergunta_norm for t in ["CONTAR", "CONTA", "INCLUI", "INCLUIR", "COM", "SOMAR", "TOTAL"])
     quer_express = "EXPRESS" in pergunta_norm or quer_somar_express
 
     if quer_express and not pode_ver_express:
-        return "Não encontrei essa informação na visão atual."
+        return "Não encontrei essa informação na visão atual. Posso consultar produção, cortes, religues, recusas e ranking operacional."
+
+    if not pode_ver_financeiro and tipo == "faturamento":
+        tipo = "resumo"
 
     if hasattr(st, "session_state"):
         st.session_state["chatbot_painel_contexto"] = {
@@ -3517,36 +3630,26 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
     escopo_txt = _escopo_texto_chat(contrato, recurso)
     periodo_txt = _nome_mes_chat(mes) if mes else "todo o histórico"
 
-    # Histórico mês a mês.
     if _pergunta_ultimos_meses_chat(pergunta_norm):
         df_meses = base.copy()
         if contrato:
             df_meses = df_meses[df_meses["CONTRATO"] == contrato].copy()
         if recurso:
             df_meses = df_meses[df_meses["RECURSO"] == recurso].copy()
-
         eh_recusa_m = pd.to_numeric(df_meses.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
         pagaveis_m = df_meses[eh_recusa_m == 0].copy()
-
         if pagaveis_m.empty:
-            return f"Não encontrei notas pagáveis para {escopo_txt} nos últimos meses."
-
+            return f"Não encontrei notas feitas para {escopo_txt} nos últimos meses."
         pagaveis_m["MES"] = pagaveis_m["DATA_DT"].dt.strftime("%m/%Y")
         pagaveis_m["PERIODO"] = pagaveis_m["DATA_DT"].dt.to_period("M")
         mensal = (
             pagaveis_m.groupby(["MES", "PERIODO"], dropna=False)
-            .agg(
-                NOTAS=("ORDEM_DE_SERVICO", "nunique"),
-                CORTES=("EH_CORTE", "sum"),
-                RELIGUES=("EH_RELIGIE", "sum") if "EH_RELIGIE" in pagaveis_m.columns else ("EH_RELIGUE", "sum"),
-                FATURAMENTO=("FATURAMENTO", "sum"),
-            )
+            .agg(NOTAS=("ORDEM_DE_SERVICO", "nunique"), CORTES=("EH_CORTE", "sum"), RELIGUES=("EH_RELIGUE", "sum"), FATURAMENTO=("FATURAMENTO", "sum"))
             .reset_index()
             .sort_values("PERIODO", ascending=False)
             .head(6)
             .sort_values("PERIODO", ascending=True)
         )
-
         linhas = [f"📈 **{NOME_ASSISTENTE} — evolução de {escopo_txt}**", ""]
         for row in mensal.itertuples(index=False):
             express_info = _express_chat_periodo(notas, row.MES, contrato=contrato, recurso=recurso) if pode_ver_express else {"express": 0, "faturamento_express": 0.0}
@@ -3563,108 +3666,55 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
     df = _filtrar_base_chat(base, mes=mes, contrato=contrato, recurso=recurso)
     express_info = _express_chat_periodo(notas, mes, contrato=contrato, recurso=recurso) if (mes and pode_ver_express) else {"express": 0, "faturamento_express": 0.0, "tem_base": False}
 
-    # Ranking de produção / maior produção.
     if tipo == "ranking":
         if df.empty:
             return f"Não encontrei dados para montar ranking de {escopo_txt} em **{periodo_txt}**."
-
-        eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
-        pagaveis = df[eh_recusa == 0].copy()
-        if pagaveis.empty:
-            return f"Não há notas pagáveis para montar ranking em **{periodo_txt}**."
-
-        ranking = (
-            pagaveis.groupby("RECURSO", dropna=False)
-            .agg(
-                NOTAS=("ORDEM_DE_SERVICO", "nunique"),
-                CORTES=("EH_CORTE", "sum"),
-                RELIGUES=("EH_RELIGUE", "sum"),
-                DIAS_ATIVOS=("DATA", "nunique"),
-                FATURAMENTO=("FATURAMENTO", "sum"),
-            )
-            .reset_index()
-            .sort_values(["NOTAS", "CORTES", "RELIGUES"], ascending=[False, False, False])
-        )
-
-        pergunta_pede_top = any(t in pergunta_norm for t in ["TOP", "RANKING", "LISTA", "RANQUE", "5", "10"])
-        top_n = 5 if pergunta_pede_top else 1
-        ranking_top = ranking.head(top_n).copy()
-
-        if ranking_top.empty:
-            return f"Não encontrei ranking para **{periodo_txt}**."
-
+        if metrica_ranking == "faturamento" and not pode_ver_financeiro:
+            metrica_ranking = "notas"
+        ranking = _montar_ranking_chat(df, metrica=metrica_ranking, pode_ver_financeiro=pode_ver_financeiro)
+        if ranking.empty:
+            return f"Não há dados suficientes para montar ranking em **{periodo_txt}**."
+        titulo_metrica = {"notas": "maior produção", "recusas": "mais recusas", "media": "melhor média por dia", "faturamento": "maior faturamento"}.get(metrica_ranking, "ranking")
+        contexto_titulo = contrato or "Geral"
         if top_n == 1:
-            row = ranking_top.iloc[0]
-            dias = int(row.get("DIAS_ATIVOS", 0) or 0)
-            media = (float(row.get("NOTAS", 0) or 0) / dias) if dias else 0
-            linhas = [f"🏆 **Equipe com maior produção — {periodo_txt}**", ""]
-            linhas.append(f"**{row['RECURSO']}** liderou a produção com **{numero(row['NOTAS'])} notas**.")
+            row = ranking.iloc[0]
+            linhas = [f"🏆 **Equipe com {titulo_metrica} — {contexto_titulo} — {periodo_txt}**", ""]
+            if metrica_ranking == "recusas":
+                linhas.append(f"**{row['RECURSO']}** liderou com **{numero(int(row['RECUSAS']))} recusas**.")
+            elif metrica_ranking == "media":
+                linhas.append(f"**{row['RECURSO']}** liderou com **{float(row['MEDIA_DIA']):.1f} notas/dia**.".replace(".", ","))
+            elif metrica_ranking == "faturamento" and pode_ver_financeiro:
+                linhas.append(f"**{row['RECURSO']}** liderou com **{dinheiro(float(row['FATURAMENTO']))}**.")
+            else:
+                linhas.append(f"**{row['RECURSO']}** liderou a produção com **{numero(int(row['NOTAS']))} notas**.")
             linhas.append("")
-            linhas.append(f"• **Cortes / religues:** {numero(row.get('CORTES', 0))} / {numero(row.get('RELIGUES', 0))}")
-            if dias:
-                linhas.append(f"• **Média/dia:** {media:.1f} notas".replace(".", ","))
-            if pode_ver_financeiro:
-                linhas.append(f"• **Faturamento:** {dinheiro(row.get('FATURAMENTO', 0))}")
-
-            # Contexto operacional do primeiro lugar: recusas por tipo, se houver.
-            df_top = df[df["RECURSO"] == row["RECURSO"]].copy()
-            resumo_recusas_top = _resumo_recusas_tipo(df_top)
-            if not resumo_recusas_top.empty:
-                total_rec_top = int(resumo_recusas_top["QTD"].sum())
-                motivo_top = resumo_recusas_top.iloc[0]
-                linhas.append(f"• **Recusas:** {numero(total_rec_top)}")
-                linhas.append(f"⚠️ Principal motivo de recusa: **{motivo_top['RECUSA']}** ({numero(motivo_top['QTD'])}).")
+            detalhe = f"• Cortes / religues: **{numero(int(row['CORTES']))} / {numero(int(row['RELIGUES']))}** • Média/dia: **{float(row['MEDIA_DIA']):.1f}** • Recusas: **{numero(int(row['RECUSAS']))}**"
+            linhas.append(detalhe.replace(".", ","))
+            motivo = _principal_recusa_recurso_chat(df, recurso=row["RECURSO"])
+            if motivo:
+                linhas.append(f"⚠️ {motivo}")
             return "\n".join(linhas)
-
-        linhas = [f"🏆 **{NOME_ASSISTENTE} — Top {top_n} em {periodo_txt}**", ""]
-        for i, row in enumerate(ranking_top.itertuples(index=False), start=1):
-            linha = f"{i}. **{row.RECURSO}** — {numero(row.NOTAS)} notas • Cortes/religues: {numero(row.CORTES)} / {numero(row.RELIGUES)}"
-            if pode_ver_financeiro:
-                linha += f" • {dinheiro(row.FATURAMENTO)}"
-            linhas.append(linha)
+        linhas = [f"🏆 **Top {top_n} — {titulo_metrica} — {contexto_titulo} — {periodo_txt}**", ""]
+        for _, row in ranking.head(top_n).iterrows():
+            if metrica_ranking == "recusas":
+                principal = _principal_recusa_recurso_chat(df, recurso=row["RECURSO"])
+                extra = f" • {principal.replace('Principal motivo de recusa: ', '')}" if principal else ""
+                linhas.append(f"{int(row['POSICAO'])}. **{row['RECURSO']}** — {numero(int(row['RECUSAS']))} recusas • {numero(int(row['NOTAS']))} notas{extra}")
+            elif metrica_ranking == "media":
+                linhas.append(f"{int(row['POSICAO'])}. **{row['RECURSO']}** — {float(row['MEDIA_DIA']):.1f} notas/dia • {numero(int(row['NOTAS']))} notas".replace(".", ","))
+            elif metrica_ranking == "faturamento" and pode_ver_financeiro:
+                linhas.append(f"{int(row['POSICAO'])}. **{row['RECURSO']}** — {dinheiro(float(row['FATURAMENTO']))} • {numero(int(row['NOTAS']))} notas")
+            else:
+                linhas.append(f"{int(row['POSICAO'])}. **{row['RECURSO']}** — {numero(int(row['NOTAS']))} notas • Cortes/religues: {numero(int(row['CORTES']))}/{numero(int(row['RELIGUES']))} • Recusas: {numero(int(row['RECUSAS']))}")
         return "\n".join(linhas)
 
-    # Ranking de recusas / maior recusa.
-    if tipo == "ranking_recusas":
-        if df.empty:
-            return f"Não encontrei dados para montar ranking de recusas em **{periodo_txt}**."
-        eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
-        recusas_df = df[eh_recusa == 1].copy()
-        if recusas_df.empty:
-            return f"Não encontrei recusas em **{periodo_txt}**."
-        ranking_rec = (
-            recusas_df.groupby("RECURSO", dropna=False)
-            .agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
-            .reset_index()
-            .sort_values("RECUSAS", ascending=False)
-        )
-        pergunta_pede_top = any(t in pergunta_norm for t in ["TOP", "RANKING", "LISTA", "5", "10"])
-        top_n = 5 if pergunta_pede_top else 1
-        linhas = [f"🚧 **Ranking de recusas — {periodo_txt}**", ""]
-        for i, row in enumerate(ranking_rec.head(top_n).itertuples(index=False), start=1):
-            linhas.append(f"{i}. **{row.RECURSO}** — {numero(row.RECUSAS)} recusas")
-        if top_n == 1:
-            recurso_top = ranking_rec.iloc[0]["RECURSO"]
-            motivos = _resumo_recusas_tipo(recusas_df[recusas_df["RECURSO"] == recurso_top])
-            if not motivos.empty:
-                linhas.append("")
-                linhas.append("**Principais motivos:**")
-                for row in motivos.head(3).itertuples(index=False):
-                    linhas.append(f"- {row.RECUSA}: **{numero(row.QTD)}**")
-        return "\n".join(linhas)
-
-    # Recusas por tipo.
     if tipo == "recusas":
         resumo_recusas = _resumo_recusas_tipo(df)
         if resumo_recusas.empty:
             return f"Não encontrei recusas para {escopo_txt} em **{periodo_txt}**."
-
         total = int(resumo_recusas["QTD"].sum())
-        linhas = [f"🚧 **{NOME_ASSISTENTE} — recusas de {escopo_txt} em {periodo_txt}**", ""]
-        linhas.append(f"Total de recusas: **{numero(total)}**")
-        linhas.append("")
-        linhas.append("**Por tipo:**")
-        for row in resumo_recusas.itertuples(index=False):
+        linhas = [f"🚧 **{NOME_ASSISTENTE} — recusas de {escopo_txt} em {periodo_txt}**", "", f"Total de recusas: **{numero(total)}**", "", "**Por tipo:**"]
+        for row in resumo_recusas.head(10).itertuples(index=False):
             linhas.append(f"- {row.RECUSA}: **{numero(row.QTD)}**")
         return "\n".join(linhas)
 
@@ -3672,24 +3722,20 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
     express_qtd = int(express_info.get("express", 0) or 0)
     faturamento_express = float(express_info.get("faturamento_express", 0.0) or 0.0)
     resumo_recusas = _resumo_recusas_tipo(df)
-
     if df.empty and express_qtd == 0:
         return f"Não encontrei dados para {escopo_txt} em **{periodo_txt}**."
 
-    # Pergunta direta sobre express.
     if tipo == "express" and not quer_somar_express:
-        linhas = [f"⚡ **{NOME_ASSISTENTE} — pagamento express de {escopo_txt} em {periodo_txt}**", ""]
-        linhas.append(f"• Express: **{numero(express_qtd)}**")
+        linhas = [f"⚡ **{NOME_ASSISTENTE} — pagamento express de {escopo_txt} em {periodo_txt}**", "", f"• Express: **{numero(express_qtd)}**"]
         if faturamento_express and pode_ver_financeiro:
             linhas.append(f"• Faturamento express: **{dinheiro(faturamento_express)}**")
         if not express_info.get("tem_base"):
-            linhas.append("")
-            linhas.append("Obs.: não encontrei a planilha de Pagamento Express no local configurado.")
+            linhas.extend(["", "Obs.: não encontrei a planilha de Pagamento Express no local configurado."])
         return "\n".join(linhas)
 
     faturamento_base = float(resumo["faturamento"])
     faturamento_total = faturamento_base + faturamento_express
-    total_atendimentos = int(resumo["notas"] + express_qtd)
+    total_atendimentos = int(resumo["notas"] + (express_qtd if pode_ver_express else 0))
     volume_com_recusas = total_atendimentos + int(resumo["recusas"])
     taxa_recusa = (resumo["recusas"] / volume_com_recusas * 100) if volume_com_recusas else 0
     media_dia = (resumo["notas"] / resumo["dias_ativos"]) if resumo["dias_ativos"] else 0
@@ -3709,15 +3755,16 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
         linhas.append(f"• **Média/dia:** {media_dia:.1f} notas".replace(".", ","))
     if not recurso:
         linhas.append(f"• **Recursos ativos:** {numero(resumo['recursos'])}")
-
     linhas.append("")
     for destaque in _destaques_executivos_chat(resumo, express_qtd if pode_ver_express else 0, resumo_recusas):
         linhas.append(destaque)
-
+    if any(t in pergunta_norm for t in ["COMO FOI", "RESUMO", "RESULTADO"]):
+        ranking = _montar_ranking_chat(df, metrica="notas", pode_ver_financeiro=pode_ver_financeiro)
+        if not ranking.empty:
+            top = ranking.iloc[0]
+            linhas.append(f"Destaque de produção: **{top['RECURSO']}** com {numero(int(top['NOTAS']))} notas.")
     if quer_express and not express_info.get("tem_base"):
-        linhas.append("")
-        linhas.append("Obs.: não encontrei a planilha de Pagamento Express no local configurado.")
-
+        linhas.extend(["", "Obs.: não encontrei a planilha de Pagamento Express no local configurado."])
     return "\n".join(linhas)
 
 
