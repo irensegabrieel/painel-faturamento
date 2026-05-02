@@ -1192,11 +1192,28 @@ def mostrar_painel_leitura():
                     parcial_filtrada[col] = 0
                 parcial_filtrada[col] = pd.to_numeric(parcial_filtrada[col], errors="coerce").fillna(0).astype(int)
 
+            # Pode haver vários arquivos do mesmo dia no GitHub/local, porque o extrator
+            # salva com timestamp a cada execução. Antes o painel somava as linhas
+            # duplicadas para FEITA/PARCIAL/PENDENTE, mas contava TAREFA como única.
+            # Isso gerava situações impossíveis, como 212 tarefas e 632 feitas.
+            # Aqui consolidamos novamente por tarefa única no recorte escolhido.
+            if "TAREFA" in parcial_filtrada.columns and not parcial_filtrada.empty:
+                chaves_dedup = [c for c in ["BASE", "TAREFA", "DT_PREVISTA_DT"] if c in parcial_filtrada.columns]
+                if not chaves_dedup:
+                    chaves_dedup = ["TAREFA"]
+                parcial_filtrada = (
+                    parcial_filtrada
+                    .sort_values([c for c in ["ARQUIVO", "ABA"] if c in parcial_filtrada.columns])
+                    .drop_duplicates(subset=chaves_dedup, keep="last")
+                    .reset_index(drop=True)
+                )
+
             total_tarefas = int(parcial_filtrada["TAREFA"].nunique()) if "TAREFA" in parcial_filtrada.columns else len(parcial_filtrada)
-            feitas = int((parcial_filtrada.get("STATUS OPERACIONAL", "") == "FEITA").sum()) if not parcial_filtrada.empty else 0
-            parciais = int((parcial_filtrada.get("STATUS OPERACIONAL", "") == "PARCIAL").sum()) if not parcial_filtrada.empty else 0
-            pendentes = int((parcial_filtrada.get("STATUS OPERACIONAL", "") == "PENDENTE").sum()) if not parcial_filtrada.empty else 0
-            sem_total = int((parcial_filtrada.get("STATUS OPERACIONAL", "") == "SEM TOTAL").sum()) if not parcial_filtrada.empty else 0
+            status_series = parcial_filtrada.get("STATUS OPERACIONAL", pd.Series(dtype=str)).fillna("").astype(str).str.upper() if not parcial_filtrada.empty else pd.Series(dtype=str)
+            feitas = int((status_series == "FEITA").sum())
+            parciais = int((status_series == "PARCIAL").sum())
+            pendentes = int((status_series == "PENDENTE").sum())
+            sem_total = int((status_series == "SEM TOTAL").sum())
             faltam = int(parcial_filtrada["FALTAM"].sum()) if not parcial_filtrada.empty else 0
             perc = (feitas / total_tarefas * 100) if total_tarefas else 0
 
