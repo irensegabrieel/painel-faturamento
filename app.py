@@ -1140,22 +1140,142 @@ def mostrar_painel_leitura():
                 st.altair_chart(grafico, use_container_width=True)
 
     with aba_parcial:
-        st.caption("Parcial por agente comercial, alimentada pela aba/formato AGENTE COMERCIAL + T. INSTALA + T. VISITADA.")
-        if df_parcial.empty:
-            # Se não houver aba legada, usa tarefas reais como detalhe operacional.
-            if df_tarefas_reais.empty:
-                st.warning("Não encontrei parcial por agente neste arquivo.")
+        st.caption("Parcial do dia da leitura: escolha a data e veja produção por agente e serviços que ainda não estão prontos.")
+
+        # Preferimos o formato novo do extrator, porque ele traz DT PREVISTA, tarefa,
+        # município, D operacional e status real da tarefa. O formato antigo por agente
+        # fica apenas como fallback quando ainda não houver arquivos Tarefas_*.xlsx.
+        if not df_tarefas_reais.empty:
+            parcial_dia = df_tarefas_reais.copy()
+
+            # Normaliza datas para permitir seleção igual ao painel de corte.
+            if "DT PREVISTA" in parcial_dia.columns:
+                parcial_dia["DT_PREVISTA_DT"] = pd.to_datetime(parcial_dia["DT PREVISTA"], dayfirst=True, errors="coerce")
             else:
-                st.info("Não encontrei parcial por agente. Exibindo tarefas detalhadas do arquivo novo.")
-                detalhe = df_tarefas_reais.copy()
+                parcial_dia["DT_PREVISTA_DT"] = pd.NaT
+
+            datas_disponiveis_df = (
+                parcial_dia[["DT_PREVISTA_DT"]]
+                .dropna()
+                .drop_duplicates()
+                .sort_values("DT_PREVISTA_DT", ascending=False)
+            )
+
+            if datas_disponiveis_df.empty:
+                st.warning("Os arquivos novos foram encontrados, mas não trouxeram DT PREVISTA. Exibindo sem filtro de data.")
+                data_escolhida = None
+                parcial_filtrada = parcial_dia.copy()
+            else:
+                datas_opcoes = datas_disponiveis_df["DT_PREVISTA_DT"].dt.strftime("%d/%m/%Y").tolist()
+                data_escolhida = st.selectbox("Escolha o dia", datas_opcoes, index=0, key="leit_parcial_dia_select")
+                data_escolhida_dt = pd.to_datetime(data_escolhida, dayfirst=True, errors="coerce")
+                parcial_filtrada = parcial_dia[parcial_dia["DT_PREVISTA_DT"] == data_escolhida_dt].copy()
+
+            fbase, fmun, fstatus = st.columns([1.1, 1.7, 1.3])
+            bases_disp_p = sorted(parcial_filtrada.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+            municipios_disp_p = sorted(parcial_filtrada.get("MUNICÍPIO NOME", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+            status_disp_p = sorted(parcial_filtrada.get("STATUS OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+
+            base_sel_p = fbase.multiselect("Base", bases_disp_p, default=bases_disp_p, key="leit_parcial_base_novo")
+            municipio_sel_p = fmun.multiselect("Município", municipios_disp_p, default=municipios_disp_p, key="leit_parcial_mun_novo")
+            status_sel_p = fstatus.multiselect("Status", status_disp_p, default=status_disp_p, key="leit_parcial_status_novo")
+
+            if base_sel_p:
+                parcial_filtrada = parcial_filtrada[parcial_filtrada["BASE"].isin(base_sel_p)]
+            if municipio_sel_p and "MUNICÍPIO NOME" in parcial_filtrada.columns:
+                parcial_filtrada = parcial_filtrada[parcial_filtrada["MUNICÍPIO NOME"].isin(municipio_sel_p)]
+            if status_sel_p and "STATUS OPERACIONAL" in parcial_filtrada.columns:
+                parcial_filtrada = parcial_filtrada[parcial_filtrada["STATUS OPERACIONAL"].isin(status_sel_p)]
+
+            for col in ["T. INSTALA", "T. VISITADA", "FALTAM"]:
+                if col not in parcial_filtrada.columns:
+                    parcial_filtrada[col] = 0
+                parcial_filtrada[col] = pd.to_numeric(parcial_filtrada[col], errors="coerce").fillna(0).astype(int)
+
+            total_tarefas = int(parcial_filtrada["TAREFA"].nunique()) if "TAREFA" in parcial_filtrada.columns else len(parcial_filtrada)
+            feitas = int((parcial_filtrada.get("STATUS OPERACIONAL", "") == "FEITA").sum()) if not parcial_filtrada.empty else 0
+            parciais = int((parcial_filtrada.get("STATUS OPERACIONAL", "") == "PARCIAL").sum()) if not parcial_filtrada.empty else 0
+            pendentes = int((parcial_filtrada.get("STATUS OPERACIONAL", "") == "PENDENTE").sum()) if not parcial_filtrada.empty else 0
+            sem_total = int((parcial_filtrada.get("STATUS OPERACIONAL", "") == "SEM TOTAL").sum()) if not parcial_filtrada.empty else 0
+            faltam = int(parcial_filtrada["FALTAM"].sum()) if not parcial_filtrada.empty else 0
+            perc = (feitas / total_tarefas * 100) if total_tarefas else 0
+
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            m1.metric("Tarefas", numero(total_tarefas))
+            m2.metric("Feitas", numero(feitas))
+            m3.metric("Parciais", numero(parciais))
+            m4.metric("Pendentes", numero(pendentes))
+            m5.metric("Sem total", numero(sem_total))
+            m6.metric("Execução", f"{perc:.1f}%".replace(".", ","))
+
+            if faltam:
+                st.markdown(f"<div class='zero-card'><b>Instalações faltantes no dia:</b> {numero(faltam)}</div>", unsafe_allow_html=True)
+
+            st.markdown("#### Produção por agente comercial")
+            agentes = parcial_filtrada.copy()
+            if "AGENTE COMERCIAL" not in agentes.columns:
+                agentes["AGENTE COMERCIAL"] = ""
+            agentes["AGENTE COMERCIAL"] = agentes["AGENTE COMERCIAL"].fillna("").astype(str).str.strip()
+            agentes.loc[agentes["AGENTE COMERCIAL"] == "", "AGENTE COMERCIAL"] = "SEM AGENTE"
+
+            for status_nome in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+                agentes[status_nome] = (agentes.get("STATUS OPERACIONAL", "") == status_nome).astype(int)
+
+            if agentes.empty:
+                st.info("Nenhuma tarefa encontrada para os filtros selecionados.")
+            else:
+                resumo_agente = (
+                    agentes.groupby(["BASE", "AGENTE COMERCIAL"], dropna=False)
+                    .agg(
+                        TAREFAS=("TAREFA", "nunique") if "TAREFA" in agentes.columns else ("AGENTE COMERCIAL", "size"),
+                        FEITAS=("FEITA", "sum"),
+                        PARCIAIS=("PARCIAL", "sum"),
+                        PENDENTES=("PENDENTE", "sum"),
+                        SEM_TOTAL=("SEM TOTAL", "sum"),
+                        **{
+                            "T. INSTALA": ("T. INSTALA", "sum"),
+                            "T. VISITADA": ("T. VISITADA", "sum"),
+                            "FALTAM": ("FALTAM", "sum"),
+                        },
+                    )
+                    .reset_index()
+                )
+                resumo_agente["% EXECUTADO"] = 0.0
+                mask = resumo_agente["T. INSTALA"] > 0
+                resumo_agente.loc[mask, "% EXECUTADO"] = ((resumo_agente.loc[mask, "T. VISITADA"] / resumo_agente.loc[mask, "T. INSTALA"]) * 100).round(1)
+                resumo_agente = resumo_agente.sort_values(["FALTAM", "PENDENTES", "PARCIAIS", "TAREFAS"], ascending=[False, False, False, False])
+                tabela_agente = resumo_agente.copy()
+                tabela_agente["% EXECUTADO"] = tabela_agente["% EXECUTADO"].apply(lambda v: f"{float(v):.1f}%".replace(".", ","))
+                st.dataframe(tabela_agente, use_container_width=True, hide_index=True)
+
+            st.markdown("#### Serviços que não estão prontos")
+            nao_prontos = parcial_filtrada[
+                (parcial_filtrada.get("STATUS OPERACIONAL", "") != "FEITA") |
+                (pd.to_numeric(parcial_filtrada.get("FALTAM", 0), errors="coerce").fillna(0) > 0)
+            ].copy()
+
+            if nao_prontos.empty:
+                st.success("Nenhum serviço pendente/parcial para os filtros selecionados.")
+            else:
                 for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
-                    if col in detalhe.columns:
-                        detalhe[col] = pd.to_datetime(detalhe[col], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
-                cols = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in detalhe.columns]
-                st.dataframe(detalhe[cols], use_container_width=True, hide_index=True)
-        else:
+                    if col in nao_prontos.columns:
+                        nao_prontos[col] = pd.to_datetime(nao_prontos[col], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
+                cols_pend = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in nao_prontos.columns]
+                nao_prontos = nao_prontos.sort_values([c for c in ["BASE", "MUNICÍPIO NOME", "FALTAM", "TAREFA"] if c in nao_prontos.columns], ascending=[True, True, False, True][:len([c for c in ["BASE", "MUNICÍPIO NOME", "FALTAM", "TAREFA"] if c in nao_prontos.columns])])
+                st.dataframe(nao_prontos[cols_pend], use_container_width=True, hide_index=True)
+
+            with st.expander("Ver todas as tarefas do dia", expanded=False):
+                todas = parcial_filtrada.copy()
+                for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
+                    if col in todas.columns:
+                        todas[col] = pd.to_datetime(todas[col], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
+                cols_todas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in todas.columns]
+                st.dataframe(todas[cols_todas], use_container_width=True, hide_index=True)
+
+        elif not df_parcial.empty:
+            st.warning("Só encontrei o formato antigo por agente, sem data da tarefa. Para escolher o dia, rode o extrator novo Tarefas_*.xlsx.")
             bases_disp_p = sorted(df_parcial.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-            base_sel_p = st.multiselect("Base da parcial", bases_disp_p, default=bases_disp_p, key="leit_base_parcial")
+            base_sel_p = st.multiselect("Base da parcial", bases_disp_p, default=bases_disp_p, key="leit_base_parcial_legado")
             parcial_filtrada = df_parcial.copy()
             if base_sel_p:
                 parcial_filtrada = parcial_filtrada[parcial_filtrada["BASE"].isin(base_sel_p)]
@@ -1179,6 +1299,8 @@ def mostrar_painel_leitura():
                 tabela.loc[mask, "% EXECUTADO"] = ((tabela.loc[mask, "T. VISITADA"] / tabela.loc[mask, "T. INSTALA"]) * 100).round(1)
                 tabela["% EXECUTADO"] = tabela["% EXECUTADO"].apply(lambda v: f"{float(v):.1f}%".replace(".", ","))
             st.dataframe(tabela, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Não encontrei dados para a parcial do dia.")
 
 
 def mostrar_base_leitura(base_nome):
