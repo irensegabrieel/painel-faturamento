@@ -525,7 +525,7 @@ def _padronizar_colunas_leitura(df):
             mapa[col] = "MUNICÍPIO"
         elif n in ["MUNICIPIO NOME", "CIDADE", "CIDADE NOME"]:
             mapa[col] = "MUNICÍPIO NOME"
-        elif n in ["D OPERACIONAL", "D", "DIA OPERACIONAL"]:
+        elif n in ["D OPERACIONAL", "D OPERACIONA", "D OPER", "D", "DIA OPERACIONAL"]:
             mapa[col] = "D OPERACIONAL"
         elif n in ["DT PREVISTA", "DATA PREVISTA"]:
             mapa[col] = "DT PREVISTA"
@@ -545,7 +545,7 @@ def _padronizar_colunas_leitura(df):
             mapa[col] = "DESCRIÇÃO"
         elif n in ["TIPO"]:
             mapa[col] = "TIPO"
-        elif n in ["TOTAL TAREFAS", "TOTAL TAREFA"]:
+        elif n in ["TOTAL TAREFAS", "TOTAL TAREFA", "TOTAL TARE", "TOTAL"]:
             mapa[col] = "TOTAL TAREFA"
         elif n in ["FEITA", "FINALIZADA"]:
             mapa[col] = "FEITA"
@@ -626,6 +626,7 @@ def _preparar_tarefas_leitura(df, caminho=None):
     # Garante tarefa única dentro do arquivo/base.
     df["_completude"] = df.notna().sum(axis=1) + (df["T. INSTALA"] > 0).astype(int) + (df["T. VISITADA"] > 0).astype(int)
     df = df.sort_values("_completude", ascending=False).drop_duplicates(subset=["BASE", "TAREFA"], keep="first").drop(columns=["_completude"])
+    df["FORMATO_ORIGEM"] = "TAREFAS"
     return df.reset_index(drop=True)
 
 
@@ -660,6 +661,7 @@ def _preparar_agentes_leitura_antigo(df, caminho=None):
     df["STATUS OPERACIONAL"] = df.apply(_classificar_status_operacional, axis=1)
     df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0).astype(int)
     df["TAREFA"] = [f"LEGADO-{base_nome}-{i+1:05d}" for i in range(len(df))]
+    df["FORMATO_ORIGEM"] = "PARCIAL_AGENTE"
     return df.reset_index(drop=True)
 
 
@@ -685,7 +687,9 @@ def _preparar_resumo_leitura(df, caminho=None):
             df[col] = 0
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
-    return df[[c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in df.columns]].copy()
+    saida = df[[c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in df.columns]].copy()
+    saida["FORMATO_ORIGEM"] = "RESUMO"
+    return saida
 
 
 def _prioridade_aba_tarefas(nome_aba):
@@ -859,9 +863,37 @@ def _resumo_leitura_from_tarefas(base):
     return resumo.sort_values(["BASE", "ORDEM_D", "MUNICÍPIO NOME"]).drop(columns=["ORDEM_D"])
 
 
+def _formatar_df_parcial_agente(df):
+    if df.empty:
+        return df
+    cols = [c for c in ["BASE", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "STATUS OPERACIONAL"] if c in df.columns]
+    out = df[cols].copy()
+    if "STATUS OPERACIONAL" in out.columns:
+        out = out.rename(columns={"STATUS OPERACIONAL": "STATUS"})
+    return out.sort_values([c for c in ["BASE", "FALTAM", "AGENTE COMERCIAL"] if c in out.columns], ascending=[True, False, True][:len([c for c in ["BASE", "FALTAM", "AGENTE COMERCIAL"] if c in out.columns])])
+
+
+def _resumo_parcial_agente(df):
+    if df.empty:
+        return pd.DataFrame()
+    base = df.copy()
+    for col in ["T. INSTALA", "T. VISITADA", "FALTAM"]:
+        if col not in base.columns:
+            base[col] = 0
+        base[col] = pd.to_numeric(base[col], errors="coerce").fillna(0).astype(int)
+    if "AGENTE COMERCIAL" not in base.columns:
+        base["AGENTE COMERCIAL"] = ""
+    return (
+        base.groupby(["BASE", "AGENTE COMERCIAL"], dropna=False)
+        .agg({"T. INSTALA": "sum", "T. VISITADA": "sum", "FALTAM": "sum"})
+        .reset_index()
+        .sort_values(["BASE", "FALTAM", "AGENTE COMERCIAL"], ascending=[True, False, True])
+    )
+
+
 def mostrar_painel_leitura():
     st.subheader("📖 Contrato Leitura")
-    st.caption("Acompanhamento CWSI por base, município, D operacional e tarefas únicas.")
+    st.caption("Acompanhamento CWSI por base, município, D operacional e parcial do dia.")
 
     df_tarefas, df_resumo_arquivo, arquivos, diagnostico = carregar_leitura_completa()
 
@@ -878,93 +910,99 @@ def mostrar_painel_leitura():
                 st.caption(f"{base_nome}: {caminho}")
         if diagnostico:
             st.markdown("**Diagnóstico das abas:**")
-            st.code("\n".join(diagnostico[:80]))
+            st.code("\n".join(diagnostico[:120]))
 
     if df_tarefas.empty and df_resumo_arquivo.empty:
         st.error("Os arquivos foram encontrados, mas nenhuma aba reconhecida foi carregada. Abra o expander acima e confira o diagnóstico das abas.")
         return
 
-    df_base = df_tarefas.copy()
+    # Se o arquivo tem resumo por município/D, ele é a fonte principal da visão operacional.
+    # O fallback legado AGENTE COMERCIAL/T. INSTALA/T. VISITADA fica somente na aba Parcial do dia.
+    df_parcial = pd.DataFrame()
+    df_tarefas_reais = pd.DataFrame()
+    if not df_tarefas.empty:
+        origem = df_tarefas.get("FORMATO_ORIGEM", pd.Series([""] * len(df_tarefas), index=df_tarefas.index)).astype(str)
+        df_parcial = df_tarefas[origem == "PARCIAL_AGENTE"].copy()
+        df_tarefas_reais = df_tarefas[origem != "PARCIAL_AGENTE"].copy()
 
-    st.markdown("#### Filtros")
-    f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.6, 1.6])
-
-    origem_filtros = df_base if not df_base.empty else df_resumo_arquivo
-    bases_disp = sorted(origem_filtros.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-    d_disp = sorted(origem_filtros.get("D OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(), key=_ordenar_d)
-    municipios_disp = sorted(origem_filtros.get("MUNICÍPIO NOME", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-    municipios_disp = [m for m in municipios_disp if m and m != "TOTAL DA BASE"]
-
-    bases_sel = f1.multiselect("Base", bases_disp, default=bases_disp)
-    d_sel = f2.multiselect("D", d_disp, default=d_disp)
-    municipios_sel = f3.multiselect("Município", municipios_disp, default=municipios_disp)
-
-    usar_data = False
-    periodo = None
-    if not df_base.empty and "DT PREVISTA" in df_base.columns and df_base["DT PREVISTA"].notna().any():
-        data_min = df_base["DT PREVISTA"].min().date()
-        data_max = df_base["DT PREVISTA"].max().date()
-        periodo = f4.date_input("Data prevista", value=(data_min, data_max), min_value=data_min, max_value=data_max, format="DD/MM/YYYY")
-        usar_data = isinstance(periodo, tuple) and len(periodo) == 2
+    if not df_resumo_arquivo.empty:
+        df_operacional = df_resumo_arquivo.copy()
+    elif not df_tarefas_reais.empty:
+        df_operacional = _resumo_leitura_from_tarefas(df_tarefas_reais)
     else:
-        f4.info("Filtro de data indisponível neste arquivo.")
+        df_operacional = pd.DataFrame()
 
-    if not df_base.empty:
-        filtrado = df_base.copy()
-        if bases_sel:
-            filtrado = filtrado[filtrado["BASE"].isin(bases_sel)]
-        if d_sel:
-            filtrado = filtrado[filtrado["D OPERACIONAL"].isin(d_sel)]
-        if municipios_sel and "MUNICÍPIO NOME" in filtrado.columns:
-            filtrado = filtrado[filtrado["MUNICÍPIO NOME"].isin(municipios_sel)]
-        if usar_data and periodo and periodo[0] and periodo[1]:
-            ini = pd.to_datetime(periodo[0])
-            fim = pd.to_datetime(periodo[1])
-            filtrado = filtrado[(filtrado["DT PREVISTA"] >= ini) & (filtrado["DT PREVISTA"] <= fim)]
-        resumo = _resumo_leitura_from_tarefas(filtrado)
-    else:
-        filtrado = pd.DataFrame()
-        resumo = df_resumo_arquivo.copy()
-        if bases_sel and "BASE" in resumo.columns:
-            resumo = resumo[resumo["BASE"].isin(bases_sel)]
-        if d_sel and "D OPERACIONAL" in resumo.columns:
-            resumo = resumo[resumo["D OPERACIONAL"].isin(d_sel)]
-        if municipios_sel and "MUNICÍPIO NOME" in resumo.columns:
-            resumo = resumo[resumo["MUNICÍPIO NOME"].isin(municipios_sel)]
+    if df_operacional.empty and df_parcial.empty:
+        st.error("Encontrei arquivos, mas não há dados operacionais nem parcial por agente para mostrar.")
+        return
 
-    total_tarefas = int(resumo["TOTAL TAREFA"].sum()) if "TOTAL TAREFA" in resumo.columns else 0
-    feitas = int(resumo["FEITA"].sum()) if "FEITA" in resumo.columns else 0
-    parciais = int(resumo["PARCIAL"].sum()) if "PARCIAL" in resumo.columns else 0
-    pendentes = int(resumo["PENDENTE"].sum()) if "PENDENTE" in resumo.columns else 0
-    sem_total = int(resumo["SEM TOTAL"].sum()) if "SEM TOTAL" in resumo.columns else 0
-    faltam = int(resumo["FALTAM"].sum()) if "FALTAM" in resumo.columns else 0
-    perc = (feitas / total_tarefas * 100) if total_tarefas else 0
+    aba_operacional, aba_parcial = st.tabs(["📊 D por município", "📋 Parcial do dia"])
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Tarefas", numero(total_tarefas))
-    c2.metric("Feitas", numero(feitas))
-    c3.metric("Parciais", numero(parciais))
-    c4.metric("Pendentes", numero(pendentes))
-    c5.metric("Sem total", numero(sem_total))
-    c6.metric("Execução", f"{perc:.1f}%".replace(".", ","))
-
-    if faltam:
-        st.markdown(f"<div class='zero-card'><b>Instalações faltantes:</b> {numero(faltam)}</div>", unsafe_allow_html=True)
-
-    aba_resumo, aba_municipios, aba_tarefas = st.tabs(["Resumo por D", "Municípios", "Tarefas"])
-
-    with aba_resumo:
-        if resumo.empty:
-            st.info("Sem dados para os filtros selecionados.")
+    with aba_operacional:
+        if df_operacional.empty:
+            st.warning("Não encontrei a aba/estrutura de resumo por D e município. Verifique se o extrator subiu o arquivo novo com RESUMO_MUNICIPIO ou DETALHE_MUNICIPIO.")
         else:
+            st.markdown("#### Filtros")
+            f1, f2, f3 = st.columns([1.2, 1.2, 1.8])
+            bases_disp = sorted(df_operacional.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+            d_disp = sorted(df_operacional.get("D OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(), key=_ordenar_d)
+            municipios_disp = sorted(df_operacional.get("MUNICÍPIO NOME", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+            municipios_disp = [m for m in municipios_disp if m and str(m).upper() not in ["TOTAL DA BASE", "TOTAL"]]
+
+            bases_sel = f1.multiselect("Base", bases_disp, default=bases_disp, key="leit_base_op")
+            d_sel = f2.multiselect("D", d_disp, default=d_disp, key="leit_d_op")
+            municipios_sel = f3.multiselect("Município", municipios_disp, default=municipios_disp, key="leit_mun_op")
+
+            resumo = df_operacional.copy()
+            if bases_sel and "BASE" in resumo.columns:
+                resumo = resumo[resumo["BASE"].isin(bases_sel)]
+            if d_sel and "D OPERACIONAL" in resumo.columns:
+                resumo = resumo[resumo["D OPERACIONAL"].isin(d_sel)]
+            if municipios_sel and "MUNICÍPIO NOME" in resumo.columns:
+                resumo = resumo[resumo["MUNICÍPIO NOME"].isin(municipios_sel)]
+
+            for col in ["TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"]:
+                if col not in resumo.columns:
+                    resumo[col] = 0
+                resumo[col] = pd.to_numeric(resumo[col], errors="coerce").fillna(0).astype(int)
+
+            total_tarefas = int(resumo["TOTAL TAREFA"].sum())
+            feitas = int(resumo["FEITA"].sum())
+            parciais = int(resumo["PARCIAL"].sum())
+            pendentes = int(resumo["PENDENTE"].sum())
+            sem_total = int(resumo["SEM TOTAL"].sum())
+            faltam = int(resumo["FALTAM"].sum())
+            perc = (feitas / total_tarefas * 100) if total_tarefas else 0
+
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1.metric("Tarefas", numero(total_tarefas))
+            c2.metric("Feitas", numero(feitas))
+            c3.metric("Parciais", numero(parciais))
+            c4.metric("Pendentes", numero(pendentes))
+            c5.metric("Sem total", numero(sem_total))
+            c6.metric("Execução", f"{perc:.1f}%".replace(".", ","))
+
+            if faltam:
+                st.markdown(f"<div class='zero-card'><b>Instalações faltantes:</b> {numero(faltam)}</div>", unsafe_allow_html=True)
+
+            st.markdown("#### Resumo por base e D")
             resumo_base_d = (
                 resumo.groupby(["BASE", "D OPERACIONAL"], dropna=False)
-                .agg({"TOTAL TAREFA": "sum", "FEITA": "sum", "PARCIAL": "sum", "PENDENTE": "sum", "SEM TOTAL": "sum", "FALTAM": "sum"})
+                .agg({"TOTAL TAREFA": "sum", "FEITA": "sum", "PARCIAL": "sum", "PENDENTE": "sum", "SEM TOTAL": "sum", "FALTAM": "sum", "T. INSTALA": "sum", "T. VISITADA": "sum"})
                 .reset_index()
             )
-            resumo_base_d["ORDEM_D"] = resumo_base_d["D OPERACIONAL"].apply(_ordenar_d)
-            resumo_base_d = resumo_base_d.sort_values(["BASE", "ORDEM_D"]).drop(columns=["ORDEM_D"])
+            if not resumo_base_d.empty:
+                resumo_base_d["ORDEM_D"] = resumo_base_d["D OPERACIONAL"].apply(_ordenar_d)
+                resumo_base_d = resumo_base_d.sort_values(["BASE", "ORDEM_D"]).drop(columns=["ORDEM_D"])
             st.dataframe(resumo_base_d, use_container_width=True, hide_index=True)
+
+            st.markdown("#### Detalhe por município")
+            detalhe = resumo.copy()
+            if "ORDEM_D" not in detalhe.columns:
+                detalhe["ORDEM_D"] = detalhe["D OPERACIONAL"].apply(_ordenar_d)
+            detalhe = detalhe.sort_values([c for c in ["BASE", "MUNICÍPIO NOME", "ORDEM_D"] if c in detalhe.columns]).drop(columns=["ORDEM_D"], errors="ignore")
+            colunas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in detalhe.columns]
+            st.dataframe(detalhe[colunas], use_container_width=True, hide_index=True)
 
             if not resumo_base_d.empty:
                 chart_df = resumo_base_d.melt(
@@ -987,27 +1025,46 @@ def mostrar_painel_leitura():
                 )
                 st.altair_chart(grafico, use_container_width=True)
 
-    with aba_municipios:
-        if resumo.empty:
-            st.info("Sem dados por município para os filtros selecionados.")
+    with aba_parcial:
+        st.caption("Parcial por agente comercial, alimentada pela aba/formato AGENTE COMERCIAL + T. INSTALA + T. VISITADA.")
+        if df_parcial.empty:
+            # Se não houver aba legada, usa tarefas reais como detalhe operacional.
+            if df_tarefas_reais.empty:
+                st.warning("Não encontrei parcial por agente neste arquivo.")
+            else:
+                st.info("Não encontrei parcial por agente. Exibindo tarefas detalhadas do arquivo novo.")
+                detalhe = df_tarefas_reais.copy()
+                for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
+                    if col in detalhe.columns:
+                        detalhe[col] = pd.to_datetime(detalhe[col], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
+                cols = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in detalhe.columns]
+                st.dataframe(detalhe[cols], use_container_width=True, hide_index=True)
         else:
-            resumo_mun = resumo.copy()
-            resumo_mun = resumo_mun[resumo_mun["MUNICÍPIO NOME"] != "TOTAL DA BASE"].copy() if "MUNICÍPIO NOME" in resumo_mun.columns else resumo_mun
-            resumo_mun["ORDEM_D"] = resumo_mun["D OPERACIONAL"].apply(_ordenar_d)
-            resumo_mun = resumo_mun.sort_values(["BASE", "MUNICÍPIO NOME", "ORDEM_D"]).drop(columns=["ORDEM_D"])
-            colunas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in resumo_mun.columns]
-            st.dataframe(resumo_mun[colunas], use_container_width=True, hide_index=True)
+            bases_disp_p = sorted(df_parcial.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+            base_sel_p = st.multiselect("Base da parcial", bases_disp_p, default=bases_disp_p, key="leit_base_parcial")
+            parcial_filtrada = df_parcial.copy()
+            if base_sel_p:
+                parcial_filtrada = parcial_filtrada[parcial_filtrada["BASE"].isin(base_sel_p)]
 
-    with aba_tarefas:
-        if filtrado.empty:
-            st.info("Sem tarefas detalhadas para os filtros selecionados.")
-        else:
-            detalhe = filtrado.copy()
-            for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
-                if col in detalhe.columns:
-                    detalhe[col] = detalhe[col].dt.strftime("%d/%m/%Y").fillna("")
-            colunas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in detalhe.columns]
-            st.dataframe(detalhe[colunas].sort_values([c for c in ["BASE", "D OPERACIONAL", "MUNICÍPIO NOME", "TAREFA"] if c in detalhe.columns]), use_container_width=True, hide_index=True)
+            total_instala = int(pd.to_numeric(parcial_filtrada.get("T. INSTALA", 0), errors="coerce").fillna(0).sum())
+            total_visitada = int(pd.to_numeric(parcial_filtrada.get("T. VISITADA", 0), errors="coerce").fillna(0).sum())
+            total_faltam = int(pd.to_numeric(parcial_filtrada.get("FALTAM", 0), errors="coerce").fillna(0).sum())
+            percentual = (total_visitada / total_instala * 100) if total_instala else 0
+
+            p1, p2, p3, p4 = st.columns(4)
+            p1.metric("T. Instala", numero(total_instala))
+            p2.metric("T. Visitada", numero(total_visitada))
+            p3.metric("Faltam", numero(total_faltam))
+            p4.metric("% Executado", f"{percentual:.1f}%".replace(".", ","))
+
+            resumo_agente = _resumo_parcial_agente(parcial_filtrada)
+            tabela = resumo_agente.copy()
+            if not tabela.empty:
+                tabela["% EXECUTADO"] = 0.0
+                mask = tabela["T. INSTALA"] > 0
+                tabela.loc[mask, "% EXECUTADO"] = ((tabela.loc[mask, "T. VISITADA"] / tabela.loc[mask, "T. INSTALA"]) * 100).round(1)
+                tabela["% EXECUTADO"] = tabela["% EXECUTADO"].apply(lambda v: f"{float(v):.1f}%".replace(".", ","))
+            st.dataframe(tabela, use_container_width=True, hide_index=True)
 
 
 def mostrar_base_leitura(base_nome):
