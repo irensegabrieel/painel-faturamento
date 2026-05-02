@@ -425,8 +425,43 @@ def caminho_arquivo(nome):
     return achados[0] if achados else None
 
 
-def caminho_leitura(base_nome):
-    """Localiza a parcial de leitura mais recente para Americana ou Piracicaba."""
+def _data_chave_arquivo_leitura(caminho):
+    """Extrai a data operacional do nome do arquivo, quando existir.
+
+    Exemplos aceitos:
+    - Tarefas_Americana_2026-04-27_20260501_232238.xlsx -> 2026-04-27
+    - Tarefas_Piracicaba_2026-04-29.xlsx -> 2026-04-29
+    - Parcial_Americana_20260429_193337.xlsx -> 20260429
+    """
+    import re
+    nome = Path(caminho).stem
+    m = re.search(r"(20\d{2}-\d{2}-\d{2})", nome)
+    if m:
+        return m.group(1)
+    m = re.search(r"_(20\d{6})(?:_|$)", nome)
+    if m:
+        return m.group(1)
+    return nome
+
+
+def _tipo_arquivo_leitura(caminho):
+    nome = Path(caminho).name.upper()
+    if nome.startswith("TAREFAS_"):
+        return "TAREFAS"
+    if nome.startswith("RESUMO_D"):
+        return "RESUMO_CONSOLIDADO"
+    if nome.startswith("PARCIAL_"):
+        return "PARCIAL"
+    return "OUTRO"
+
+
+def caminhos_leitura(base_nome):
+    """Localiza TODOS os arquivos de leitura úteis para a base.
+
+    Antes o painel pegava apenas o arquivo mais recente por base. Isso fazia sumir D1/D3
+    e também podia esconder Piracicaba. Agora ele carrega todos os dias encontrados,
+    mantendo só a versão mais recente quando houver mais de um arquivo do mesmo dia.
+    """
     padroes = ARQUIVOS_LEITURA.get(base_nome, [])
     candidatos = []
 
@@ -445,18 +480,46 @@ def caminho_leitura(base_nome):
                 if caminho.exists():
                     candidatos.append(caminho)
 
-    candidatos = [c for c in candidatos if c.is_file() and c.suffix.lower() in [".xlsx", ".xls"]]
-    if not candidatos:
-        return None
+    # Remove duplicados e mantém apenas Excel.
+    unicos = {}
+    for c in candidatos:
+        try:
+            c = Path(c).resolve()
+            if c.is_file() and c.suffix.lower() in [".xlsx", ".xls"]:
+                unicos[str(c)] = c
+        except Exception:
+            pass
 
-    return max(candidatos, key=lambda p: p.stat().st_mtime)
+    candidatos = list(unicos.values())
+    if not candidatos:
+        return []
+
+    # Se houver vários arquivos do mesmo tipo/base/data, usa o mais recente.
+    melhores = {}
+    for caminho in candidatos:
+        tipo = _tipo_arquivo_leitura(caminho)
+        data_chave = _data_chave_arquivo_leitura(caminho)
+        base_chave = _nome_base_por_arquivo(caminho) or str(base_nome).upper()
+        chave = (base_chave, tipo, data_chave)
+        atual = melhores.get(chave)
+        if atual is None or caminho.stat().st_mtime > atual.stat().st_mtime:
+            melhores[chave] = caminho
+
+    # Prioriza arquivos novos de TAREFAS. Mantém Parcial apenas para aba Parcial do dia.
+    return sorted(melhores.values(), key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+
+
+def caminho_leitura(base_nome):
+    """Compatibilidade: retorna o arquivo mais recente da base."""
+    caminhos = caminhos_leitura(base_nome)
+    return caminhos[0] if caminhos else None
 
 
 def caminhos_leitura_disponiveis():
-    """Retorna o arquivo mais recente por base."""
+    """Retorna todos os arquivos por base."""
     return {
-        "Americana": caminho_leitura("Americana"),
-        "Piracicaba": caminho_leitura("Piracicaba"),
+        "Americana": caminhos_leitura("Americana"),
+        "Piracicaba": caminhos_leitura("Piracicaba"),
     }
 
 
@@ -875,10 +938,14 @@ def carregar_leitura_completa_cache(chaves_arquivos):
 
 
 def carregar_leitura_completa():
-    arquivos = {base: caminho for base, caminho in caminhos_leitura_disponiveis().items() if caminho}
-    chaves = tuple((base, str(caminho), caminho.stat().st_mtime) for base, caminho in arquivos.items())
+    arquivos_por_base = {base: lista for base, lista in caminhos_leitura_disponiveis().items() if lista}
+    chaves_lista = []
+    for base, caminhos in arquivos_por_base.items():
+        for caminho in caminhos:
+            chaves_lista.append((base, str(caminho), caminho.stat().st_mtime))
+    chaves = tuple(chaves_lista)
     df_tarefas, df_resumo, diag = carregar_leitura_completa_cache(chaves)
-    return df_tarefas, df_resumo, arquivos, diag
+    return df_tarefas, df_resumo, arquivos_por_base, diag
 
 
 def _resumo_leitura_from_tarefas(base):
@@ -947,12 +1014,14 @@ def mostrar_painel_leitura():
         return
 
     with st.expander("Arquivos carregados", expanded=False):
-        for base_nome, caminho in arquivos.items():
-            mtime = arquivo_mtime_datetime(caminho)
-            if mtime:
-                st.caption(f"{base_nome}: {caminho} • atualizado em {mtime.strftime('%d/%m/%Y %H:%M:%S')}")
-            else:
-                st.caption(f"{base_nome}: {caminho}")
+        for base_nome, caminhos in arquivos.items():
+            st.markdown(f"**{base_nome}**")
+            for caminho in caminhos:
+                mtime = arquivo_mtime_datetime(caminho)
+                if mtime:
+                    st.caption(f"{caminho} • atualizado em {mtime.strftime('%d/%m/%Y %H:%M:%S')}")
+                else:
+                    st.caption(f"{caminho}")
         if diagnostico:
             st.markdown("**Diagnóstico das abas:**")
             st.code("\n".join(diagnostico[:120]))
