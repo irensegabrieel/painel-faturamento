@@ -510,53 +510,90 @@ def _normalizar_base_leitura(valor, caminho=None):
 
 
 def _padronizar_colunas_leitura(df):
+    """Padroniza colunas dos formatos antigos e novos da leitura.
+
+    Importante: os Excels gerados pelo extrator podem sair com cabeçalhos abreviados
+    pela tabela do Excel/print, por exemplo:
+    - D OPERAÇÃO / D OPERAÇÃ / D OPERACIONA
+    - FEIT, PARCIA, PENDENT, SEM TOTA
+    Esta função aceita nomes completos e truncados.
+    """
     mapa = {}
+
     for col in df.columns:
         n = _norm_col_leitura(col)
-        if n in ["BASE"]:
+
+        if n == "BASE":
             mapa[col] = "BASE"
-        elif n in ["TAREFA", "NUMERO TAREFA", "N TAREFA"]:
+
+        elif n in ["TAREFA", "NUMERO TAREFA", "N TAREFA", "ID TAREFA"]:
             mapa[col] = "TAREFA"
+
         elif n in ["STATUS", "STATUS TAREFA"]:
             mapa[col] = "STATUS"
+
         elif n in ["STATUS OPERACIONAL", "SITUACAO LEITURA", "SITUACAO"]:
             mapa[col] = "STATUS OPERACIONAL"
-        elif n in ["MUNICIPIO", "MUNICIPIO CODIGO"]:
+
+        elif n in ["MUNICIPIO", "MUNICIPIO CODIGO", "MUN"]:
             mapa[col] = "MUNICÍPIO"
-        elif n in ["MUNICIPIO NOME", "CIDADE", "CIDADE NOME"]:
+
+        elif n in ["MUNICIPIO NOME", "NOME MUNICIPIO", "CIDADE", "CIDADE NOME"]:
             mapa[col] = "MUNICÍPIO NOME"
-        elif n in ["D OPERACIONAL", "D OPERACIONA", "D OPER", "D", "DIA OPERACIONAL"]:
+
+        elif (
+            n in ["D", "D OPER", "DIA OPERACIONAL", "D OPERACIONAL", "D OPERACIONA", "D OPERACAO"]
+            or n.startswith("D OPER")
+            or n.startswith("D OPERA")
+        ):
             mapa[col] = "D OPERACIONAL"
+
         elif n in ["DT PREVISTA", "DATA PREVISTA"]:
             mapa[col] = "DT PREVISTA"
+
         elif n in ["DT LIMITE", "DATA LIMITE"]:
             mapa[col] = "DT LIMITE"
+
         elif n in ["DT PLANEJA", "DT PLANEJADA", "DATA PLANEJADA"]:
             mapa[col] = "DT PLANEJA"
+
         elif n in ["AGENTE COMERCIAL", "AGENTE"]:
             mapa[col] = "AGENTE COMERCIAL"
-        elif n in ["T INSTALA", "TOTAL INSTALA", "INSTALA"]:
+
+        elif n in ["T INSTALA", "T INSTALADA", "TOTAL INSTALA", "TOTAL INSTALADA", "INSTALA", "INSTALADA"]:
             mapa[col] = "T. INSTALA"
+
         elif n in ["T VISITADA", "TOTAL VISITADA", "VISITADA"]:
             mapa[col] = "T. VISITADA"
-        elif n in ["FALTAM", "FALTA"]:
+
+        elif n in ["FALTAM", "FALTA"] or n.startswith("FALT"):
             mapa[col] = "FALTAM"
+
         elif n in ["DESCRICAO", "DESCRICAO TAREFA"]:
             mapa[col] = "DESCRIÇÃO"
-        elif n in ["TIPO"]:
-            mapa[col] = "TIPO"
-        elif n in ["TOTAL TAREFAS", "TOTAL TAREFA", "TOTAL TARE", "TOTAL"]:
-            mapa[col] = "TOTAL TAREFA"
-        elif n in ["FEITA", "FINALIZADA"]:
-            mapa[col] = "FEITA"
-        elif n in ["PARCIAL"]:
-            mapa[col] = "PARCIAL"
-        elif n in ["PENDENTE"]:
-            mapa[col] = "PENDENTE"
-        elif n in ["SEM TOTAL"]:
-            mapa[col] = "SEM TOTAL"
-    return df.rename(columns=mapa)
 
+        elif n == "TIPO":
+            mapa[col] = "TIPO"
+
+        elif (
+            n in ["TOTAL TAREFAS", "TOTAL TAREFA", "TOTAL TARE", "TOTAL"]
+            or n.startswith("TOTAL TARE")
+        ):
+            mapa[col] = "TOTAL TAREFA"
+
+        elif n in ["FEITA", "FEIT", "FINALIZADA"] or n.startswith("FEIT"):
+            mapa[col] = "FEITA"
+
+        elif n in ["PARCIAL", "PARCIA"] or n.startswith("PARCIA"):
+            mapa[col] = "PARCIAL"
+
+        elif n in ["PENDENTE", "PENDENT"] or n.startswith("PENDENT"):
+            mapa[col] = "PENDENTE"
+
+        elif n in ["SEM TOTAL", "SEM TOTA"] or n.startswith("SEM TOTA"):
+            mapa[col] = "SEM TOTAL"
+
+    return df.rename(columns=mapa)
 
 def _classificar_status_operacional(row):
     status = str(row.get("STATUS OPERACIONAL", "") or "").strip().upper()
@@ -673,6 +710,14 @@ def _preparar_resumo_leitura(df, caminho=None):
 
     if "D OPERACIONAL" not in df.columns:
         return pd.DataFrame()
+
+    # Em alguns arquivos de resumo por município existe apenas MUNICÍPIO NOME
+    # (sem o código AME/COS/etc). Nesse caso usamos o próprio nome como identificador,
+    # em vez de cair em TOTAL/SEM MUNICÍPIO.
+    if "MUNICÍPIO NOME" not in df.columns and "MUNICÍPIO" in df.columns:
+        df["MUNICÍPIO NOME"] = df["MUNICÍPIO"]
+    if "MUNICÍPIO" not in df.columns and "MUNICÍPIO NOME" in df.columns:
+        df["MUNICÍPIO"] = df["MUNICÍPIO NOME"]
 
     for col in ["MUNICÍPIO", "MUNICÍPIO NOME"]:
         if col not in df.columns:
