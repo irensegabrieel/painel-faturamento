@@ -2862,7 +2862,7 @@ def _remover_colunas_financeiras(df):
 
 def mostrar_painel_supervisor_leitura():
     st.title("📖 G.Z.U.S. — Supervisor Leitura")
-    st.caption("Acesso restrito ao contrato Leitura. Nenhuma tela financeira ou de corte está disponível neste perfil.")
+    st.caption("Acompanhamento operacional do contrato Leitura.")
     st.sidebar.header("Supervisor Leitura")
     st.sidebar.info("Contrato Leitura")
     mostrar_base_leitura("Americana")
@@ -2873,7 +2873,7 @@ def mostrar_painel_supervisor_leitura():
 def mostrar_painel_supervisor_stc(bases):
     """Painel operacional STC/Santa Cruz sem qualquer métrica financeira."""
     st.title("🤖 G.Z.U.S. — Supervisor STC")
-    st.caption("Visão operacional sem faturamento, ticket médio, valores ou downloads financeiros.")
+    st.caption("Acompanhamento de produção e execução STC.")
 
     notas_stc = bases.get("notas", pd.DataFrame())
     if notas_stc.empty:
@@ -3274,13 +3274,20 @@ def _pergunta_ultimos_meses_chat(pergunta_norm):
 
 
 def _tipo_consulta_chat(pergunta_norm):
+    gatilhos_ranking = [
+        "QUEM MAIS", "QUEM FOI", "TOP", "RANKING", "LIDER", "LÍDER",
+        "MAIOR PRODU", "MAIS FEZ", "MAIS NOTAS", "EQUIPE QUE MAIS",
+        "RECURSO QUE MAIS", "CAMPEAO", "CAMPEÃO", "MELHOR EQUIPE", "MAIOR QUANTIDADE"
+    ]
+    quer_ranking = any(t in pergunta_norm for t in gatilhos_ranking)
+
     if any(t in pergunta_norm for t in ["RECUSA", "RECUSAS", "CONTA PAGA", "SEM ACESSO"]):
-        return "recusas"
+        return "ranking_recusas" if quer_ranking else "recusas"
     if "EXPRESS" in pergunta_norm:
         return "express"
     if any(t in pergunta_norm for t in ["FATUR", "RECEITA", "VALOR", "R$"]):
         return "faturamento"
-    if any(t in pergunta_norm for t in ["QUEM MAIS", "TOP", "RANKING", "LIDER", "LÍDER", "MAIOR PRODU"]):
+    if quer_ranking:
         return "ranking"
     if any(t in pergunta_norm for t in ["COMO FOI", "RESUMO", "QUANTO", "QUANTAS", "QUANTOS", "FEZ", "PRODU", "NOTAS"]):
         return "resumo"
@@ -3497,7 +3504,7 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
     quer_express = "EXPRESS" in pergunta_norm or quer_somar_express
 
     if quer_express and not pode_ver_express:
-        return "Essa informação não está disponível para seu perfil."
+        return "Não encontrei essa informação na visão atual."
 
     if hasattr(st, "session_state"):
         st.session_state["chatbot_painel_contexto"] = {
@@ -3556,7 +3563,7 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
     df = _filtrar_base_chat(base, mes=mes, contrato=contrato, recurso=recurso)
     express_info = _express_chat_periodo(notas, mes, contrato=contrato, recurso=recurso) if (mes and pode_ver_express) else {"express": 0, "faturamento_express": 0.0, "tem_base": False}
 
-    # Ranking.
+    # Ranking de produção / maior produção.
     if tipo == "ranking":
         if df.empty:
             return f"Não encontrei dados para montar ranking de {escopo_txt} em **{periodo_txt}**."
@@ -3568,14 +3575,82 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
 
         ranking = (
             pagaveis.groupby("RECURSO", dropna=False)
-            .agg(NOTAS=("ORDEM_DE_SERVICO", "nunique"), FATURAMENTO=("FATURAMENTO", "sum"))
+            .agg(
+                NOTAS=("ORDEM_DE_SERVICO", "nunique"),
+                CORTES=("EH_CORTE", "sum"),
+                RELIGUES=("EH_RELIGUE", "sum"),
+                DIAS_ATIVOS=("DATA", "nunique"),
+                FATURAMENTO=("FATURAMENTO", "sum"),
+            )
             .reset_index()
-            .sort_values(["NOTAS", "FATURAMENTO"], ascending=[False, False])
-            .head(5)
+            .sort_values(["NOTAS", "CORTES", "RELIGUES"], ascending=[False, False, False])
         )
-        linhas = [f"🏆 **{NOME_ASSISTENTE} — Top 5 em {periodo_txt}**", ""]
-        for i, row in enumerate(ranking.itertuples(index=False), start=1):
-            linhas.append(f"{i}. **{row.RECURSO}** — {numero(row.NOTAS)} notas • {dinheiro(row.FATURAMENTO)}")
+
+        pergunta_pede_top = any(t in pergunta_norm for t in ["TOP", "RANKING", "LISTA", "RANQUE", "5", "10"])
+        top_n = 5 if pergunta_pede_top else 1
+        ranking_top = ranking.head(top_n).copy()
+
+        if ranking_top.empty:
+            return f"Não encontrei ranking para **{periodo_txt}**."
+
+        if top_n == 1:
+            row = ranking_top.iloc[0]
+            dias = int(row.get("DIAS_ATIVOS", 0) or 0)
+            media = (float(row.get("NOTAS", 0) or 0) / dias) if dias else 0
+            linhas = [f"🏆 **Equipe com maior produção — {periodo_txt}**", ""]
+            linhas.append(f"**{row['RECURSO']}** liderou a produção com **{numero(row['NOTAS'])} notas**.")
+            linhas.append("")
+            linhas.append(f"• **Cortes / religues:** {numero(row.get('CORTES', 0))} / {numero(row.get('RELIGUES', 0))}")
+            if dias:
+                linhas.append(f"• **Média/dia:** {media:.1f} notas".replace(".", ","))
+            if pode_ver_financeiro:
+                linhas.append(f"• **Faturamento:** {dinheiro(row.get('FATURAMENTO', 0))}")
+
+            # Contexto operacional do primeiro lugar: recusas por tipo, se houver.
+            df_top = df[df["RECURSO"] == row["RECURSO"]].copy()
+            resumo_recusas_top = _resumo_recusas_tipo(df_top)
+            if not resumo_recusas_top.empty:
+                total_rec_top = int(resumo_recusas_top["QTD"].sum())
+                motivo_top = resumo_recusas_top.iloc[0]
+                linhas.append(f"• **Recusas:** {numero(total_rec_top)}")
+                linhas.append(f"⚠️ Principal motivo de recusa: **{motivo_top['RECUSA']}** ({numero(motivo_top['QTD'])}).")
+            return "\n".join(linhas)
+
+        linhas = [f"🏆 **{NOME_ASSISTENTE} — Top {top_n} em {periodo_txt}**", ""]
+        for i, row in enumerate(ranking_top.itertuples(index=False), start=1):
+            linha = f"{i}. **{row.RECURSO}** — {numero(row.NOTAS)} notas • Cortes/religues: {numero(row.CORTES)} / {numero(row.RELIGUES)}"
+            if pode_ver_financeiro:
+                linha += f" • {dinheiro(row.FATURAMENTO)}"
+            linhas.append(linha)
+        return "\n".join(linhas)
+
+    # Ranking de recusas / maior recusa.
+    if tipo == "ranking_recusas":
+        if df.empty:
+            return f"Não encontrei dados para montar ranking de recusas em **{periodo_txt}**."
+        eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
+        recusas_df = df[eh_recusa == 1].copy()
+        if recusas_df.empty:
+            return f"Não encontrei recusas em **{periodo_txt}**."
+        ranking_rec = (
+            recusas_df.groupby("RECURSO", dropna=False)
+            .agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
+            .reset_index()
+            .sort_values("RECUSAS", ascending=False)
+        )
+        pergunta_pede_top = any(t in pergunta_norm for t in ["TOP", "RANKING", "LISTA", "5", "10"])
+        top_n = 5 if pergunta_pede_top else 1
+        linhas = [f"🚧 **Ranking de recusas — {periodo_txt}**", ""]
+        for i, row in enumerate(ranking_rec.head(top_n).itertuples(index=False), start=1):
+            linhas.append(f"{i}. **{row.RECURSO}** — {numero(row.RECUSAS)} recusas")
+        if top_n == 1:
+            recurso_top = ranking_rec.iloc[0]["RECURSO"]
+            motivos = _resumo_recusas_tipo(recusas_df[recusas_df["RECURSO"] == recurso_top])
+            if not motivos.empty:
+                linhas.append("")
+                linhas.append("**Principais motivos:**")
+                for row in motivos.head(3).itertuples(index=False):
+                    linhas.append(f"- {row.RECUSA}: **{numero(row.QTD)}**")
         return "\n".join(linhas)
 
     # Recusas por tipo.
