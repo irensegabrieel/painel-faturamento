@@ -7,6 +7,42 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
+# ==============================
+# AUTO-LAUNCH LOCAL
+# ==============================
+# Se o arquivo for aberto com "python painel.py" ou duplo clique,
+# o Streamlit não cria a página e mostra apenas avisos de ScriptRunContext.
+# Este bloco relança automaticamente do jeito certo: streamlit run arquivo.py
+def _executando_dentro_do_streamlit():
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+
+def _abrir_com_streamlit_se_necessario():
+    if _executando_dentro_do_streamlit():
+        return
+    if os.environ.get("GZUS_STREAMLIT_AUTOLAUNCHED") == "1":
+        return
+
+    env = os.environ.copy()
+    env["GZUS_STREAMLIT_AUTOLAUNCHED"] = "1"
+    try:
+        subprocess.Popen([sys.executable, "-m", "streamlit", "run", str(Path(__file__).resolve())], env=env)
+        print("Abrindo painel no navegador via Streamlit...")
+        print("Se não abrir automaticamente, use: streamlit run", Path(__file__).resolve())
+    except Exception as e:
+        print("Não consegui iniciar o Streamlit automaticamente.")
+        print("Execute no terminal:")
+        print("streamlit run", Path(__file__).resolve())
+        print("Erro:", e)
+    sys.exit(0)
+
+
+_abrir_com_streamlit_se_necessario()
+
 st.set_page_config(page_title="G.Z.U.S. | Gestão Inteligente de Serviços", page_icon="🤖", layout="wide")
 
 SENHA_CORRETA = "SCS@2026"
@@ -412,7 +448,6 @@ def caminho_arquivo(nome):
     return achados[0] if achados else None
 
 
-
 def caminho_leitura(base_nome):
     """Localiza a parcial de leitura mais recente para Americana ou Piracicaba."""
     padroes = ARQUIVOS_LEITURA.get(base_nome, [])
@@ -441,7 +476,7 @@ def caminho_leitura(base_nome):
 
 
 def caminhos_leitura_disponiveis():
-    """Retorna o arquivo mais recente por base, para alimentar o painel de leitura."""
+    """Retorna o arquivo mais recente por base."""
     return {
         "Americana": caminho_leitura("Americana"),
         "Piracicaba": caminho_leitura("Piracicaba"),
@@ -465,89 +500,93 @@ def _norm_col_leitura(col):
     import unicodedata
     texto = str(col).strip().upper()
     texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
-    texto = texto.replace(".", " ").replace("_", " ").replace("-", " ")
+    texto = texto.replace(".", " ").replace("_", " ").replace("-", " ").replace("/", " ")
     return " ".join(texto.split())
+
+
+def _ordenar_d(valor):
+    txt = str(valor).upper().replace("D", "").strip()
+    try:
+        return int(txt)
+    except Exception:
+        return 9999
+
+
+def _nome_base_por_arquivo(caminho):
+    nome = Path(caminho).name.upper()
+    if "PIRACICABA" in nome:
+        return "PIRACICABA"
+    if "AMERICANA" in nome:
+        return "AMERICANA"
+    return ""
+
+
+def _normalizar_base_leitura(valor, caminho=None):
+    txt = str(valor or "").strip().upper()
+    if "PIRACICABA" in txt:
+        return "PIRACICABA"
+    if "AMERICANA" in txt:
+        return "AMERICANA"
+    if caminho:
+        return _nome_base_por_arquivo(caminho)
+    return txt
 
 
 def _padronizar_colunas_leitura(df):
     mapa = {}
     for col in df.columns:
-        c = _norm_col_leitura(col)
-        if c in ["BASE"]:
+        n = _norm_col_leitura(col)
+        if n in ["BASE"]:
             mapa[col] = "BASE"
-        elif c in ["D OPERACIONAL", "D", "DIA OPERACIONAL", "D LEITURA"]:
-            mapa[col] = "D OPERACIONAL"
-        elif c in ["MUNICIPIO", "MUNICIPIO SIGLA", "MUN"]:
-            mapa[col] = "MUNICIPIO"
-        elif c in ["MUNICIPIO NOME", "CIDADE", "NOME MUNICIPIO"]:
-            mapa[col] = "MUNICIPIO NOME"
-        elif c in ["TAREFA", "NUMERO TAREFA", "ID TAREFA", "N TAREFA"]:
+        elif n in ["TAREFA", "NUMERO TAREFA", "N TAREFA"]:
             mapa[col] = "TAREFA"
-        elif c in ["STATUS", "SITUACAO"]:
+        elif n in ["STATUS", "STATUS TAREFA"]:
             mapa[col] = "STATUS"
-        elif c in ["DESCRICAO", "DESCRICAO TAREFA"]:
-            mapa[col] = "DESCRIÇÃO"
-        elif c in ["TIPO"]:
-            mapa[col] = "TIPO"
-        elif c in ["AGENTE COMERCIAL", "AGENTE"]:
-            mapa[col] = "AGENTE COMERCIAL"
-        elif c in ["DT PREVISTA", "DATA PREVISTA", "PREVISTA"]:
+        elif n in ["STATUS OPERACIONAL", "SITUACAO LEITURA", "SITUACAO"]:
+            mapa[col] = "STATUS OPERACIONAL"
+        elif n in ["MUNICIPIO", "MUNICIPIO CODIGO"]:
+            mapa[col] = "MUNICÍPIO"
+        elif n in ["MUNICIPIO NOME", "CIDADE", "CIDADE NOME"]:
+            mapa[col] = "MUNICÍPIO NOME"
+        elif n in ["D OPERACIONAL", "D", "DIA OPERACIONAL"]:
+            mapa[col] = "D OPERACIONAL"
+        elif n in ["DT PREVISTA", "DATA PREVISTA"]:
             mapa[col] = "DT PREVISTA"
-        elif c in ["DT LIMITE", "DATA LIMITE"]:
+        elif n in ["DT LIMITE", "DATA LIMITE"]:
             mapa[col] = "DT LIMITE"
-        elif c in ["DT PLANEJA", "DT PLANEJADA", "DATA PLANEJADA"]:
+        elif n in ["DT PLANEJA", "DT PLANEJADA", "DATA PLANEJADA"]:
             mapa[col] = "DT PLANEJA"
-        elif c in ["T INSTALA", "TOTAL INSTALA", "INSTALA"]:
+        elif n in ["AGENTE COMERCIAL", "AGENTE"]:
+            mapa[col] = "AGENTE COMERCIAL"
+        elif n in ["T INSTALA", "TOTAL INSTALA", "INSTALA"]:
             mapa[col] = "T. INSTALA"
-        elif c in ["T VISITADA", "TOTAL VISITADA", "VISITADA"]:
+        elif n in ["T VISITADA", "TOTAL VISITADA", "VISITADA"]:
             mapa[col] = "T. VISITADA"
-        elif c in ["FALTAM", "FALTA"]:
+        elif n in ["FALTAM", "FALTA"]:
             mapa[col] = "FALTAM"
-        elif c in ["TOTAL TAREFA", "TOTAL TAREFAS", "TAREFAS"]:
+        elif n in ["DESCRICAO", "DESCRICAO TAREFA"]:
+            mapa[col] = "DESCRIÇÃO"
+        elif n in ["TIPO"]:
+            mapa[col] = "TIPO"
+        elif n in ["TOTAL TAREFAS", "TOTAL TAREFA"]:
             mapa[col] = "TOTAL TAREFA"
-        elif c in ["FEITA", "FEITAS", "FINALIZADA", "FINALIZADAS"]:
+        elif n in ["FEITA", "FINALIZADA"]:
             mapa[col] = "FEITA"
-        elif c in ["PARCIAL", "PARCIAIS"]:
+        elif n in ["PARCIAL"]:
             mapa[col] = "PARCIAL"
-        elif c in ["PENDENTE", "PENDENTES"]:
+        elif n in ["PENDENTE"]:
             mapa[col] = "PENDENTE"
-        elif c in ["SEM TOTAL", "SEM TOTA", "SEM TOTALIZADOR"]:
+        elif n in ["SEM TOTAL"]:
             mapa[col] = "SEM TOTAL"
     return df.rename(columns=mapa)
 
 
-def _nome_base_por_arquivo(caminho):
-    nome = Path(caminho).stem.upper()
-    if "AMERICANA" in nome:
-        return "AMERICANA"
-    if "PIRACICABA" in nome:
-        return "PIRACICABA"
-    return "LEITURA"
+def _classificar_status_operacional(row):
+    status = str(row.get("STATUS OPERACIONAL", "") or "").strip().upper()
+    if status in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+        return status
 
-
-def _formatar_d_operacional(valor):
-    if pd.isna(valor):
-        return "SEM D"
-    texto = str(valor).strip().upper().replace(" ", "")
-    if texto in ["", "NAN", "NONE"]:
-        return "SEM D"
-    if texto.startswith("D"):
-        return texto
-    try:
-        return f"D{int(float(texto))}"
-    except Exception:
-        return texto
-
-
-def _classificar_status_tarefa(row):
-    status = str(row.get("STATUS", "")).strip().upper()
-    if any(x in status for x in ["FINAL", "CONCL", "FEITA", "EXEC"]):
-        return "FEITA"
-    if any(x in status for x in ["PARC"]):
-        return "PARCIAL"
-    if any(x in status for x in ["PEND", "ABERT", "NAO"]):
-        return "PENDENTE"
-
+    status_tela = str(row.get("STATUS", "") or "").strip().upper()
     instala = pd.to_numeric(row.get("T. INSTALA", 0), errors="coerce")
     visitada = pd.to_numeric(row.get("T. VISITADA", 0), errors="coerce")
     instala = 0 if pd.isna(instala) else int(instala)
@@ -555,177 +594,194 @@ def _classificar_status_tarefa(row):
 
     if instala <= 0:
         return "SEM TOTAL"
-    if visitada >= instala:
+    if visitada >= instala or "FINAL" in status_tela:
         return "FEITA"
     if visitada > 0:
         return "PARCIAL"
     return "PENDENTE"
 
 
-def _ordenar_d(valor):
-    texto = _formatar_d_operacional(valor)
-    try:
-        return int(texto.replace("D", ""))
-    except Exception:
-        return 9999
+def _preparar_tarefas_leitura(df, caminho=None):
+    df = _padronizar_colunas_leitura(df.copy())
+
+    if "TAREFA" not in df.columns:
+        return pd.DataFrame()
+
+    for col in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "STATUS", "STATUS OPERACIONAL", "AGENTE COMERCIAL", "DESCRIÇÃO", "TIPO"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str).str.strip()
+
+    for col in ["T. INSTALA", "T. VISITADA", "FALTAM"]:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+
+    df["TAREFA"] = df["TAREFA"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    df = df[df["TAREFA"] != ""].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    if "BASE" not in df.columns or (df["BASE"].fillna("").astype(str).str.strip() == "").all():
+        df["BASE"] = _nome_base_por_arquivo(caminho)
+    else:
+        df["BASE"] = df["BASE"].apply(lambda v: _normalizar_base_leitura(v, caminho))
+
+    df["MUNICÍPIO"] = df["MUNICÍPIO"].str.upper()
+    if "MUNICÍPIO NOME" not in df.columns or (df["MUNICÍPIO NOME"].fillna("").astype(str).str.strip() == "").all():
+        df["MUNICÍPIO NOME"] = df["MUNICÍPIO"].map(MAPA_MUNICIPIOS_LEITURA).fillna(df["MUNICÍPIO"])
+    else:
+        sem_nome = df["MUNICÍPIO NOME"].fillna("").astype(str).str.strip() == ""
+        df.loc[sem_nome, "MUNICÍPIO NOME"] = df.loc[sem_nome, "MUNICÍPIO"].map(MAPA_MUNICIPIOS_LEITURA).fillna(df.loc[sem_nome, "MUNICÍPIO"])
+
+    if (df["D OPERACIONAL"].fillna("").astype(str).str.strip() == "").all():
+        # fallback: se não veio D, tenta agrupar como D? indisponível
+        df["D OPERACIONAL"] = "D?"
+    df["D OPERACIONAL"] = df["D OPERACIONAL"].astype(str).str.upper().str.strip()
+
+    df["STATUS OPERACIONAL"] = df.apply(_classificar_status_operacional, axis=1)
+    df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0).astype(int)
+
+    # Garante tarefa única: se duplicar, mantém a linha mais completa.
+    df["_completude"] = df.notna().sum(axis=1) + (df["T. INSTALA"] > 0).astype(int) + (df["T. VISITADA"] > 0).astype(int)
+    df = df.sort_values("_completude", ascending=False).drop_duplicates(subset=["BASE", "TAREFA"], keep="first").drop(columns=["_completude"])
+    return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
-def ler_arquivo_leitura_completo(caminho):
-    """Lê os Excels novos do extrator CWSI, incluindo tarefas, D operacional e município."""
+def _preparar_resumo_leitura(df, caminho=None):
+    df = _padronizar_colunas_leitura(df.copy())
+    if "BASE" not in df.columns:
+        df["BASE"] = _nome_base_por_arquivo(caminho)
+    df["BASE"] = df["BASE"].apply(lambda v: _normalizar_base_leitura(v, caminho))
+
+    if "D OPERACIONAL" not in df.columns:
+        return pd.DataFrame()
+
+    for col in ["MUNICÍPIO", "MUNICÍPIO NOME"]:
+        if col not in df.columns:
+            df[col] = "TOTAL" if col == "MUNICÍPIO" else "TOTAL DA BASE"
+        df[col] = df[col].fillna("").astype(str).str.strip()
+
+    df["MUNICÍPIO"] = df["MUNICÍPIO"].replace("", "TOTAL")
+    df["MUNICÍPIO NOME"] = df["MUNICÍPIO NOME"].replace("", "TOTAL DA BASE")
+
+    for col in ["TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"]:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    return df[[c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in df.columns]].copy()
+
+
+def _ler_excel_leitura_robusto(caminho):
+    """Lê qualquer arquivo do extrator v7/v8/v9: detecta abas pelo conteúdo, não pelo nome."""
     caminho = str(caminho)
-    base_padrao = _nome_base_por_arquivo(caminho)
-
-    try:
-        abas = pd.read_excel(caminho, sheet_name=None, engine="openpyxl")
-    except Exception:
-        df_unico = pd.read_excel(caminho, engine="openpyxl")
-        abas = {"Planilha": df_unico}
-
+    xls = pd.ExcelFile(caminho, engine="openpyxl")
     tarefas = []
     resumos = []
+    diagnostico = []
 
-    for nome_aba, df in abas.items():
-        if df is None or df.empty:
+    for aba in xls.sheet_names:
+        try:
+            bruto = pd.read_excel(caminho, sheet_name=aba, engine="openpyxl")
+        except Exception as e:
+            diagnostico.append(f"{aba}: erro ao ler ({e})")
+            continue
+        if bruto.empty:
+            diagnostico.append(f"{aba}: vazia")
             continue
 
-        df = _padronizar_colunas_leitura(df.copy())
-        df.columns = [str(c).strip() for c in df.columns]
-        cols = set(df.columns)
+        cols_norm = {_norm_col_leitura(c) for c in bruto.columns}
+        tem_tarefa = "TAREFA" in cols_norm
+        tem_resumo = ("D OPERACIONAL" in cols_norm or "D" in cols_norm) and ("TOTAL TAREFAS" in cols_norm or "TOTAL TAREFA" in cols_norm or "FEITA" in cols_norm)
 
-        if "BASE" not in df.columns:
-            df["BASE"] = base_padrao
-        df["BASE"] = df["BASE"].fillna(base_padrao).astype(str).str.strip().str.upper()
-
-        if "MUNICIPIO" not in df.columns:
-            aba_norm = _norm_col_leitura(nome_aba)
-            sigla_aba = None
-            for sigla, cidade in MAPA_MUNICIPIOS_LEITURA.items():
-                if sigla in aba_norm or _norm_col_leitura(cidade) in aba_norm:
-                    sigla_aba = sigla
-                    break
-            if sigla_aba:
-                df["MUNICIPIO"] = sigla_aba
-
-        if "MUNICIPIO" in df.columns:
-            df["MUNICIPIO"] = df["MUNICIPIO"].fillna("").astype(str).str.strip().str.upper()
-            df["MUNICIPIO NOME"] = df["MUNICIPIO"].map(MAPA_MUNICIPIOS_LEITURA).fillna(df["MUNICIPIO"])
-        elif "MUNICIPIO NOME" not in df.columns:
-            df["MUNICIPIO NOME"] = "Não informado"
-
-        if "D OPERACIONAL" in df.columns:
-            df["D OPERACIONAL"] = df["D OPERACIONAL"].apply(_formatar_d_operacional)
-
-        eh_resumo = {"TOTAL TAREFA", "D OPERACIONAL"}.issubset(cols) or {"TOTAL TAREFA", "MUNICIPIO"}.issubset(cols)
-        eh_tarefa = "TAREFA" in cols or "STATUS" in cols or "DT PREVISTA" in cols
-
-        if eh_resumo:
-            for col in ["TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM"]:
-                if col not in df.columns:
-                    df[col] = 0
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
-            resumos.append(df)
-
-        if eh_tarefa:
-            tarefas.append(df)
+        if tem_tarefa:
+            df_t = _preparar_tarefas_leitura(bruto, caminho)
+            if not df_t.empty:
+                df_t["ARQUIVO"] = Path(caminho).name
+                df_t["ABA"] = aba
+                tarefas.append(df_t)
+                diagnostico.append(f"{aba}: tarefas ({len(df_t)})")
+                continue
+        if tem_resumo:
+            df_r = _preparar_resumo_leitura(bruto, caminho)
+            if not df_r.empty:
+                df_r["ARQUIVO"] = Path(caminho).name
+                df_r["ABA"] = aba
+                resumos.append(df_r)
+                diagnostico.append(f"{aba}: resumo ({len(df_r)})")
+                continue
+        diagnostico.append(f"{aba}: colunas não reconhecidas: {list(bruto.columns)[:8]}")
 
     df_tarefas = pd.concat(tarefas, ignore_index=True) if tarefas else pd.DataFrame()
     df_resumo = pd.concat(resumos, ignore_index=True) if resumos else pd.DataFrame()
+    return df_tarefas, df_resumo, diagnostico
 
-    if not df_tarefas.empty:
-        for col in ["TAREFA", "STATUS", "AGENTE COMERCIAL", "DESCRIÇÃO", "TIPO", "MUNICIPIO", "MUNICIPIO NOME", "D OPERACIONAL"]:
-            if col not in df_tarefas.columns:
-                df_tarefas[col] = ""
-            df_tarefas[col] = df_tarefas[col].fillna("").astype(str).str.strip()
 
-        for col in ["T. INSTALA", "T. VISITADA"]:
-            if col not in df_tarefas.columns:
-                df_tarefas[col] = 0
-            df_tarefas[col] = pd.to_numeric(df_tarefas[col], errors="coerce").fillna(0).astype(int)
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def carregar_leitura_completa_cache(chaves_arquivos):
+    # chaves_arquivos = tupla de (base, caminho, mtime) para invalidar cache quando atualizar.
+    tarefas = []
+    resumos = []
+    diag = []
+    for base_nome, caminho_str, _mtime in chaves_arquivos:
+        if not caminho_str:
+            continue
+        df_t, df_r, d = _ler_excel_leitura_robusto(caminho_str)
+        if not df_t.empty:
+            tarefas.append(df_t)
+        if not df_r.empty:
+            resumos.append(df_r)
+        diag.extend([f"{base_nome} / {linha}" for linha in d])
 
-        if "FALTAM" not in df_tarefas.columns:
-            df_tarefas["FALTAM"] = (df_tarefas["T. INSTALA"] - df_tarefas["T. VISITADA"]).clip(lower=0)
-        df_tarefas["FALTAM"] = pd.to_numeric(df_tarefas["FALTAM"], errors="coerce").fillna(0).astype(int)
-
-        for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
-            if col in df_tarefas.columns:
-                df_tarefas[col] = pd.to_datetime(df_tarefas[col], dayfirst=True, errors="coerce")
-
-        df_tarefas["STATUS OPERACIONAL"] = df_tarefas.apply(_classificar_status_tarefa, axis=1)
-        df_tarefas["D OPERACIONAL"] = df_tarefas["D OPERACIONAL"].apply(_formatar_d_operacional)
-
-        # Uma tarefa deve contar uma vez. Se aparecer duplicada, mantém a versão mais completa.
-        if "TAREFA" in df_tarefas.columns:
-            df_tarefas["_score_linha"] = (
-                (df_tarefas["T. INSTALA"] > 0).astype(int) * 3
-                + (df_tarefas["T. VISITADA"] > 0).astype(int) * 2
-                + (df_tarefas["AGENTE COMERCIAL"] != "").astype(int)
-            )
-            df_tarefas = (
-                df_tarefas.sort_values(["BASE", "D OPERACIONAL", "TAREFA", "_score_linha"], ascending=[True, True, True, False])
-                .drop_duplicates(subset=["BASE", "D OPERACIONAL", "TAREFA"], keep="first")
-                .drop(columns=["_score_linha"], errors="ignore")
-            )
-
-    return {"tarefas": df_tarefas, "resumo_arquivo": df_resumo}
+    df_tarefas = pd.concat(tarefas, ignore_index=True) if tarefas else pd.DataFrame()
+    df_resumo = pd.concat(resumos, ignore_index=True) if resumos else pd.DataFrame()
+    return df_tarefas, df_resumo, diag
 
 
 def carregar_leitura_completa():
-    arquivos = caminhos_leitura_disponiveis()
-    tarefas = []
-    resumos = []
-    encontrados = {}
-
-    for base_nome, caminho in arquivos.items():
-        if not caminho:
-            continue
-        encontrados[base_nome] = caminho
-        dados = ler_arquivo_leitura_completo(str(caminho))
-        if not dados["tarefas"].empty:
-            tarefas.append(dados["tarefas"])
-        if not dados["resumo_arquivo"].empty:
-            resumos.append(dados["resumo_arquivo"])
-
-    df_tarefas = pd.concat(tarefas, ignore_index=True) if tarefas else pd.DataFrame()
-    df_resumo_arquivo = pd.concat(resumos, ignore_index=True) if resumos else pd.DataFrame()
-    return df_tarefas, df_resumo_arquivo, encontrados
+    arquivos = {base: caminho for base, caminho in caminhos_leitura_disponiveis().items() if caminho}
+    chaves = tuple((base, str(caminho), caminho.stat().st_mtime) for base, caminho in arquivos.items())
+    df_tarefas, df_resumo, diag = carregar_leitura_completa_cache(chaves)
+    return df_tarefas, df_resumo, arquivos, diag
 
 
-def _resumo_leitura_from_tarefas(df):
-    if df.empty:
-        return pd.DataFrame(columns=["BASE", "MUNICIPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM"])
-
-    base = df.copy()
-    base["TAREFA_CONTAGEM"] = base["TAREFA"].where(base["TAREFA"].astype(str).str.strip() != "", base.index.astype(str))
-    base["FEITA"] = (base["STATUS OPERACIONAL"] == "FEITA").astype(int)
-    base["PARCIAL"] = (base["STATUS OPERACIONAL"] == "PARCIAL").astype(int)
-    base["PENDENTE"] = (base["STATUS OPERACIONAL"] == "PENDENTE").astype(int)
-    base["SEM TOTAL"] = (base["STATUS OPERACIONAL"] == "SEM TOTAL").astype(int)
+def _resumo_leitura_from_tarefas(base):
+    if base.empty:
+        return pd.DataFrame()
+    df = base.copy()
+    for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+        df[col] = (df["STATUS OPERACIONAL"] == col).astype(int)
 
     resumo = (
-        base.groupby(["BASE", "MUNICIPIO NOME", "D OPERACIONAL"], dropna=False)
+        df.groupby(["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"], dropna=False)
         .agg(
-            TOTAL_TAREFA=("TAREFA_CONTAGEM", "nunique"),
-            FEITA=("FEITA", "sum"),
-            PARCIAL=("PARCIAL", "sum"),
-            PENDENTE=("PENDENTE", "sum"),
-            SEM_TOTAL=("SEM TOTAL", "sum"),
-            FALTAM=("FALTAM", "sum"),
-            T_INSTALA=("T. INSTALA", "sum"),
-            T_VISITADA=("T. VISITADA", "sum"),
+            **{
+                "TOTAL TAREFA": ("TAREFA", "nunique"),
+                "FEITA": ("FEITA", "sum"),
+                "PARCIAL": ("PARCIAL", "sum"),
+                "PENDENTE": ("PENDENTE", "sum"),
+                "SEM TOTAL": ("SEM TOTAL", "sum"),
+                "FALTAM": ("FALTAM", "sum"),
+                "T. INSTALA": ("T. INSTALA", "sum"),
+                "T. VISITADA": ("T. VISITADA", "sum"),
+            }
         )
         .reset_index()
-        .rename(columns={"TOTAL_TAREFA": "TOTAL TAREFA", "SEM_TOTAL": "SEM TOTAL", "T_INSTALA": "T. INSTALA", "T_VISITADA": "T. VISITADA"})
     )
     resumo["ORDEM_D"] = resumo["D OPERACIONAL"].apply(_ordenar_d)
-    return resumo.sort_values(["BASE", "ORDEM_D", "MUNICIPIO NOME"]).drop(columns=["ORDEM_D"])
+    return resumo.sort_values(["BASE", "ORDEM_D", "MUNICÍPIO NOME"]).drop(columns=["ORDEM_D"])
 
 
 def mostrar_painel_leitura():
     st.subheader("📖 Contrato Leitura")
     st.caption("Acompanhamento CWSI por base, município, D operacional e tarefas únicas.")
 
-    df_tarefas, df_resumo_arquivo, arquivos = carregar_leitura_completa()
+    df_tarefas, df_resumo_arquivo, arquivos, diagnostico = carregar_leitura_completa()
 
     if not arquivos:
         st.warning("Nenhum arquivo de leitura encontrado. Envie os Excels para dashboard/leitura ou mantenha em C:\\Users\\user\\Desktop\\LEITURA\\saida.")
@@ -738,9 +794,12 @@ def mostrar_painel_leitura():
                 st.caption(f"{base_nome}: {caminho} • atualizado em {mtime.strftime('%d/%m/%Y %H:%M:%S')}")
             else:
                 st.caption(f"{base_nome}: {caminho}")
+        if diagnostico:
+            st.markdown("**Diagnóstico das abas:**")
+            st.code("\n".join(diagnostico[:80]))
 
     if df_tarefas.empty and df_resumo_arquivo.empty:
-        st.info("Os arquivos foram encontrados, mas não consegui identificar abas de tarefas ou resumo.")
+        st.error("Os arquivos foram encontrados, mas nenhuma aba reconhecida foi carregada. Abra o expander acima e confira o diagnóstico das abas.")
         return
 
     df_base = df_tarefas.copy()
@@ -748,16 +807,18 @@ def mostrar_painel_leitura():
     st.markdown("#### Filtros")
     f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.6, 1.6])
 
-    bases_disp = sorted(df_base["BASE"].dropna().astype(str).unique().tolist()) if not df_base.empty else sorted(df_resumo_arquivo.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-    d_disp = sorted(df_base["D OPERACIONAL"].dropna().astype(str).unique().tolist(), key=_ordenar_d) if not df_base.empty else sorted(df_resumo_arquivo.get("D OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(), key=_ordenar_d)
-    municipios_disp = sorted(df_base["MUNICIPIO NOME"].dropna().astype(str).unique().tolist()) if not df_base.empty and "MUNICIPIO NOME" in df_base.columns else []
+    origem_filtros = df_base if not df_base.empty else df_resumo_arquivo
+    bases_disp = sorted(origem_filtros.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+    d_disp = sorted(origem_filtros.get("D OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(), key=_ordenar_d)
+    municipios_disp = sorted(origem_filtros.get("MUNICÍPIO NOME", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+    municipios_disp = [m for m in municipios_disp if m and m != "TOTAL DA BASE"]
 
     bases_sel = f1.multiselect("Base", bases_disp, default=bases_disp)
     d_sel = f2.multiselect("D", d_disp, default=d_disp)
     municipios_sel = f3.multiselect("Município", municipios_disp, default=municipios_disp)
 
-    data_min = data_max = None
     usar_data = False
+    periodo = None
     if not df_base.empty and "DT PREVISTA" in df_base.columns and df_base["DT PREVISTA"].notna().any():
         data_min = df_base["DT PREVISTA"].min().date()
         data_max = df_base["DT PREVISTA"].max().date()
@@ -765,7 +826,6 @@ def mostrar_painel_leitura():
         usar_data = isinstance(periodo, tuple) and len(periodo) == 2
     else:
         f4.info("Filtro de data indisponível neste arquivo.")
-        periodo = None
 
     if not df_base.empty:
         filtrado = df_base.copy()
@@ -773,13 +833,12 @@ def mostrar_painel_leitura():
             filtrado = filtrado[filtrado["BASE"].isin(bases_sel)]
         if d_sel:
             filtrado = filtrado[filtrado["D OPERACIONAL"].isin(d_sel)]
-        if municipios_sel and "MUNICIPIO NOME" in filtrado.columns:
-            filtrado = filtrado[filtrado["MUNICIPIO NOME"].isin(municipios_sel)]
-        if usar_data and periodo[0] and periodo[1]:
+        if municipios_sel and "MUNICÍPIO NOME" in filtrado.columns:
+            filtrado = filtrado[filtrado["MUNICÍPIO NOME"].isin(municipios_sel)]
+        if usar_data and periodo and periodo[0] and periodo[1]:
             ini = pd.to_datetime(periodo[0])
             fim = pd.to_datetime(periodo[1])
             filtrado = filtrado[(filtrado["DT PREVISTA"] >= ini) & (filtrado["DT PREVISTA"] <= fim)]
-
         resumo = _resumo_leitura_from_tarefas(filtrado)
     else:
         filtrado = pd.DataFrame()
@@ -788,6 +847,8 @@ def mostrar_painel_leitura():
             resumo = resumo[resumo["BASE"].isin(bases_sel)]
         if d_sel and "D OPERACIONAL" in resumo.columns:
             resumo = resumo[resumo["D OPERACIONAL"].isin(d_sel)]
+        if municipios_sel and "MUNICÍPIO NOME" in resumo.columns:
+            resumo = resumo[resumo["MUNICÍPIO NOME"].isin(municipios_sel)]
 
     total_tarefas = int(resumo["TOTAL TAREFA"].sum()) if "TOTAL TAREFA" in resumo.columns else 0
     feitas = int(resumo["FEITA"].sum()) if "FEITA" in resumo.columns else 0
@@ -823,34 +884,36 @@ def mostrar_painel_leitura():
             resumo_base_d = resumo_base_d.sort_values(["BASE", "ORDEM_D"]).drop(columns=["ORDEM_D"])
             st.dataframe(resumo_base_d, use_container_width=True, hide_index=True)
 
-            chart_df = resumo_base_d.melt(
-                id_vars=["BASE", "D OPERACIONAL"],
-                value_vars=["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"],
-                var_name="STATUS",
-                value_name="QTD",
-            )
-            grafico = (
-                alt.Chart(chart_df)
-                .mark_bar()
-                .encode(
-                    x=alt.X("D OPERACIONAL:N", sort=sorted(chart_df["D OPERACIONAL"].unique().tolist(), key=_ordenar_d)),
-                    y="QTD:Q",
-                    color="STATUS:N",
-                    column="BASE:N",
-                    tooltip=["BASE", "D OPERACIONAL", "STATUS", "QTD"],
+            if not resumo_base_d.empty:
+                chart_df = resumo_base_d.melt(
+                    id_vars=["BASE", "D OPERACIONAL"],
+                    value_vars=["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"],
+                    var_name="STATUS",
+                    value_name="QTD",
                 )
-                .properties(height=260)
-            )
-            st.altair_chart(grafico, use_container_width=True)
+                grafico = (
+                    alt.Chart(chart_df)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("D OPERACIONAL:N", sort=sorted(chart_df["D OPERACIONAL"].unique().tolist(), key=_ordenar_d)),
+                        y="QTD:Q",
+                        color="STATUS:N",
+                        column="BASE:N",
+                        tooltip=["BASE", "D OPERACIONAL", "STATUS", "QTD"],
+                    )
+                    .properties(height=260)
+                )
+                st.altair_chart(grafico, use_container_width=True)
 
     with aba_municipios:
         if resumo.empty:
             st.info("Sem dados por município para os filtros selecionados.")
         else:
             resumo_mun = resumo.copy()
+            resumo_mun = resumo_mun[resumo_mun["MUNICÍPIO NOME"] != "TOTAL DA BASE"].copy() if "MUNICÍPIO NOME" in resumo_mun.columns else resumo_mun
             resumo_mun["ORDEM_D"] = resumo_mun["D OPERACIONAL"].apply(_ordenar_d)
-            resumo_mun = resumo_mun.sort_values(["BASE", "MUNICIPIO NOME", "ORDEM_D"]).drop(columns=["ORDEM_D"])
-            colunas = [c for c in ["BASE", "MUNICIPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in resumo_mun.columns]
+            resumo_mun = resumo_mun.sort_values(["BASE", "MUNICÍPIO NOME", "ORDEM_D"]).drop(columns=["ORDEM_D"])
+            colunas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in resumo_mun.columns]
             st.dataframe(resumo_mun[colunas], use_container_width=True, hide_index=True)
 
     with aba_tarefas:
@@ -861,13 +924,14 @@ def mostrar_painel_leitura():
             for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
                 if col in detalhe.columns:
                     detalhe[col] = detalhe[col].dt.strftime("%d/%m/%Y").fillna("")
-            colunas = [c for c in ["BASE", "MUNICIPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in detalhe.columns]
-            st.dataframe(detalhe[colunas].sort_values(["BASE", "D OPERACIONAL", "MUNICIPIO NOME", "TAREFA"]), use_container_width=True, hide_index=True)
+            colunas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in detalhe.columns]
+            st.dataframe(detalhe[colunas].sort_values([c for c in ["BASE", "D OPERACIONAL", "MUNICÍPIO NOME", "TAREFA"] if c in detalhe.columns]), use_container_width=True, hide_index=True)
 
 
 def mostrar_base_leitura(base_nome):
-    """Compatibilidade com as chamadas antigas: mostra o painel novo filtrado visualmente por base quando possível."""
+    """Mantido por compatibilidade; agora mostra o painel completo integrado."""
     mostrar_painel_leitura()
+
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
@@ -2409,7 +2473,9 @@ def mostrar_painel_supervisor_leitura():
     st.caption("Acesso restrito ao contrato Leitura. Nenhuma tela financeira ou de corte está disponível neste perfil.")
     st.sidebar.header("Supervisor Leitura")
     st.sidebar.info("Contrato Leitura")
-    mostrar_painel_leitura()
+    mostrar_base_leitura("Americana")
+    st.markdown("---")
+    mostrar_base_leitura("Piracicaba")
 
 
 def mostrar_painel_supervisor_stc(bases):
