@@ -7,42 +7,6 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
-# ==============================
-# AUTO-LAUNCH LOCAL
-# ==============================
-# Se o arquivo for aberto com "python painel.py" ou duplo clique,
-# o Streamlit não cria a página e mostra apenas avisos de ScriptRunContext.
-# Este bloco relança automaticamente do jeito certo: streamlit run arquivo.py
-def _executando_dentro_do_streamlit():
-    try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
-        return get_script_run_ctx() is not None
-    except Exception:
-        return False
-
-
-def _abrir_com_streamlit_se_necessario():
-    if _executando_dentro_do_streamlit():
-        return
-    if os.environ.get("GZUS_STREAMLIT_AUTOLAUNCHED") == "1":
-        return
-
-    env = os.environ.copy()
-    env["GZUS_STREAMLIT_AUTOLAUNCHED"] = "1"
-    try:
-        subprocess.Popen([sys.executable, "-m", "streamlit", "run", str(Path(__file__).resolve())], env=env)
-        print("Abrindo painel no navegador via Streamlit...")
-        print("Se não abrir automaticamente, use: streamlit run", Path(__file__).resolve())
-    except Exception as e:
-        print("Não consegui iniciar o Streamlit automaticamente.")
-        print("Execute no terminal:")
-        print("streamlit run", Path(__file__).resolve())
-        print("Erro:", e)
-    sys.exit(0)
-
-
-_abrir_com_streamlit_se_necessario()
-
 st.set_page_config(page_title="G.Z.U.S. | Gestão Inteligente de Serviços", page_icon="🤖", layout="wide")
 
 SENHA_CORRETA = "SCS@2026"
@@ -409,8 +373,21 @@ PASTAS_LEITURA = [
 ]
 
 ARQUIVOS_LEITURA = {
-    "Americana": ["Parcial_Americana.xlsx", "Parcial_Americana*.xlsx"],
-    "Piracicaba": ["Parcial_Piracicaba.xlsx", "Parcial_Piracicaba*.xlsx"],
+    # Formato antigo: Parcial_Americana*.xlsx / Parcial_Piracicaba*.xlsx
+    # Formato novo do extrator de tarefas: Tarefas_Americana*.xlsx / Tarefas_Piracicaba*.xlsx
+    # Consolidado novo: Resumo_D_por_base_municipio*.xlsx
+    "Americana": [
+        "Tarefas_Americana*.xlsx",
+        "Parcial_Americana.xlsx",
+        "Parcial_Americana*.xlsx",
+        "Resumo_D_por_base_municipio*.xlsx",
+    ],
+    "Piracicaba": [
+        "Tarefas_Piracicaba*.xlsx",
+        "Parcial_Piracicaba.xlsx",
+        "Parcial_Piracicaba*.xlsx",
+        "Resumo_D_por_base_municipio*.xlsx",
+    ],
 }
 
 ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
@@ -602,6 +579,7 @@ def _classificar_status_operacional(row):
 
 
 def _preparar_tarefas_leitura(df, caminho=None):
+    """Prepara aba de tarefas real, quando existe coluna TAREFA."""
     df = _padronizar_colunas_leitura(df.copy())
 
     if "TAREFA" not in df.columns:
@@ -631,7 +609,7 @@ def _preparar_tarefas_leitura(df, caminho=None):
     else:
         df["BASE"] = df["BASE"].apply(lambda v: _normalizar_base_leitura(v, caminho))
 
-    df["MUNICÍPIO"] = df["MUNICÍPIO"].str.upper()
+    df["MUNICÍPIO"] = df["MUNICÍPIO"].str.upper().replace("", "SEM MUNICÍPIO")
     if "MUNICÍPIO NOME" not in df.columns or (df["MUNICÍPIO NOME"].fillna("").astype(str).str.strip() == "").all():
         df["MUNICÍPIO NOME"] = df["MUNICÍPIO"].map(MAPA_MUNICIPIOS_LEITURA).fillna(df["MUNICÍPIO"])
     else:
@@ -639,16 +617,49 @@ def _preparar_tarefas_leitura(df, caminho=None):
         df.loc[sem_nome, "MUNICÍPIO NOME"] = df.loc[sem_nome, "MUNICÍPIO"].map(MAPA_MUNICIPIOS_LEITURA).fillna(df.loc[sem_nome, "MUNICÍPIO"])
 
     if (df["D OPERACIONAL"].fillna("").astype(str).str.strip() == "").all():
-        # fallback: se não veio D, tenta agrupar como D? indisponível
         df["D OPERACIONAL"] = "D?"
     df["D OPERACIONAL"] = df["D OPERACIONAL"].astype(str).str.upper().str.strip()
 
     df["STATUS OPERACIONAL"] = df.apply(_classificar_status_operacional, axis=1)
     df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0).astype(int)
 
-    # Garante tarefa única: se duplicar, mantém a linha mais completa.
+    # Garante tarefa única dentro do arquivo/base.
     df["_completude"] = df.notna().sum(axis=1) + (df["T. INSTALA"] > 0).astype(int) + (df["T. VISITADA"] > 0).astype(int)
     df = df.sort_values("_completude", ascending=False).drop_duplicates(subset=["BASE", "TAREFA"], keep="first").drop(columns=["_completude"])
+    return df.reset_index(drop=True)
+
+
+def _preparar_agentes_leitura_antigo(df, caminho=None):
+    """Fallback para o formato antigo: Sheet1 com AGENTE COMERCIAL/T. INSTALA/T. VISITADA.
+
+    Esse formato não traz tarefa, município nem D. Para o painel não quebrar, criamos
+    linhas sintéticas por agente e marcamos D?/SEM MUNICÍPIO. Quando o extrator novo
+    gerar TAREFAS_*.xlsx, o painel passa a usar D e município reais automaticamente.
+    """
+    df = _padronizar_colunas_leitura(df.copy())
+    obrig = {"AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA"}
+    if not obrig.issubset(set(df.columns)):
+        return pd.DataFrame()
+
+    base_nome = _nome_base_por_arquivo(caminho)
+    for col in ["AGENTE COMERCIAL"]:
+        df[col] = df[col].fillna("").astype(str).str.strip()
+    for col in ["T. INSTALA", "T. VISITADA"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    df = df[(df["AGENTE COMERCIAL"] != "") | (df["T. INSTALA"] > 0) | (df["T. VISITADA"] > 0)].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    df.loc[df["AGENTE COMERCIAL"] == "", "AGENTE COMERCIAL"] = "SEM AGENTE"
+    df["BASE"] = base_nome
+    df["MUNICÍPIO"] = "SEM MUNICÍPIO"
+    df["MUNICÍPIO NOME"] = "Sem município no arquivo"
+    df["D OPERACIONAL"] = "D?"
+    df["STATUS"] = ""
+    df["STATUS OPERACIONAL"] = df.apply(_classificar_status_operacional, axis=1)
+    df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0).astype(int)
+    df["TAREFA"] = [f"LEGADO-{base_nome}-{i+1:05d}" for i in range(len(df))]
     return df.reset_index(drop=True)
 
 
@@ -677,12 +688,40 @@ def _preparar_resumo_leitura(df, caminho=None):
     return df[[c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in df.columns]].copy()
 
 
+def _prioridade_aba_tarefas(nome_aba):
+    n = _norm_col_leitura(nome_aba)
+    if "TAREFAS CONSOLIDADAS" in n:
+        return 100
+    if n == "TAREFAS":
+        return 90
+    return 10
+
+
+def _prioridade_aba_resumo(nome_aba):
+    n = _norm_col_leitura(nome_aba)
+    if "DETALHE MUNICIPIO" in n:
+        return 100
+    if "RESUMO GERAL" in n:
+        return 90
+    if "RESUMO MUNICIPIO" in n:
+        return 80
+    if "RESUMO" in n:
+        return 50
+    return 10
+
+
 def _ler_excel_leitura_robusto(caminho):
-    """Lê qualquer arquivo do extrator v7/v8/v9: detecta abas pelo conteúdo, não pelo nome."""
+    """Lê formatos antigo e novo do extrator.
+
+    Novo individual: RESUMO, RESUMO_MUNICIPIO, TAREFAS, abas por município.
+    Novo consolidado: RESUMO_GERAL, DETALHE_MUNICIPIO, TAREFAS_CONSOLIDADAS.
+    Antigo: Sheet1 com AGENTE COMERCIAL/T. INSTALA/T. VISITADA.
+    """
     caminho = str(caminho)
     xls = pd.ExcelFile(caminho, engine="openpyxl")
-    tarefas = []
-    resumos = []
+    candidatos_tarefas = []
+    candidatos_resumo = []
+    candidatos_legado = []
     diagnostico = []
 
     for aba in xls.sheet_names:
@@ -698,26 +737,69 @@ def _ler_excel_leitura_robusto(caminho):
         cols_norm = {_norm_col_leitura(c) for c in bruto.columns}
         tem_tarefa = "TAREFA" in cols_norm
         tem_resumo = ("D OPERACIONAL" in cols_norm or "D" in cols_norm) and ("TOTAL TAREFAS" in cols_norm or "TOTAL TAREFA" in cols_norm or "FEITA" in cols_norm)
+        tem_legado = {"AGENTE COMERCIAL", "T INSTALA", "T VISITADA"}.issubset(cols_norm)
 
         if tem_tarefa:
             df_t = _preparar_tarefas_leitura(bruto, caminho)
             if not df_t.empty:
+                prioridade = _prioridade_aba_tarefas(aba)
                 df_t["ARQUIVO"] = Path(caminho).name
                 df_t["ABA"] = aba
-                tarefas.append(df_t)
-                diagnostico.append(f"{aba}: tarefas ({len(df_t)})")
+                candidatos_tarefas.append((prioridade, aba, df_t))
+                diagnostico.append(f"{aba}: tarefas reconhecidas ({len(df_t)}) | prioridade {prioridade}")
                 continue
+
         if tem_resumo:
             df_r = _preparar_resumo_leitura(bruto, caminho)
             if not df_r.empty:
+                prioridade = _prioridade_aba_resumo(aba)
                 df_r["ARQUIVO"] = Path(caminho).name
                 df_r["ABA"] = aba
-                resumos.append(df_r)
-                diagnostico.append(f"{aba}: resumo ({len(df_r)})")
+                candidatos_resumo.append((prioridade, aba, df_r))
+                diagnostico.append(f"{aba}: resumo reconhecido ({len(df_r)}) | prioridade {prioridade}")
                 continue
-        diagnostico.append(f"{aba}: colunas não reconhecidas: {list(bruto.columns)[:8]}")
+
+        if tem_legado:
+            df_l = _preparar_agentes_leitura_antigo(bruto, caminho)
+            if not df_l.empty:
+                df_l["ARQUIVO"] = Path(caminho).name
+                df_l["ABA"] = aba
+                candidatos_legado.append((1, aba, df_l))
+                diagnostico.append(f"{aba}: formato antigo por agente reconhecido ({len(df_l)})")
+                continue
+
+        diagnostico.append(f"{aba}: colunas não reconhecidas: {list(bruto.columns)[:10]}")
+
+    # Evita duplicar tarefas: quando existe TAREFAS/TAREFAS_CONSOLIDADAS, ignora abas por município.
+    tarefas = []
+    if candidatos_tarefas:
+        max_prio = max(p for p, _, _ in candidatos_tarefas)
+        escolhidos = [(aba, df) for p, aba, df in candidatos_tarefas if p == max_prio]
+        tarefas = [df for _, df in escolhidos]
+        diagnostico.append("Usando aba(s) de tarefas: " + ", ".join(aba for aba, _ in escolhidos))
+    elif candidatos_legado:
+        tarefas = [df for _, _, df in candidatos_legado]
+        diagnostico.append("Usando fallback legado por agente: " + ", ".join(aba for _, aba, _ in candidatos_legado))
+
+    resumos = []
+    if candidatos_resumo:
+        max_prio = max(p for p, _, _ in candidatos_resumo)
+        escolhidos_r = [(aba, df) for p, aba, df in candidatos_resumo if p == max_prio]
+        resumos = [df for _, df in escolhidos_r]
+        diagnostico.append("Usando aba(s) de resumo: " + ", ".join(aba for aba, _ in escolhidos_r))
 
     df_tarefas = pd.concat(tarefas, ignore_index=True) if tarefas else pd.DataFrame()
+    if not df_tarefas.empty:
+        df_tarefas["_ord"] = df_tarefas["D OPERACIONAL"].apply(_ordenar_d)
+        # dedup final entre abas/arquivos, mantendo a primeira linha mais completa.
+        df_tarefas["_completude"] = df_tarefas.notna().sum(axis=1) + (df_tarefas.get("T. INSTALA", 0) > 0).astype(int)
+        df_tarefas = (
+            df_tarefas.sort_values(["_completude", "_ord"], ascending=[False, True])
+            .drop_duplicates(subset=["BASE", "TAREFA"], keep="first")
+            .drop(columns=["_ord", "_completude"], errors="ignore")
+            .reset_index(drop=True)
+        )
+
     df_resumo = pd.concat(resumos, ignore_index=True) if resumos else pd.DataFrame()
     return df_tarefas, df_resumo, diagnostico
 
