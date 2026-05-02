@@ -1,4543 +1,4031 @@
-from pathlib import Path
-from datetime import datetime
-from zoneinfo import ZoneInfo
-import json
-import tempfile
+import os
+import re
+import sys
+import subprocess
+import time
+from datetime import datetime, timedelta
+import threading
+import queue
+import traceback
+import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import tkinter as tk
+from tkinter import ttk, messagebox
+from tkinter.scrolledtext import ScrolledText
+
+from dotenv import load_dotenv
 import pandas as pd
-import streamlit as st
-import altair as alt
 
-st.set_page_config(page_title="G.Z.U.S. | Gestão Inteligente de Serviços", page_icon="🤖", layout="wide")
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
-SENHA_CORRETA = "SCS@2026"
-
-# ==============================
-# IDENTIDADE VISUAL / CORES
-# ==============================
-
-st.markdown(
-    """
-    <style>
-    /* Layout geral */
-    .stApp {
-        background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
-    }
-
-    .main .block-container {
-        padding-top: 1.4rem;
-        padding-bottom: 3rem;
-        max-width: 1280px;
-    }
-
-    h1, h2, h3 {
-        letter-spacing: -0.03em;
-        color: #0f172a;
-    }
-
-    .stCaption, div[data-testid="stCaptionContainer"] {
-        color: #64748b;
-    }
-
-    /* Métricas */
-    div[data-testid="stMetric"] {
-        background: rgba(255, 255, 255, 0.88);
-        border: 1px solid rgba(15, 23, 42, 0.08);
-        border-radius: 22px;
-        padding: 20px 22px;
-        box-shadow: 0 14px 35px rgba(15, 23, 42, 0.08);
-    }
-
-    div[data-testid="stMetric"] label {
-        color: #64748b !important;
-        font-weight: 800 !important;
-    }
-
-    div[data-testid="stMetricValue"] {
-        color: #0f172a !important;
-        font-weight: 900 !important;
-        letter-spacing: -0.04em;
-    }
-
-    /* Cards */
-    .executive-card {
-        background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
-        color: white;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 24px;
-        padding: 24px 28px;
-        margin: 12px 0 20px 0;
-        box-shadow: 0 18px 45px rgba(29, 78, 216, 0.25);
-    }
-
-    .executive-card h3 {
-        margin: 0 0 8px 0;
-        color: white;
-    }
-
-    .ranking-podium {
-        border-radius: 18px;
-        padding: 14px 16px;
-        margin: 6px 0 12px 0;
-        background: rgba(255, 255, 255, 0.88);
-        border: 1px solid rgba(15, 23, 42, 0.08);
-        box-shadow: 0 10px 26px rgba(15, 23, 42, 0.07);
-    }
-
-    .gold { border-left: 8px solid #f59e0b; }
-    .silver { border-left: 8px solid #94a3b8; }
-    .bronze { border-left: 8px solid #b45309; }
-
-    .soft-note {
-        border-radius: 18px;
-        padding: 13px 16px;
-        background: rgba(37, 99, 235, 0.08);
-        border: 1px solid rgba(37, 99, 235, 0.16);
-        margin: 10px 0 18px 0;
-        color: #1e3a8a;
-        font-size: 0.95rem;
-    }
-
-    .status-card {
-        background: rgba(255, 255, 255, 0.88);
-        border: 1px solid rgba(15, 23, 42, 0.08);
-        border-radius: 22px;
-        padding: 16px 18px;
-        margin: 10px 0 20px 0;
-        box-shadow: 0 14px 35px rgba(15, 23, 42, 0.08);
-    }
-
-    .status-card b {
-        color: #0f172a;
-    }
-
-    .zero-card {
-        border-radius: 18px;
-        padding: 14px 16px;
-        background: rgba(245, 158, 11, 0.12);
-        border: 1px solid rgba(245, 158, 11, 0.28);
-        color: #92400e;
-        margin: 10px 0 18px 0;
-    }
-
-    .section-title {
-        font-size: 1.05rem;
-        font-weight: 900;
-        margin: 26px 0 10px 0;
-        color: #0f172a;
-    }
-
-    /* Abas */
-    div[data-baseweb="tab-list"] {
-        gap: 8px;
-        flex-wrap: wrap;
-    }
-
-    button[data-baseweb="tab"] {
-        border-radius: 999px;
-        padding: 8px 18px;
-        background: rgba(255, 255, 255, 0.68);
-        border: 1px solid rgba(15, 23, 42, 0.08);
-    }
-
-    button[data-baseweb="tab"][aria-selected="true"] {
-        background: #1d4ed8;
-        color: white;
-    }
-
-    /* Botões e inputs */
-    button[kind="secondary"] {
-        border-radius: 14px !important;
-        border: 1px solid rgba(15, 23, 42, 0.10) !important;
-        box-shadow: 0 6px 16px rgba(15, 23, 42, 0.05);
-    }
-
-    div[data-testid="stDataFrame"] {
-        border-radius: 18px;
-        overflow: hidden;
-        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
-    }
-
-    section[data-testid="stSidebar"] {
-        background: rgba(255, 255, 255, 0.74);
-        border-right: 1px solid rgba(15, 23, 42, 0.08);
-    }
-
-    @media (prefers-color-scheme: dark) {
-        .stApp {
-            background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
-        }
-
-        h1, h2, h3, .section-title {
-            color: #e5e7eb;
-        }
-
-        div[data-testid="stMetric"],
-        .ranking-podium {
-            background: rgba(15, 23, 42, 0.86);
-            border-color: rgba(255, 255, 255, 0.10);
-        }
-
-        div[data-testid="stMetricValue"] {
-            color: #f8fafc !important;
-        }
-
-        .soft-note {
-            color: #bfdbfe;
-            background: rgba(59, 130, 246, 0.12);
-            border-color: rgba(147, 197, 253, 0.22);
-        }
-
-        .status-card {
-            background: rgba(15, 23, 42, 0.86);
-            border-color: rgba(255, 255, 255, 0.10);
-        }
-
-        .status-card b {
-            color: #f8fafc;
-        }
-
-        .zero-card {
-            color: #fde68a;
-            background: rgba(245, 158, 11, 0.13);
-            border-color: rgba(245, 158, 11, 0.32);
-        }
-
-        section[data-testid="stSidebar"] {
-            background: rgba(15, 23, 42, 0.82);
-            border-right: 1px solid rgba(255, 255, 255, 0.08);
-        }
-
-        button[data-baseweb="tab"] {
-            background: rgba(15, 23, 42, 0.75);
-            border-color: rgba(255, 255, 255, 0.10);
-        }
-
-        button[data-baseweb="tab"][aria-selected="true"] {
-            background: #2563eb;
-            color: white;
-        }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ==============================
-# CONTROLE DE ACESSO POR PERFIL
-# ==============================
-
-USUARIOS_ACESSO = {
-    "gerente": {
-        "senha": SENHA_CORRETA,
-        "perfil": "gerente",
-        "nome": "Gerente",
-    },
-    "supervisor_stc": {
-        "senha": "STC@2026",
-        "perfil": "supervisor_stc",
-        "nome": "Supervisor STC",
-    },
-    "supervisor_leitura": {
-        "senha": "LEITURA@2026",
-        "perfil": "supervisor_leitura",
-        "nome": "Supervisor Leitura",
-    },
-}
-
-CONTRATOS_SUPERVISOR_STC = ["STC Jundiai", "Disjuntor Santa Cruz"]
+from openpyxl import load_workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
 
 
-# ==============================
-# AJUSTE MOBILE / RESPONSIVIDADE
-# ==============================
-st.markdown(
-    """
-    <style>
-    @media (max-width: 768px) {
-        html, body, .stApp { background: #0b1220 !important; color: #e5e7eb !important; }
-        .main .block-container {
-            padding-top: 0.75rem !important;
-            padding-left: 0.85rem !important;
-            padding-right: 0.85rem !important;
-            padding-bottom: 7.5rem !important;
-            max-width: 100% !important;
-        }
-        h1 {
-            font-size: 1.55rem !important;
-            line-height: 1.15 !important;
-            margin-bottom: 0.35rem !important;
-            color: #f8fafc !important;
-        }
-        h2 { font-size: 1.28rem !important; color: #f8fafc !important; }
-        h3 { font-size: 1.08rem !important; color: #f8fafc !important; }
-        .stCaption, div[data-testid="stCaptionContainer"] {
-            color: #cbd5e1 !important;
-            font-size: 0.88rem !important;
-        }
-        div[data-testid="stMetric"], .ranking-podium, .status-card, .zero-card {
-            background: rgba(15, 23, 42, 0.96) !important;
-            border-color: rgba(148, 163, 184, 0.28) !important;
-            box-shadow: 0 10px 28px rgba(0,0,0,0.28) !important;
-        }
-        div[data-testid="stMetric"] label, div[data-testid="stMetricValue"] {
-            color: #f8fafc !important;
-        }
-        .executive-card {
-            background: linear-gradient(135deg, #111827 0%, #1d4ed8 100%) !important;
-            border-radius: 20px !important;
-            padding: 16px 18px !important;
-            margin: 8px 0 14px 0 !important;
-            box-shadow: 0 12px 30px rgba(29, 78, 216, 0.22) !important;
-        }
-        .executive-card h3, .executive-card p, .executive-card div, .executive-card span {
-            color: #ffffff !important;
-        }
-        section[data-testid="stSidebar"] {
-            background: #0f172a !important;
-        }
-        div[data-testid="stDataFrame"] {
-            max-width: 100% !important;
-            overflow-x: auto !important;
-        }
-        button[kind="secondary"], button[data-baseweb="tab"] {
-            min-height: 40px !important;
-        }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
-if "autenticado" not in st.session_state:
-    st.session_state.autenticado = False
 
-if "perfil_acesso" not in st.session_state:
-    st.session_state.perfil_acesso = ""
+# ================= GUI / APP =================
+APP_TITULO = "Extração CWSI"
 
-if "nome_acesso" not in st.session_state:
-    st.session_state.nome_acesso = ""
+# ================= TEMA =================
+COR_BG = "#0f172a"
+COR_BG_CARD = "#111827"
+COR_BG_CARD_2 = "#1f2937"
+COR_TEXTO = "#e5e7eb"
+COR_TEXTO_SUAVE = "#94a3b8"
+COR_DESTAQUE = "#22d3ee"
+COR_DESTAQUE_2 = "#38bdf8"
+COR_BOTAO = "#1d4ed8"
+COR_BOTAO_HOVER = "#2563eb"
+COR_BOTAO_NEUTRO = "#334155"
+COR_BORDA = "#243041"
+COR_LOG_BG = "#020617"
+COR_OK = "#10b981"
 
-if not st.session_state.autenticado:
-    st.title("🔒 Acesso restrito")
-    st.caption("Entre com o perfil autorizado para acessar o painel.")
 
-    usuario = st.selectbox(
-        "Perfil",
-        options=list(USUARIOS_ACESSO.keys()),
-        format_func=lambda u: USUARIOS_ACESSO[u]["nome"],
-    )
-    senha = st.text_input("Digite a senha para acessar o painel:", type="password")
 
-    if st.button("Entrar"):
-        dados_usuario = USUARIOS_ACESSO.get(usuario, {})
-        if senha == dados_usuario.get("senha"):
-            st.session_state.autenticado = True
-            st.session_state.perfil_acesso = dados_usuario.get("perfil", "")
-            st.session_state.nome_acesso = dados_usuario.get("nome", "")
-            st.rerun()
+def esconder_console_windows():
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)
+    except Exception:
+        pass
+
+
+def abrir_pasta(caminho):
+    caminho_absoluto = os.path.abspath(caminho)
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(caminho_absoluto)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", caminho_absoluto])
         else:
-            st.error("Senha incorreta")
+            subprocess.Popen(["xdg-open", caminho_absoluto])
+    except Exception as e:
+        print(f"Não foi possível abrir a pasta: {e}")
 
-    st.stop()
 
-PERFIL_ACESSO = st.session_state.get("perfil_acesso", "gerente")
-NOME_ACESSO = st.session_state.get("nome_acesso", "Gerente")
-PODE_VER_FINANCEIRO = PERFIL_ACESSO == "gerente"
+class QueueWriter:
+    def __init__(self, fila):
+        self.fila = fila
 
-PASTA_DASHBOARD = Path("dashboard")
-PASTA_ATUAL = Path(".")
-# Streamlit Cloud pode não manter/gravar bem no diretório do app.
-# /tmp é o local mais seguro para guardar o snapshot temporário entre atualizações.
-STATUS_SNAPSHOT_PATH = Path(tempfile.gettempdir()) / "status_dashboard_snapshot.json"
+    def write(self, texto):
+        if texto and texto.strip():
+            self.fila.put(("log", texto.rstrip()))
 
-ARQUIVOS = {
-    "notas": "notas_dashboard.csv",
-    "contratos": "faturamento_contratos_dashboard.csv",
-    "dias": "faturamento_dias_dashboard.csv",
-    "carro": "faturamento_carro_estimado_dashboard.csv",
-    "carro_dias": "faturamento_carro_dias_dashboard.csv",
-}
+    def flush(self):
+        pass
 
-# ==============================
-# CONTRATO LEITURA (em testes)
-# ==============================
-# No PC da operação, o extrator de leitura grava aqui.
-# No Streamlit Cloud, o app só consegue ler se os arquivos forem enviados ao GitHub,
-# preferencialmente em dashboard/leitura/.
-PASTAS_LEITURA = [
-    Path(r"C:\Users\user\Desktop\LEITURA\saida"),
-    PASTA_DASHBOARD / "leitura",
-    PASTA_DASHBOARD,
-    PASTA_ATUAL / "leitura",
-    PASTA_ATUAL,
+
+class ExtratorGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title(APP_TITULO)
+        self.root.geometry("980x680")
+        self.root.minsize(900, 620)
+        self.root.configure(bg=COR_BG)
+
+        self.fila = queue.Queue()
+        self.worker = None
+        self.executando = False
+        self.arquivos = []
+        self.agendamento_ativo = False
+        self.agendamento_job = None
+        self.agendamento_countdown_job = None
+        self.proxima_execucao = None
+        self.intervalo_var = tk.StringVar(value="30 minutos")
+        self.toggle_agendamento_var = tk.BooleanVar(value=False)
+        self.toggle_text_var = tk.StringVar(value="OFF")
+        self.countdown_var = tk.StringVar(value="Próxima execução: não programada")
+
+        self.status_var = tk.StringVar(value="Pronto para iniciar")
+        self.substatus_var = tk.StringVar(value="Aguardando execução")
+        self.arquivos_var = tk.StringVar(value="Nenhum arquivo gerado ainda")
+        self.base_var = tk.StringVar(value="AMBAS")
+        hoje = datetime.now().strftime("%d/%m/%Y")
+        self.data_inicio_var = tk.StringVar(value=hoje)
+        self.data_fim_var = tk.StringVar(value=hoje)
+
+        self._montar()
+        self._centralizar()
+        self._poll()
+
+
+    def _montar(self):
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        style.configure("Root.TFrame", background=COR_BG)
+        style.configure("Card.TFrame", background=COR_BG_CARD, relief="flat")
+        style.configure("SoftCard.TFrame", background=COR_BG_CARD_2, relief="flat")
+
+        style.configure(
+            "Title.TLabel",
+            background=COR_BG,
+            foreground=COR_TEXTO,
+            font=("Segoe UI", 22, "bold")
+        )
+        style.configure(
+            "Subtitle.TLabel",
+            background=COR_BG,
+            foreground=COR_TEXTO_SUAVE,
+            font=("Segoe UI", 10)
+        )
+        style.configure(
+            "Section.TLabel",
+            background=COR_BG_CARD,
+            foreground=COR_TEXTO,
+            font=("Segoe UI", 10, "bold")
+        )
+        style.configure(
+            "Info.TLabel",
+            background=COR_BG_CARD,
+            foreground=COR_TEXTO,
+            font=("Segoe UI", 12)
+        )
+        style.configure(
+            "Soft.TLabel",
+            background=COR_BG_CARD,
+            foreground=COR_TEXTO_SUAVE,
+            font=("Segoe UI", 9)
+        )
+        style.configure(
+            "Files.TLabel",
+            background=COR_BG_CARD_2,
+            foreground=COR_TEXTO,
+            font=("Segoe UI", 10)
+        )
+
+        style.configure(
+            "Primary.TButton",
+            background=COR_BOTAO,
+            foreground="#ffffff",
+            borderwidth=0,
+            focusthickness=0,
+            focuscolor=COR_BG_CARD,
+            padding=(14, 10),
+            font=("Segoe UI", 10, "bold")
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", COR_BOTAO_HOVER), ("pressed", COR_BOTAO_HOVER)],
+            foreground=[("disabled", "#cbd5e1")]
+        )
+
+        style.configure(
+            "Secondary.TButton",
+            background=COR_BOTAO_NEUTRO,
+            foreground="#ffffff",
+            borderwidth=0,
+            focusthickness=0,
+            focuscolor=COR_BG_CARD,
+            padding=(14, 10),
+            font=("Segoe UI", 10, "bold")
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", "#475569"), ("pressed", "#475569")],
+            foreground=[("disabled", "#cbd5e1")]
+        )
+
+        style.configure(
+            "Premium.Horizontal.TProgressbar",
+            troughcolor=COR_BG_CARD_2,
+            background=COR_DESTAQUE,
+            bordercolor=COR_BG_CARD_2,
+            lightcolor=COR_DESTAQUE,
+            darkcolor=COR_DESTAQUE_2,
+            thickness=12
+        )
+
+        frame = ttk.Frame(self.root, padding=18, style="Root.TFrame")
+        frame.pack(fill="both", expand=True)
+
+        hero = tk.Frame(
+            frame,
+            bg=COR_BG_CARD,
+            highlightthickness=1,
+            highlightbackground=COR_BORDA,
+            bd=0
+        )
+        hero.pack(fill="x", pady=(0, 14))
+
+        topo = tk.Frame(hero, bg=COR_BG_CARD)
+        topo.pack(fill="x", padx=18, pady=18)
+
+        icone = tk.Label(
+            topo,
+            text="⚡",
+            bg=COR_BG_CARD,
+            fg=COR_DESTAQUE,
+            font=("Segoe UI Emoji", 26)
+        )
+        icone.pack(side="left", padx=(0, 12))
+
+        textos = tk.Frame(topo, bg=COR_BG_CARD)
+        textos.pack(side="left", fill="x", expand=True)
+
+        ttk.Label(textos, text="Extração CWSI", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            textos,
+            text="Parcial automatizada de leitura Bases Americana e Piracicaba.",
+            style="Subtitle.TLabel"
+        ).pack(anchor="w", pady=(3, 0))
+
+        badge = tk.Button(
+            topo,
+            text="Suporte/Dúvidas",
+            bg="#0f766e",
+            fg="#ccfbf1",
+            activebackground="#115e59",
+            activeforeground="#ecfeff",
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=self.abrir_suporte
+        )
+        badge.pack(side="right")
+
+        cards = ttk.Frame(frame, style="Root.TFrame")
+        cards.pack(fill="x", pady=(0, 14))
+        cards.columnconfigure(0, weight=3)
+        cards.columnconfigure(1, weight=2)
+
+        status_card = tk.Frame(
+            cards, bg=COR_BG_CARD, highlightthickness=1, highlightbackground=COR_BORDA, bd=0
+        )
+        status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        status_inner = tk.Frame(status_card, bg=COR_BG_CARD)
+        status_inner.pack(fill="both", expand=True, padx=16, pady=14)
+
+        ttk.Label(status_inner, text="Status da automação", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(status_inner, textvariable=self.status_var, style="Info.TLabel").pack(anchor="w", pady=(6, 2))
+        ttk.Label(status_inner, textvariable=self.substatus_var, style="Soft.TLabel").pack(anchor="w")
+
+        self.progress = ttk.Progressbar(status_inner, mode="indeterminate", style="Premium.Horizontal.TProgressbar")
+        self.progress.pack(fill="x", pady=(14, 0))
+
+        files_card = tk.Frame(
+            cards, bg=COR_BG_CARD_2, highlightthickness=1, highlightbackground=COR_BORDA, bd=0
+        )
+        files_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        files_inner = tk.Frame(files_card, bg=COR_BG_CARD_2)
+        files_inner.pack(fill="both", expand=True, padx=16, pady=14)
+
+        tk.Label(
+            files_inner,
+            text="Últimas planilhas",
+            bg=COR_BG_CARD_2,
+            fg=COR_TEXTO,
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w")
+        ttk.Label(files_inner, textvariable=self.arquivos_var, style="Files.TLabel", wraplength=300).pack(
+            anchor="w", pady=(8, 0)
+        )
+
+        
+        selecao_frame = tk.Frame(frame, bg=COR_BG_CARD)
+        selecao_frame.pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            selecao_frame,
+            text="Bases:",
+            bg=COR_BG_CARD,
+            fg=COR_TEXTO,
+            font=("Segoe UI", 10, "bold")
+        ).pack(side="left", padx=(10,10))
+
+        for txt, val in [("Ambas","AMBAS"),("Americana","AMERICANA"),("Piracicaba","PIRACICABA")]:
+            tk.Radiobutton(
+                selecao_frame,
+                text=txt,
+                variable=self.base_var,
+                value=val,
+                bg=COR_BG_CARD,
+                fg=COR_TEXTO,
+                selectcolor=COR_BG_CARD,
+                activebackground=COR_BG_CARD
+            ).pack(side="left", padx=5)
+
+        datas_frame = tk.Frame(frame, bg=COR_BG_CARD, highlightthickness=1, highlightbackground=COR_BORDA, bd=0)
+        datas_frame.pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            datas_frame,
+            text="Período para exportar:",
+            bg=COR_BG_CARD,
+            fg=COR_TEXTO,
+            font=("Segoe UI", 10, "bold")
+        ).pack(side="left", padx=(10, 10), pady=10)
+
+        tk.Label(datas_frame, text="De", bg=COR_BG_CARD, fg=COR_TEXTO_SUAVE, font=("Segoe UI", 10)).pack(side="left")
+        self.entry_data_inicio = tk.Entry(
+            datas_frame,
+            textvariable=self.data_inicio_var,
+            width=12,
+            bg=COR_BG_CARD_2,
+            fg=COR_TEXTO,
+            insertbackground=COR_TEXTO,
+            relief="flat",
+            font=("Segoe UI", 10)
+        )
+        self.entry_data_inicio.pack(side="left", padx=(6, 14), ipady=5)
+
+        tk.Label(datas_frame, text="Até", bg=COR_BG_CARD, fg=COR_TEXTO_SUAVE, font=("Segoe UI", 10)).pack(side="left")
+        self.entry_data_fim = tk.Entry(
+            datas_frame,
+            textvariable=self.data_fim_var,
+            width=12,
+            bg=COR_BG_CARD_2,
+            fg=COR_TEXTO,
+            insertbackground=COR_TEXTO,
+            relief="flat",
+            font=("Segoe UI", 10)
+        )
+        self.entry_data_fim.pack(side="left", padx=(6, 10), ipady=5)
+
+        tk.Label(
+            datas_frame,
+            text="Formato: dd/mm/aaaa. O sistema executa um dia por vez.",
+            bg=COR_BG_CARD,
+            fg=COR_TEXTO_SUAVE,
+            font=("Segoe UI", 9)
+        ).pack(side="left", padx=(10, 0))
+
+        botoes_wrap = ttk.Frame(frame, style="Root.TFrame")
+        botoes_wrap.pack(fill="x", pady=(0, 14))
+
+        self.btn_iniciar = ttk.Button(
+            botoes_wrap, text="Iniciar extração", command=self.iniciar, style="Primary.TButton"
+        )
+        self.btn_iniciar.pack(side="left")
+
+        ttk.Button(
+            botoes_wrap,
+            text="Abrir pasta com últimas planilhas",
+            command=self.abrir_pasta_saida,
+            style="Secondary.TButton"
+        ).pack(side="left", padx=(10, 0))
+
+        ttk.Button(
+            botoes_wrap,
+            text="Abrir última planilha",
+            command=self.abrir_ultimo_excel,
+            style="Secondary.TButton"
+        ).pack(side="left", padx=(10, 0))
+
+        agenda_card = tk.Frame(
+            frame, bg=COR_BG_CARD, highlightthickness=1, highlightbackground=COR_BORDA, bd=0
+        )
+        agenda_card.pack(fill="x", pady=(0, 14))
+
+        agenda_inner = tk.Frame(agenda_card, bg=COR_BG_CARD)
+        agenda_inner.pack(fill="x", padx=16, pady=14)
+
+        agenda_top = tk.Frame(agenda_inner, bg=COR_BG_CARD)
+        agenda_top.pack(fill="x")
+
+        agenda_info = tk.Frame(agenda_top, bg=COR_BG_CARD)
+        agenda_info.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            agenda_info,
+            text="Programação automática (em teste)",
+            bg=COR_BG_CARD,
+            fg=COR_TEXTO,
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w")
+
+        self.lbl_countdown = tk.Label(
+            agenda_info,
+            textvariable=self.countdown_var,
+            bg=COR_BG_CARD,
+            fg=COR_DESTAQUE,
+            font=("Segoe UI", 10, "bold")
+        )
+        self.lbl_countdown.pack(anchor="w", pady=(6, 0))
+
+        agenda_controls = tk.Frame(agenda_top, bg=COR_BG_CARD)
+        agenda_controls.pack(side="right", anchor="ne")
+
+        self.combo_intervalo = ttk.Combobox(
+            agenda_controls,
+            textvariable=self.intervalo_var,
+            values=["30 minutos", "1 hora", "2 horas"],
+            state="readonly",
+            width=12
+        )
+        self.combo_intervalo.grid(row=0, column=0, padx=(0, 10), pady=0)
+
+        self.btn_toggle_agendamento = tk.Checkbutton(
+            agenda_controls,
+            textvariable=self.toggle_text_var,
+            variable=self.toggle_agendamento_var,
+            command=self.toggle_agendamento,
+            indicatoron=False,
+            width=8,
+            padx=12,
+            pady=8,
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            bg=COR_BOTAO_NEUTRO,
+            fg="#ffffff",
+            activebackground="#475569",
+            activeforeground="#ffffff",
+            selectcolor=COR_OK,
+            font=("Segoe UI", 10, "bold")
+        )
+        self.btn_toggle_agendamento.grid(row=0, column=1, pady=0)
+
+        self.lbl_agenda_desc = tk.Label(
+            agenda_inner,
+            text="Ao ativar, a primeira extração começa na hora e as próximas seguem no intervalo escolhido.",
+            bg=COR_BG_CARD,
+            fg=COR_TEXTO_SUAVE,
+            font=("Segoe UI", 9),
+            justify="left",
+            anchor="w"
+        )
+        self.lbl_agenda_desc.pack(fill="x", pady=(10, 0))
+        self.root.bind("<Configure>", self._ajustar_wrap_programacao)
+
+        log_card = tk.Frame(
+            frame, bg=COR_BG_CARD, highlightthickness=1, highlightbackground=COR_BORDA, bd=0
+        )
+        log_card.pack(fill="both", expand=True)
+
+        log_top = tk.Frame(log_card, bg=COR_BG_CARD)
+        log_top.pack(fill="x", padx=16, pady=(14, 8))
+
+        tk.Label(
+            log_top,
+            text="Log de execução",
+            bg=COR_BG_CARD,
+            fg=COR_TEXTO,
+            font=("Segoe UI", 10, "bold")
+        ).pack(side="left")
+
+        tk.Label(
+            log_top,
+            text="Tempo real",
+            bg=COR_BG_CARD,
+            fg=COR_OK,
+            font=("Segoe UI", 9, "bold")
+        ).pack(side="right")
+
+        log_frame = tk.Frame(log_card, bg=COR_BG_CARD)
+        log_frame.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+
+        self.txt_log = tk.Text(
+            log_frame,
+            height=20,
+            font=("Consolas", 10),
+            bg=COR_LOG_BG,
+            fg=COR_TEXTO,
+            insertbackground=COR_TEXTO,
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=10,
+            wrap="none"
+        )
+        self.txt_log.pack(side="left", fill="both", expand=True)
+
+        scrollbar_y = tk.Scrollbar(log_frame, command=self.txt_log.yview)
+        scrollbar_y.pack(side="right", fill="y")
+
+        scrollbar_x = tk.Scrollbar(log_frame, command=self.txt_log.xview, orient="horizontal")
+        scrollbar_x.pack(side="bottom", fill="x")
+
+        self.txt_log.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+        self.txt_log.configure(state="disabled")
+
+    def _centralizar(self):
+
+        self.root.update_idletasks()
+        w = self.root.winfo_width()
+        h = self.root.winfo_height()
+        x = (self.root.winfo_screenwidth() // 2) - (w // 2)
+        y = (self.root.winfo_screenheight() // 2) - (h // 2)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self._ajustar_wrap_programacao()
+        self._atualizar_visual_agendamento()
+
+    def _append_log(self, texto):
+        self.txt_log.configure(state="normal")
+        self.txt_log.insert("end", texto + "\n")
+        self.txt_log.see("end")
+        self.txt_log.configure(state="disabled")
+
+    def _poll(self):
+        try:
+            while True:
+                tipo, valor = self.fila.get_nowait()
+                if tipo == "log":
+                    self._append_log(str(valor))
+                elif tipo == "status":
+                    self.status_var.set(str(valor))
+                elif tipo == "substatus":
+                    self.substatus_var.set(str(valor))
+                elif tipo == "arquivos":
+                    self.arquivos = list(valor)
+                    self.arquivos_var.set(" | ".join(self.arquivos) if self.arquivos else "Nenhum arquivo gerado ainda")
+                elif tipo == "fim":
+                    self._finalizar(valor)
+        except queue.Empty:
+            pass
+
+        self.root.after(120, self._poll)
+
+    def set_status(self, texto):
+        self.fila.put(("status", texto))
+
+    def set_substatus(self, texto):
+        self.fila.put(("substatus", texto))
+
+    def log(self, texto):
+        self.fila.put(("log", texto))
+
+    def atualizar_arquivos(self, arquivos):
+        self.fila.put(("arquivos", arquivos))
+
+    def _ajustar_wrap_programacao(self, event=None):
+        try:
+            largura = max(320, self.root.winfo_width() - 260)
+            self.lbl_agenda_desc.configure(wraplength=largura)
+        except Exception:
+            pass
+
+    def _atualizar_visual_agendamento(self):
+        if self.agendamento_ativo:
+            self.toggle_text_var.set("ON")
+            self.btn_toggle_agendamento.configure(
+                bg=COR_OK,
+                activebackground="#059669"
+            )
+        else:
+            self.toggle_text_var.set("OFF")
+            self.btn_toggle_agendamento.configure(
+                bg=COR_BOTAO_NEUTRO,
+                activebackground="#475569"
+            )
+            if not self.proxima_execucao:
+                self.countdown_var.set("Próxima execução: não programada")
+
+    def obter_intervalo_segundos(self):
+        mapa = {
+            "30 minutos": 30 * 60,
+            "1 hora": 60 * 60,
+            "2 horas": 2 * 60 * 60,
+        }
+        return mapa.get(self.intervalo_var.get(), 30 * 60)
+
+    def toggle_agendamento(self):
+        if self.agendamento_ativo:
+            self.parar_agendamento()
+        else:
+            self.iniciar_agendamento()
+
+    def iniciar_agendamento(self):
+        self.agendamento_ativo = True
+        self.toggle_agendamento_var.set(True)
+        self._atualizar_visual_agendamento()
+        self.combo_intervalo.configure(state="disabled")
+        self.log(
+            f"Programação automática ativada ({self.intervalo_var.get()}). A primeira execução será iniciada agora."
+        )
+        self.set_status("Programação automática ativa")
+        self.set_substatus("Primeira execução agendada para agora")
+        self.countdown_var.set("Primeira execução: iniciando agora")
+        self.iniciar()
+
+    def parar_agendamento(self):
+        self.agendamento_ativo = False
+        self.toggle_agendamento_var.set(False)
+        self.proxima_execucao = None
+
+        if self.agendamento_job is not None:
+            try:
+                self.root.after_cancel(self.agendamento_job)
+            except Exception:
+                pass
+            self.agendamento_job = None
+
+        if self.agendamento_countdown_job is not None:
+            try:
+                self.root.after_cancel(self.agendamento_countdown_job)
+            except Exception:
+                pass
+            self.agendamento_countdown_job = None
+
+        self.combo_intervalo.configure(state="readonly")
+        self._atualizar_visual_agendamento()
+        self.log("Programação automática desativada.")
+        if not self.executando:
+            self.set_status("Pronto para iniciar")
+            self.set_substatus("Aguardando execução")
+
+    def _agendar_proxima_execucao(self):
+        if not self.agendamento_ativo:
+            return
+
+        intervalo = self.obter_intervalo_segundos()
+        self.proxima_execucao = datetime.now() + timedelta(seconds=intervalo)
+
+        if self.agendamento_job is not None:
+            try:
+                self.root.after_cancel(self.agendamento_job)
+            except Exception:
+                pass
+
+        if self.agendamento_countdown_job is not None:
+            try:
+                self.root.after_cancel(self.agendamento_countdown_job)
+            except Exception:
+                pass
+
+        self.agendamento_job = self.root.after(intervalo * 1000, self._disparar_execucao_agendada)
+        self._atualizar_countdown_agendamento()
+        self.log(
+            f"Próxima execução agendada para {self.proxima_execucao.strftime('%d/%m/%Y %H:%M:%S')}."
+        )
+
+    def _atualizar_countdown_agendamento(self):
+        if not self.agendamento_ativo or not self.proxima_execucao:
+            return
+
+        restante = int((self.proxima_execucao - datetime.now()).total_seconds())
+        if restante < 0:
+            restante = 0
+
+        horas = restante // 3600
+        minutos = (restante % 3600) // 60
+        segundos = restante % 60
+
+        texto_countdown = f"Próxima execução em {horas:02d}:{minutos:02d}:{segundos:02d}"
+        self.countdown_var.set(texto_countdown)
+        self.set_status("Programação automática ativa")
+        self.set_substatus(texto_countdown)
+
+        if restante > 0:
+            self.agendamento_countdown_job = self.root.after(1000, self._atualizar_countdown_agendamento)
+        else:
+            self.agendamento_countdown_job = None
+
+    def _disparar_execucao_agendada(self):
+        self.agendamento_job = None
+        self.agendamento_countdown_job = None
+        self.proxima_execucao = None
+
+        if not self.agendamento_ativo:
+            return
+
+        if self.executando:
+            self.log("A execução agendada encontrou uma extração em andamento. Reagendando próximo ciclo.")
+            self._agendar_proxima_execucao()
+            return
+
+        self.countdown_var.set("Executando extração automática agora")
+        self.log("Iniciando execução automática programada.")
+        self.iniciar()
+
+    def iniciar(self):
+        if self.executando:
+            return
+
+        self.executando = True
+        self.arquivos = []
+        self.arquivos_var.set("Nenhum arquivo gerado ainda")
+        self.btn_iniciar.configure(state="disabled")
+        self.progress.start(12)
+        self.set_status("Iniciando automação")
+        self.set_substatus("Preparando execução")
+        self.log("=" * 90)
+        self.log(f"Início: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        self.log("=" * 90)
+
+        self.worker = threading.Thread(target=self._run_worker, daemon=True)
+        self.worker.start()
+
+    def _run_worker(self):
+        stdout_original = sys.stdout
+        stderr_original = sys.stderr
+        writer = QueueWriter(self.fila)
+
+        try:
+            sys.stdout = writer
+            sys.stderr = writer
+            resultado = main(
+                app=self,
+                base_selecionada=self.base_var.get(),
+                data_inicio_txt=self.data_inicio_var.get(),
+                data_fim_txt=self.data_fim_var.get()
+            )
+            self.fila.put(("fim", {"ok": True, "resultado": resultado}))
+        except Exception as e:
+            erro = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            self.fila.put(("log", erro))
+            self.fila.put(("fim", {"ok": False, "erro": str(e)}))
+        finally:
+            sys.stdout = stdout_original
+            sys.stderr = stderr_original
+
+    def _finalizar(self, payload):
+        self.executando = False
+        self.progress.stop()
+        self.btn_iniciar.configure(state="normal")
+
+        if payload.get("ok"):
+            resultado = payload.get("resultado") or {}
+            arquivos = resultado.get("arquivos", [])
+            self.atualizar_arquivos(arquivos)
+            if self.agendamento_ativo:
+                self.countdown_var.set("Execução concluída. Preparando próximo ciclo...")
+                self.set_status("Execução automática concluída")
+                self.set_substatus("Preparando próximo ciclo")
+                self.log("Execução automática concluída com sucesso.")
+            else:
+                self.set_status("Finalizado com sucesso")
+                self.set_substatus("Processamento concluído")
+                messagebox.showinfo("Concluído", "Extração finalizada com sucesso.")
+        else:
+            if self.agendamento_ativo:
+                self.countdown_var.set("Execução com erro. Reagendando próximo ciclo...")
+                self.set_status("Execução automática com erro")
+                self.set_substatus("O próximo ciclo será reagendado")
+                self.log(f"Erro na execução automática: {payload.get('erro', 'Ocorreu um erro inesperado.')}")
+            else:
+                self.set_status("Erro na execução")
+                self.set_substatus("Verifique o log abaixo")
+                messagebox.showerror("Erro", payload.get("erro", "Ocorreu um erro inesperado."))
+
+        if self.agendamento_ativo:
+            self._agendar_proxima_execucao()
+        else:
+            self.countdown_var.set("Próxima execução: não programada")
+
+    def abrir_suporte(self):
+        url = "https://wa.me/5519991436620"
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(url)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", url])
+            else:
+                subprocess.Popen(["xdg-open", url])
+        except Exception:
+            try:
+                webbrowser.open_new_tab(url)
+            except Exception as e:
+                try:
+                    messagebox.showerror("Suporte/Dúvidas", f"Não foi possível abrir o WhatsApp.\n\n{e}")
+                except Exception:
+                    print(f"Não foi possível abrir o WhatsApp: {e}")
+
+    def abrir_pasta_saida(self):
+        garantir_pasta_saida()
+        abrir_pasta(PASTA_SAIDA)
+
+    def abrir_ultimo_excel(self):
+        arquivos = list(self.arquivos)
+        if arquivos:
+            abrir_arquivo(arquivos[-1])
+            return
+
+        garantir_pasta_saida()
+        candidatos = [
+            os.path.join(PASTA_SAIDA, nome)
+            for nome in os.listdir(PASTA_SAIDA)
+            if nome.lower().endswith(".xlsx")
+        ]
+        if not candidatos:
+            messagebox.showwarning("Aviso", "Nenhuma planilha encontrada na pasta.")
+            return
+
+        ultimo = max(candidatos, key=os.path.getmtime)
+        abrir_arquivo(ultimo)
+
+
+def iniciar_interface():
+    esconder_console_windows()
+    root = tk.Tk()
+    ExtratorGUI(root)
+    root.mainloop()
+
+
+# ================= CONFIG =================
+TEMPO_PADRAO = 30
+
+# Pasta fixa onde as parciais de leitura ficam disponíveis para o painel local.
+# Mantém o fluxo separado dos arquivos de corte/faturamento.
+PASTA_SAIDA = os.path.join(os.path.expanduser("~"), "Desktop", "LEITURA", "saida")
+
+
+# ================= DRIVER =================
+def iniciar_driver():
+    options = Options()
+    # V8: volta para headless. Mantém tamanho fixo para preservar o layout da grade.
+    options.add_argument("--headless=new")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-notifications")
+    options.add_argument("--disable-infobars")
+    options.add_argument("--disable-popup-blocking")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--force-device-scale-factor=1")
+    options.add_argument("--high-dpi-support=1")
+
+    driver = webdriver.Chrome(options=options)
+    try:
+        driver.set_window_position(0, 0)
+        driver.set_window_size(1920, 1080)
+    except Exception:
+        pass
+    driver.implicitly_wait(0)
+    return driver
+
+
+def esperar(driver, tempo=TEMPO_PADRAO):
+    return WebDriverWait(driver, tempo)
+
+
+# ================= UTILS =================
+def texto_limpo(valor):
+    if valor is None:
+        return ""
+    return " ".join(str(valor).replace("\xa0", " ").split()).strip()
+
+
+def garantir_pasta_saida():
+    os.makedirs(PASTA_SAIDA, exist_ok=True)
+
+
+def abrir_arquivo(caminho_arquivo):
+    caminho_absoluto = os.path.abspath(caminho_arquivo)
+
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(caminho_absoluto)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", caminho_absoluto])
+        else:
+            subprocess.Popen(["xdg-open", caminho_absoluto])
+    except Exception as e:
+        print(f"Não foi possível abrir o arquivo automaticamente: {e}")
+
+
+def timestamp_str():
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def parse_data_br(valor):
+    valor = texto_limpo(valor)
+    try:
+        return datetime.strptime(valor, "%d/%m/%Y").date()
+    except ValueError:
+        raise Exception(f"Data inválida: {valor}. Use o formato dd/mm/aaaa.")
+
+
+def gerar_periodos_diarios(data_inicio_txt, data_fim_txt):
+    inicio = parse_data_br(data_inicio_txt)
+    fim = parse_data_br(data_fim_txt)
+
+    if fim < inicio:
+        raise Exception("A data final não pode ser menor que a data inicial.")
+
+    periodos = []
+    atual = inicio
+    while atual <= fim:
+        data_br = atual.strftime("%d/%m/%Y")
+        periodos.append((data_br, data_br))
+        atual += timedelta(days=1)
+
+    return periodos
+
+
+def data_para_nome_arquivo(data_br):
+    return parse_data_br(data_br).strftime("%Y-%m-%d")
+
+
+def gerar_posicoes(inicio, fim, passo):
+    posicoes = []
+    atual = inicio
+
+    while atual <= fim:
+        posicoes.append(int(round(atual)))
+        atual += passo
+
+    fim_int = int(round(fim))
+    if not posicoes or posicoes[-1] != fim_int:
+        posicoes.append(fim_int)
+
+    finais = []
+    vistos = set()
+    for p in posicoes:
+        if p not in vistos:
+            vistos.add(p)
+            finais.append(p)
+
+    return finais
+
+
+def eh_numero_simples(txt):
+    txt = texto_limpo(txt)
+    if not txt:
+        return False
+
+    txt = txt.replace(".", "").replace(",", "")
+    return txt.isdigit()
+
+
+def parece_nome_pessoa(txt):
+    txt = texto_limpo(txt)
+    if not txt:
+        return False
+
+    partes = [p for p in txt.split() if p.strip()]
+    if len(partes) < 2:
+        return False
+
+    tem_letra = any(ch.isalpha() for ch in txt)
+    tem_numero = any(ch.isdigit() for ch in txt)
+
+    if not tem_letra or tem_numero:
+        return False
+
+    if len(txt) < 8:
+        return False
+
+    bloqueados = {
+        "LEITURA", "AME", "P", "R", "CRIADA", "CONTROLE"
+    }
+    if txt.upper() in bloqueados:
+        return False
+
+    return True
+
+
+def slug_base(nome_base):
+    nome = texto_limpo(nome_base).upper()
+    nome = nome.replace(" [B]", "")
+    nome = nome.replace(" ", "_")
+    nome = nome.replace("/", "_")
+    return nome
+
+
+def normalizar_nome_agente(nome):
+    return texto_limpo(nome).upper()
+
+
+# ================= LOGIN =================
+def preencher_login(driver, usuario, senha):
+    wait = esperar(driver, 30)
+
+    print("Preenchendo login...")
+
+    campo_usuario = wait.until(
+        EC.presence_of_element_located((By.XPATH, "//input[@placeholder='Usuário']"))
+    )
+
+    campo_senha = wait.until(
+        EC.presence_of_element_located((By.XPATH, "//input[@placeholder='Senha']"))
+    )
+
+    campo_usuario.clear()
+    campo_usuario.send_keys(usuario)
+
+    campo_senha.clear()
+    campo_senha.send_keys(senha)
+
+    print("Procurando botão Login...")
+    botao_login = wait.until(
+        EC.element_to_be_clickable((
+            By.XPATH,
+            "//*[self::button or self::a or self::input][contains(., 'Login') or @value='Login']"
+        ))
+    )
+
+    botao_login.click()
+    print("Login enviado com sucesso.")
+
+
+# ================= TELA INICIAL =================
+def aguardar_tela_principal(driver):
+    wait = esperar(driver, 30)
+
+    print("Aguardando tela principal carregar...")
+
+    wait.until(
+        EC.presence_of_element_located((
+            By.XPATH,
+            "//*[contains(normalize-space(.), 'Portal de Leitura e Entrega') or contains(normalize-space(.), 'Planejamento / Operação')]"
+        ))
+    )
+
+    wait.until(
+        EC.presence_of_element_located((
+            By.XPATH,
+            "//h2[contains(normalize-space(.), 'Planejamento / Operação')]"
+        ))
+    )
+
+    time.sleep(3)
+
+
+def clicar_card_planejamento_operacao(driver):
+    wait = esperar(driver, 30)
+
+    print("Tentando clicar no card Planejamento / Operação...")
+
+    links = wait.until(
+        EC.presence_of_all_elements_located((
+            By.XPATH,
+            "//a[normalize-space(.)='Planejamento / Operação']"
+        ))
+    )
+
+    alvo = None
+    for link in links:
+        try:
+            if link.is_displayed():
+                alvo = link
+                break
+        except Exception:
+            pass
+
+    if alvo is None:
+        raise Exception("Não encontrei o card/link 'Planejamento / Operação'.")
+
+    try:
+        alvo.click()
+        print("Card clicado com clique normal.")
+    except Exception:
+        driver.execute_script("arguments[0].click();", alvo)
+        print("Card clicado com JavaScript.")
+
+    time.sleep(3)
+
+
+def aguardar_tela_planejamento(driver):
+    wait = esperar(driver, 40)
+
+    print("Aguardando tela de Planejamento carregar...")
+
+    wait.until(
+        lambda d: (
+            len(d.find_elements(By.XPATH, "//*[contains(@placeholder,'Pesquisar Agente')]")) > 0
+            or len(d.find_elements(By.XPATH, "//*[contains(@placeholder,'Pesquisar Base/Município')]")) > 0
+            or len(d.find_elements(By.XPATH, "//*[contains(normalize-space(.), 'PAULISTA')]")) > 0
+            or len(d.find_elements(By.XPATH, "//*[contains(normalize-space(.), 'PIRATININGA')]")) > 0
+            or len(d.find_elements(By.XPATH, "//*[contains(normalize-space(.), 'RGE')]")) > 0
+            or len(d.find_elements(By.XPATH, "//*[contains(normalize-space(.), 'SANTA CRUZ')]")) > 0
+        )
+    )
+
+    print("Tela de Planejamento carregada com sucesso.")
+    time.sleep(2)
+
+
+# ================= ÁRVORE / LINHAS =================
+def encontrar_linha_por_texto(driver, texto, timeout=20):
+    wait = esperar(driver, timeout)
+
+    candidatos = wait.until(
+        EC.presence_of_all_elements_located((
+            By.XPATH,
+            f"//*[normalize-space(text())='{texto}']"
+        ))
+    )
+
+    texto_el = None
+    for el in candidatos:
+        try:
+            if el.is_displayed():
+                texto_el = el
+                break
+        except Exception:
+            pass
+
+    if texto_el is None:
+        raise Exception(f"Não encontrei o texto visível '{texto}'.")
+
+    linha = texto_el.find_element(
+        By.XPATH,
+        "./ancestor::*[self::div or self::li or self::tr][1]"
+    )
+
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center', inline:'nearest'});",
+        linha
+    )
+    time.sleep(0.5)
+
+    return linha, texto_el
+
+
+def clicar_por_coordenada_na_linha(driver, texto, desloc_x, timeout=20):
+    linha, texto_el = encontrar_linha_por_texto(driver, texto, timeout)
+
+    rect_texto = driver.execute_script("""
+        const r = arguments[0].getBoundingClientRect();
+        return {
+            left: r.left,
+            top: r.top,
+            width: r.width,
+            height: r.height
+        };
+    """, texto_el)
+
+    x = rect_texto["left"] + desloc_x
+    y = rect_texto["top"] + (rect_texto["height"] / 2)
+
+    print(f"Clicando na linha '{texto}' em x={x:.0f}, y={y:.0f}")
+
+    driver.execute_script("window.scrollBy(0, -80);")
+    time.sleep(0.3)
+
+    sucesso = driver.execute_script("""
+        const x = arguments[0];
+        const y = arguments[1];
+
+        const el = document.elementFromPoint(x, y);
+        if (!el) return false;
+
+        ['mousemove', 'mousedown', 'mouseup', 'click'].forEach(evtName => {
+            el.dispatchEvent(new MouseEvent(evtName, {
+                view: window,
+                bubbles: true,
+                cancelable: true,
+                clientX: x,
+                clientY: y,
+                buttons: 1
+            }));
+        });
+
+        return true;
+    """, x, y)
+
+    if not sucesso:
+        raise Exception(f"Falha ao clicar na coordenada da linha '{texto}'.")
+
+    time.sleep(1)
+
+
+def clicar_seta_da_linha(driver, texto, timeout=20):
+    print(f"Expandindo '{texto}'...")
+    clicar_por_coordenada_na_linha(driver, texto, desloc_x=-55, timeout=timeout)
+
+
+def clicar_checkbox_da_linha(driver, texto, timeout=20):
+    print(f"Marcando '{texto}'...")
+    clicar_por_coordenada_na_linha(driver, texto, desloc_x=-30, timeout=timeout)
+
+
+def expandir_arvore_bases(driver):
+    wait = esperar(driver, 30)
+
+    print("Expandindo PAULISTA...")
+    clicar_seta_da_linha(driver, "PAULISTA", 20)
+    time.sleep(2)
+
+    wait.until(
+        lambda d: (
+            len(d.find_elements(By.XPATH, "//*[normalize-space(text())='SUDESTE']")) > 0
+            or len(d.find_elements(By.XPATH, "//*[contains(normalize-space(text()), 'AMERICANA')]")) > 0
+        )
+    )
+
+    print("Expandindo SUDESTE...")
+    clicar_seta_da_linha(driver, "SUDESTE", 20)
+    time.sleep(2)
+
+    wait.until(
+        EC.presence_of_element_located((
+            By.XPATH,
+            "//*[contains(normalize-space(text()), 'AMERICANA')]"
+        ))
+    )
+
+    wait.until(
+        EC.presence_of_element_located((
+            By.XPATH,
+            "//*[contains(normalize-space(text()), 'PIRACICABA')]"
+        ))
+    )
+
+
+def expandir_e_marcar_base(driver, nome_base):
+    expandir_arvore_bases(driver)
+
+    print(f"Marcando somente a base {nome_base}...")
+    clicar_checkbox_da_linha(driver, nome_base, 20)
+
+    print(f"Base {nome_base} selecionada com sucesso.")
+
+
+# ================= DATAS DO FILTRO =================
+def preencher_periodo_datas(driver, data_inicio, data_fim, timeout=20):
+    """Preenche os dois campos inferiores: Data Prevista e Até."""
+    esperar(driver, timeout).until(lambda d: len(d.find_elements(By.XPATH, "//input")) > 0)
+    print(f"Preenchendo período na tela: {data_inicio} até {data_fim}")
+
+    resultado = driver.execute_script(r'''
+        const dataInicio = arguments[0];
+        const dataFim = arguments[1];
+        function visivel(el) {
+            if (!el) return false;
+            const st = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return st.display !== 'none' && st.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+        }
+        function limpar(t) { return (t || '').replace(/\s+/g, ' ').trim(); }
+        function setValor(input, valor) {
+            const proto = Object.getPrototypeOf(input);
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value') || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+            if (desc && desc.set) desc.set.call(input, valor); else input.value = valor;
+            input.dispatchEvent(new Event('input', {bubbles: true}));
+            input.dispatchEvent(new Event('change', {bubbles: true}));
+            input.dispatchEvent(new Event('blur', {bubbles: true}));
+        }
+        function elementosComTexto(texto) {
+            return [...document.querySelectorAll('label, span, div, td, th, p')]
+                .filter(visivel)
+                .filter(el => limpar(el.innerText || el.textContent) === texto);
+        }
+        function inputPertoDoLabel(textoLabel) {
+            const labels = elementosComTexto(textoLabel);
+            const inputs = [...document.querySelectorAll('input')].filter(visivel);
+            let melhor = null;
+            let melhorScore = Infinity;
+            for (const label of labels) {
+                const lr = label.getBoundingClientRect();
+                const ly = lr.top + lr.height / 2;
+                for (const input of inputs) {
+                    const ir = input.getBoundingClientRect();
+                    const iy = ir.top + ir.height / 2;
+                    const mesmaLinha = Math.abs(iy - ly) <= 28;
+                    const aDireita = ir.left >= lr.right - 5;
+                    const perto = ir.left <= lr.right + 220;
+                    if (!mesmaLinha || !aDireita || !perto) continue;
+                    const score = Math.abs(iy - ly) + Math.max(0, ir.left - lr.right);
+                    if (score < melhorScore) { melhorScore = score; melhor = input; }
+                }
+            }
+            return melhor;
+        }
+        let inputInicio = inputPertoDoLabel('Data Prevista');
+        let inputFim = inputPertoDoLabel('Até');
+        if (!inputInicio || !inputFim || inputInicio === inputFim) {
+            const todos = [...document.querySelectorAll('input')]
+                .filter(visivel)
+                .map(input => ({input, r: input.getBoundingClientRect(), value: input.value || ''}))
+                .filter(o => o.r.top > window.innerHeight * 0.45)
+                .filter(o => /\d{2}\/\d{2}\/\d{4}/.test(o.value) || o.input.type === 'text')
+                .sort((a, b) => (a.r.top - b.r.top) || (a.r.left - b.r.left));
+            if (todos.length >= 2) { inputInicio = todos[0].input; inputFim = todos[1].input; }
+        }
+        if (!inputInicio || !inputFim) return {ok:false, erro:'Não encontrei os dois campos de data inferiores.'};
+        inputInicio.focus(); setValor(inputInicio, dataInicio);
+        inputFim.focus(); setValor(inputFim, dataFim);
+        return {ok:true, inicio:inputInicio.value, fim:inputFim.value};
+    ''', data_inicio, data_fim)
+
+    if not resultado or not resultado.get('ok'):
+        raise Exception((resultado or {}).get('erro', 'Falha ao preencher período.'))
+    time.sleep(0.8)
+    print(f"Período preenchido: {resultado.get('inicio')} até {resultado.get('fim')}")
+
+
+# ================= BOTÃO AO LADO DO "ATÉ" =================
+def clicar_botao_destacado_vermelho(driver, timeout=20):
+    wait = esperar(driver, timeout)
+
+    print("Procurando o botão ao lado do texto 'Até'...")
+
+    ate = wait.until(
+        EC.presence_of_element_located((
+            By.XPATH,
+            "//*[normalize-space(text())='Até']"
+        ))
+    )
+
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center', inline:'nearest'});",
+        ate
+    )
+    time.sleep(0.5)
+
+    rect_ate = driver.execute_script("""
+        const r = arguments[0].getBoundingClientRect();
+        return {
+            left: r.left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+            width: r.width,
+            height: r.height
+        };
+    """, ate)
+
+    y_centro = rect_ate["top"] + rect_ate["height"] / 2
+
+    print(f"Texto 'Até' encontrado em x={rect_ate['left']:.0f}, y={y_centro:.0f}")
+
+    candidatos = driver.find_elements(
+        By.XPATH,
+        "//*[self::button or self::a or self::div or self::span or self::i or self::svg]"
+    )
+
+    melhor = None
+    melhor_score = 999999
+
+    for el in candidatos:
+        try:
+            if not el.is_displayed():
+                continue
+
+            rect = driver.execute_script("""
+                const r = arguments[0].getBoundingClientRect();
+                return {
+                    left: r.left,
+                    top: r.top,
+                    right: r.right,
+                    bottom: r.bottom,
+                    width: r.width,
+                    height: r.height
+                };
+            """, el)
+
+            if rect["width"] <= 0 or rect["height"] <= 0:
+                continue
+
+            centro_y = rect["top"] + rect["height"] / 2
+
+            mesma_faixa = abs(centro_y - y_centro) <= 35
+            a_direita = rect["left"] >= rect_ate["right"] + 120
+            perto = rect["left"] <= rect_ate["right"] + 260
+            tamanho_ok = 18 <= rect["width"] <= 90 and 18 <= rect["height"] <= 90
+
+            if mesma_faixa and a_direita and perto and tamanho_ok:
+                score = abs(centro_y - y_centro) + (rect["left"] - rect_ate["right"])
+                if score < melhor_score:
+                    melhor = el
+                    melhor_score = score
+        except Exception:
+            pass
+
+    if melhor is not None:
+        print("Elemento candidato encontrado ao lado do 'Até'. Tentando clique...")
+
+        try:
+            ActionChains(driver).move_to_element(melhor).pause(0.2).click().perform()
+            print("Botão clicado com ActionChains.")
+            time.sleep(2)
+            return
+        except Exception:
+            pass
+
+        try:
+            melhor.click()
+            print("Botão clicado com clique normal.")
+            time.sleep(2)
+            return
+        except Exception:
+            pass
+
+        try:
+            driver.execute_script("arguments[0].click();", melhor)
+            print("Botão clicado com JavaScript.")
+            time.sleep(2)
+            return
+        except Exception:
+            pass
+
+    print("Não achei o botão por elemento. Tentando clique por coordenada...")
+
+    x = rect_ate["right"] + 190
+    y = y_centro
+
+    sucesso = driver.execute_script("""
+        const x = arguments[0];
+        const y = arguments[1];
+
+        const el = document.elementFromPoint(x, y);
+        if (!el) return false;
+
+        ['mousemove', 'mousedown', 'mouseup', 'click'].forEach(evtName => {
+            el.dispatchEvent(new MouseEvent(evtName, {
+                view: window,
+                bubbles: true,
+                cancelable: true,
+                clientX: x,
+                clientY: y,
+                buttons: 1
+            }));
+        });
+
+        return true;
+    """, x, y)
+
+    if not sucesso:
+        raise Exception("Não consegui clicar no botão ao lado do texto 'Até'.")
+
+    print(f"Botão clicado por coordenada em x={x:.0f}, y={y:.0f}")
+    time.sleep(2)
+
+
+# ================= DETECÇÃO DA GRADE =================
+def grade_esta_visivel(driver):
+    try:
+        resultado = driver.execute_script("""
+            function visivel(el){
+                if (!el) return false;
+                const st = getComputedStyle(el);
+                const r = el.getBoundingClientRect();
+                return st.visibility !== 'hidden' &&
+                       st.display !== 'none' &&
+                       r.width > 0 &&
+                       r.height > 0;
+            }
+
+            const trs = [...document.querySelectorAll('tr')].filter(visivel).length;
+            const tds = [...document.querySelectorAll('td')].filter(visivel).length;
+
+            return trs >= 5 || tds >= 20;
+        """)
+        return bool(resultado)
+    except Exception:
+        return False
+
+
+def aguardar_grade_pronta(driver, timeout=30):
+    print("Aguardando grade ficar pronta...")
+    wait = esperar(driver, timeout)
+    wait.until(lambda d: grade_esta_visivel(d))
+    time.sleep(1.5)
+    print("Grade pronta.")
+
+
+# ================= TELA CHEIA DA GRADE =================
+def clicar_botao_tela_cheia_grade(driver, timeout=20):
+    wait = esperar(driver, timeout)
+
+    print("Tentando clicar no botão da grade (lado direito da barra verde)...")
+
+    es = wait.until(
+        EC.presence_of_element_located((
+            By.XPATH,
+            "//*[normalize-space(text())='ES']"
+        ))
+    )
+
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center', inline:'nearest'});",
+        es
+    )
+    time.sleep(0.5)
+
+    rect_es = driver.execute_script("""
+        const r = arguments[0].getBoundingClientRect();
+        return {
+            left: r.left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+            width: r.width,
+            height: r.height
+        };
+    """, es)
+
+    largura = driver.execute_script("return window.innerWidth;")
+    y_base = rect_es["top"] + (rect_es["height"] / 2)
+
+    xs = [largura - i for i in [8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60]]
+    ys = [y_base, y_base - 6, y_base + 6, y_base - 12, y_base + 12, y_base - 18, y_base + 18]
+
+    clicou = False
+
+    for y in ys:
+        for x in xs:
+            sucesso = driver.execute_script("""
+                const x = arguments[0];
+                const y = arguments[1];
+
+                const stack = document.elementsFromPoint(x, y);
+                if (!stack || stack.length === 0) return false;
+
+                function tentarClique(el, x, y) {
+                    try {
+                        ['mousemove', 'mousedown', 'mouseup', 'click'].forEach(evtName => {
+                            el.dispatchEvent(new MouseEvent(evtName, {
+                                view: window,
+                                bubbles: true,
+                                cancelable: true,
+                                clientX: x,
+                                clientY: y,
+                                buttons: 1
+                            }));
+                        });
+                        return true;
+                    } catch (e) {
+                        return false;
+                    }
+                }
+
+                for (const el of stack) {
+                    let atual = el;
+                    let nivel = 0;
+
+                    while (atual && nivel < 6) {
+                        const tag = (atual.tagName || '').toLowerCase();
+                        if (['button', 'a', 'div', 'span', 'i', 'svg'].includes(tag)) {
+                            if (tentarClique(atual, x, y)) {
+                                return true;
+                            }
+                        }
+                        atual = atual.parentElement;
+                        nivel++;
+                    }
+                }
+
+                return false;
+            """, x, y)
+
+            time.sleep(0.7)
+
+            if sucesso:
+                clicou = True
+                print("Clique de tela cheia disparado.")
+                time.sleep(2.0)
+                break
+        if clicou:
+            break
+
+    if not clicou:
+        raise Exception("Não consegui disparar o clique no botão de tela cheia da grade.")
+
+    print("Clique da tela cheia executado. Aguardando grade estabilizar...")
+    time.sleep(2.5)
+    aguardar_grade_pronta(driver, timeout=30)
+
+
+# ================= LOCALIZAR GRADE =================
+def localizar_tabela_e_scroll_reais(driver):
+    resultado = driver.execute_script("""
+        function visivel(el){
+            if (!el) return false;
+            const st = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return st.visibility !== 'hidden' &&
+                   st.display !== 'none' &&
+                   r.width > 0 &&
+                   r.height > 0;
+        }
+
+        const tables = [...document.querySelectorAll('table')].filter(visivel);
+
+        function scoreTabela(table){
+            const rows = [...table.querySelectorAll('tr')].filter(visivel);
+            const cells = [...table.querySelectorAll('th, td')].filter(visivel);
+            const rect = table.getBoundingClientRect();
+            return rows.length * 100 + cells.length + Math.floor((rect.width * rect.height) / 1000);
+        }
+
+        let bestTable = null;
+        let bestScore = -1;
+
+        for (const table of tables) {
+            const s = scoreTabela(table);
+            if (s > bestScore) {
+                bestScore = s;
+                bestTable = table;
+            }
+        }
+
+        if (!bestTable) {
+            return {ok:false, erro:'Nenhuma tabela visível encontrada.'};
+        }
+
+        let scrollEl = null;
+        let atual = bestTable;
+
+        while (atual && atual != document.body) {
+            const st = getComputedStyle(atual);
+            const overflowY = st.overflowY;
+            const overflowX = st.overflowX;
+
+            const scrollVertical = atual.scrollHeight > atual.clientHeight + 20;
+            const scrollHorizontal = atual.scrollWidth > atual.clientWidth + 20;
+
+            const temEstiloScroll =
+                overflowY === 'auto' || overflowY === 'scroll' ||
+                overflowX === 'auto' || overflowX === 'scroll';
+
+            if ((scrollVertical || scrollHorizontal) && (temEstiloScroll || scrollVertical || scrollHorizontal)) {
+                scrollEl = atual;
+                break;
+            }
+
+            atual = atual.parentElement;
+        }
+
+        if (!scrollEl) {
+            atual = bestTable.parentElement;
+            while (atual && atual !== document.body) {
+                if (atual.scrollWidth > atual.clientWidth + 20 || atual.scrollHeight > atual.clientHeight + 20) {
+                    scrollEl = atual;
+                    break;
+                }
+                atual = atual.parentElement;
+            }
+        }
+
+        if (!scrollEl) {
+            scrollEl = document.scrollingElement || document.documentElement;
+        }
+
+        bestTable.setAttribute('data-qa-target-table', '1');
+        scrollEl.setAttribute('data-qa-target-scroll', '1');
+
+        return {
+            ok: true,
+            scrollTop: scrollEl.scrollTop,
+            scrollLeft: scrollEl.scrollLeft,
+            scrollHeight: scrollEl.scrollHeight,
+            clientHeight: scrollEl.clientHeight,
+            scrollWidth: scrollEl.scrollWidth,
+            clientWidth: scrollEl.clientWidth
+        };
+    """)
+
+    if not resultado or not resultado.get("ok"):
+        raise Exception(resultado.get("erro", "Não consegui localizar a grade real."))
+
+    print("Estrutura real da grade localizada:")
+    print(resultado)
+    return resultado
+
+
+def obter_metricas_scroll_grade(driver):
+    return driver.execute_script("""
+        const scrollEl = document.querySelector('[data-qa-target-scroll="1"]');
+        if (!scrollEl) return null;
+
+        return {
+            scrollTop: scrollEl.scrollTop,
+            scrollLeft: scrollEl.scrollLeft,
+            scrollHeight: scrollEl.scrollHeight,
+            clientHeight: scrollEl.clientHeight,
+            scrollWidth: scrollEl.scrollWidth,
+            clientWidth: scrollEl.clientWidth
+        };
+    """)
+
+
+def definir_scroll_grade(driver, top=None, left=None):
+    driver.execute_script("""
+        const scrollEl = document.querySelector('[data-qa-target-scroll="1"]');
+        if (!scrollEl) return false;
+
+        if (arguments[0] !== null && arguments[0] !== undefined) {
+            scrollEl.scrollTop = arguments[0];
+        }
+
+        if (arguments[1] !== null && arguments[1] !== undefined) {
+            scrollEl.scrollLeft = arguments[1];
+        }
+
+        return true;
+    """, top, left)
+    time.sleep(1.0)
+
+
+# ================= EXTRAÇÃO =================
+def coletar_amostra_linhas_visiveis(driver):
+    dados = driver.execute_script("""
+        function visivel(el){
+            if (!el) return false;
+            const st = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return st.visibility !== 'hidden' &&
+                   st.display !== 'none' &&
+                   r.width > 2 &&
+                   r.height > 2;
+        }
+
+        function limpar(t){
+            return (t || '').replace(/\\s+/g, ' ').trim();
+        }
+
+        const table = document.querySelector('[data-qa-target-table="1"]');
+        if (!table) return {ok:false, erro:'Tabela alvo não encontrada.'};
+
+        let trs = [...table.querySelectorAll('tbody tr')].filter(visivel);
+        if (!trs.length) {
+            trs = [...table.querySelectorAll('tr')].filter(visivel);
+        }
+
+        const rows = [];
+
+        for (const tr of trs) {
+            const tds = [...tr.children].filter(visivel);
+            if (!tds.length) continue;
+
+            const cells = tds.map((td, idx) => {
+                const r = td.getBoundingClientRect();
+                return {
+                    idx: idx,
+                    text: limpar(td.innerText || td.textContent),
+                    left: r.left,
+                    top: r.top,
+                    width: r.width,
+                    height: r.height
+                };
+            });
+
+            rows.push(cells);
+        }
+
+        return {ok:true, rows};
+    """)
+
+    if not dados.get("ok"):
+        raise Exception(dados.get("erro", "Falha ao coletar amostra de linhas visíveis."))
+
+    return dados["rows"]
+
+
+def descobrir_indices_colunas_por_heuristica(driver):
+    amostra = coletar_amostra_linhas_visiveis(driver)
+
+    if not amostra:
+        raise Exception("Não consegui obter nenhuma linha visível da grade.")
+
+    max_cols = max(len(r) for r in amostra if r)
+    if max_cols < 8:
+        raise Exception(f"A amostra retornou poucas colunas visíveis ({max_cols}).")
+
+    melhor = None
+
+    for i in range(max_cols - 2):
+        score_nome = 0
+        score_num1 = 0
+        score_num2 = 0
+        score_total = 0
+        linhas_validas = 0
+        exemplos = []
+
+        for row in amostra:
+            if len(row) <= i + 2:
+                continue
+
+            t0 = texto_limpo(row[i]["text"])
+            t1 = texto_limpo(row[i + 1]["text"])
+            t2 = texto_limpo(row[i + 2]["text"])
+
+            s = 0
+
+            if parece_nome_pessoa(t0):
+                score_nome += 1
+                s += 4
+
+            if eh_numero_simples(t1):
+                score_num1 += 1
+                s += 2
+
+            if eh_numero_simples(t2):
+                score_num2 += 1
+                s += 2
+
+            if parece_nome_pessoa(t0) and eh_numero_simples(t1) and eh_numero_simples(t2):
+                s += 4
+                if len(exemplos) < 5:
+                    exemplos.append((t0, t1, t2))
+
+            if s > 0:
+                linhas_validas += 1
+
+            score_total += s
+
+        candidato = {
+            "idxAgente": i,
+            "idxInstala": i + 1,
+            "idxVisitada": i + 2,
+            "score_nome": score_nome,
+            "score_num1": score_num1,
+            "score_num2": score_num2,
+            "linhas_validas": linhas_validas,
+            "score_total": score_total,
+            "exemplos": exemplos
+        }
+
+        if melhor is None or candidato["score_total"] > melhor["score_total"]:
+            melhor = candidato
+
+    if not melhor:
+        raise Exception("Não consegui montar nenhum candidato de colunas.")
+
+    if melhor["score_total"] < 10:
+        raise Exception(f"Heurística fraca demais para confiar: {melhor}")
+
+    print("Colunas identificadas por heurística:")
+    print(melhor)
+    return melhor
+
+
+def posicionar_grade_nas_colunas_alvo(driver):
+    metricas = obter_metricas_scroll_grade(driver)
+    if not metricas:
+        raise Exception("Não consegui obter métricas de scroll da grade.")
+
+    max_left = max(0, int(metricas["scrollWidth"] - metricas["clientWidth"]))
+    passo = max(120, int(metricas["clientWidth"] * 0.22))
+    tentativas = gerar_posicoes(0, max_left, passo)
+
+    if max_left not in tentativas:
+        tentativas.append(max_left)
+
+    melhor_geral = None
+
+    for left in tentativas:
+        print(f"Tentando descobrir colunas por heurística em left={left}")
+        definir_scroll_grade(driver, left=left, top=0)
+
+        try:
+            candidato = descobrir_indices_colunas_por_heuristica(driver)
+            candidato["left"] = left
+
+            if melhor_geral is None or candidato["score_total"] > melhor_geral["score_total"]:
+                melhor_geral = candidato
+
+            if candidato["score_total"] >= 18:
+                print("Colunas alvo encontradas com boa confiança.")
+                return candidato
+
+        except Exception as e:
+            print(f"Falhou em left={left}: {e}")
+
+    if melhor_geral and melhor_geral["score_total"] >= 10:
+        print("Usando melhor candidato encontrado:")
+        print(melhor_geral)
+        definir_scroll_grade(driver, left=melhor_geral["left"], top=0)
+        return melhor_geral
+
+    raise Exception("Não consegui identificar AGENTE / T. INSTALA / T. VISITADA por heurística.")
+
+
+def ler_linhas_visiveis_somente_alvos(driver, idx_agente, idx_instala, idx_visitada):
+    dados = driver.execute_script("""
+        function visivel(el){
+            if (!el) return false;
+            const st = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return st.visibility !== 'hidden' &&
+                   st.display !== 'none' &&
+                   r.width > 2 &&
+                   r.height > 2;
+        }
+
+        function limpar(t){
+            return (t || '').replace(/\\s+/g, ' ').trim();
+        }
+
+        const idxAgente = arguments[0];
+        const idxInstala = arguments[1];
+        const idxVisitada = arguments[2];
+
+        const table = document.querySelector('[data-qa-target-table="1"]');
+        if (!table) return {ok:false, erro:'Tabela alvo não encontrada.'};
+
+        let bodyRows = [...table.querySelectorAll('tbody tr')].filter(visivel);
+        if (!bodyRows.length) {
+            bodyRows = [...table.querySelectorAll('tr')].filter(visivel);
+        }
+
+        const rows = [];
+
+        for (const tr of bodyRows) {
+            const cells = [...tr.children].filter(visivel);
+            if (!cells.length) continue;
+
+            function ler(idx){
+                if (!cells[idx]) return "";
+                return limpar(cells[idx].innerText || cells[idx].textContent);
+            }
+
+            const agente = ler(idxAgente);
+            const instala = ler(idxInstala);
+            const visitada = ler(idxVisitada);
+
+            if (!agente && !instala && !visitada) continue;
+
+            rows.push({
+                "AGENTE COMERCIAL": agente,
+                "T. INSTALA": instala,
+                "T. VISITADA": visitada
+            });
+        }
+
+        return {ok:true, rows};
+    """, idx_agente, idx_instala, idx_visitada)
+
+    if not dados.get("ok"):
+        raise Exception(dados.get("erro", "Falha ao ler linhas visíveis."))
+
+    return dados["rows"]
+
+
+def construir_chave_3_colunas(row):
+    return " | ".join([
+        texto_limpo(row.get("AGENTE COMERCIAL", "")),
+        texto_limpo(row.get("T. INSTALA", "")),
+        texto_limpo(row.get("T. VISITADA", "")),
+    ])
+
+
+def extrair_somente_tres_colunas(driver):
+    print("\n================ EXTRAÇÃO DAS 3 COLUNAS ================\n")
+
+    aguardar_grade_pronta(driver)
+    localizar_tabela_e_scroll_reais(driver)
+
+    dados_colunas = posicionar_grade_nas_colunas_alvo(driver)
+
+    idx_agente = dados_colunas["idxAgente"]
+    idx_instala = dados_colunas["idxInstala"]
+    idx_visitada = dados_colunas["idxVisitada"]
+
+    print(f"Índices escolhidos -> AGENTE={idx_agente}, INSTALA={idx_instala}, VISITADA={idx_visitada}")
+
+    metricas = obter_metricas_scroll_grade(driver)
+    if not metricas:
+        raise Exception("Não consegui obter as métricas da grade.")
+
+    max_top = max(0, int(metricas["scrollHeight"] - metricas["clientHeight"]))
+    passo_vertical = max(180, int(metricas["clientHeight"] * 0.70))
+    posicoes_v = gerar_posicoes(0, max_top, passo_vertical)
+
+    print("Posições verticais:", posicoes_v)
+
+    registros = {}
+    sem_novidade = 0
+
+    for bloco_idx, top in enumerate(posicoes_v, start=1):
+        print(f"--- Bloco vertical {bloco_idx}/{len(posicoes_v)} | top={top} ---")
+        definir_scroll_grade(driver, top=top)
+
+        linhas = ler_linhas_visiveis_somente_alvos(
+            driver,
+            idx_agente,
+            idx_instala,
+            idx_visitada
+        )
+
+        print(f"Linhas visíveis: {len(linhas)}")
+
+        qtd_antes = len(registros)
+
+        for row in linhas:
+            registro = {
+                "AGENTE COMERCIAL": texto_limpo(row.get("AGENTE COMERCIAL", "")),
+                "T. INSTALA": texto_limpo(row.get("T. INSTALA", "")),
+                "T. VISITADA": texto_limpo(row.get("T. VISITADA", "")),
+            }
+
+            chave = construir_chave_3_colunas(registro)
+            if not chave.replace(" | ", "").strip():
+                continue
+
+            registros[chave] = registro
+
+        qtd_depois = len(registros)
+
+        if qtd_depois == qtd_antes:
+            sem_novidade += 1
+        else:
+            sem_novidade = 0
+
+        if sem_novidade >= 3:
+            print("Sem novidades em 3 blocos seguidos. Encerrando varredura.")
+            break
+
+    linhas_finais = list(registros.values())
+
+    if not linhas_finais:
+        raise Exception("A extração terminou sem consolidar nenhuma linha.")
+
+    print(f"\nExtração concluída. Linhas consolidadas: {len(linhas_finais)}")
+    return linhas_finais
+
+
+# ================= TRATAMENTO DOS DADOS =================
+def tratar_linhas(linhas):
+    df = pd.DataFrame(linhas)
+
+    colunas_base = ["AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA"]
+    for col in colunas_base:
+        if col not in df.columns:
+            df[col] = ""
+
+    df = df[colunas_base].copy()
+
+    df["AGENTE COMERCIAL"] = df["AGENTE COMERCIAL"].apply(texto_limpo)
+    df["T. INSTALA"] = pd.to_numeric(df["T. INSTALA"], errors="coerce").fillna(0).astype(int)
+    df["T. VISITADA"] = pd.to_numeric(df["T. VISITADA"], errors="coerce").fillna(0).astype(int)
+
+    df = df[df["AGENTE COMERCIAL"] != ""].copy()
+
+    # Normaliza para remover duplicadas de forma segura
+    df["AGENTE_NORMALIZADO"] = df["AGENTE COMERCIAL"].apply(normalizar_nome_agente)
+
+    # Agrupa duplicadas pelo agente
+    df = (
+        df.groupby("AGENTE_NORMALIZADO", as_index=False)
+        .agg({
+            "T. INSTALA": "sum",
+            "T. VISITADA": "sum"
+        })
+    )
+
+    # Usa o nome padronizado como nome final
+    df["AGENTE COMERCIAL"] = df["AGENTE_NORMALIZADO"]
+
+    # Cria coluna Faltam = Instala - Visitada
+    df["Faltam"] = df["T. INSTALA"] - df["T. VISITADA"]
+
+    # Evita número negativo em "Faltam"
+    df["Faltam"] = df["Faltam"].clip(lower=0)
+
+    # Cria coluna % EXECUTADO
+    df["% EXECUTADO"] = 0.0
+    mask = df["T. INSTALA"] > 0
+    df.loc[mask, "% EXECUTADO"] = (
+        (df.loc[mask, "T. VISITADA"] / df.loc[mask, "T. INSTALA"]) * 100
+    ).round(2)
+
+    # Reorganiza colunas
+    df = df[["AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "Faltam", "% EXECUTADO"]]
+
+    # Ordena pelo nome do agente
+    df = df.sort_values(by="% EXECUTADO", ascending=True).reset_index(drop=True)
+
+    return df
+
+
+def formatar_excel(caminho_xlsx):
+    wb = load_workbook(caminho_xlsx)
+    ws = wb.active
+
+    fonte_negrito = Font(bold=True)
+    fonte_branca_negrito = Font(bold=True, color="FFFFFF")
+    alinhamento_centralizado = Alignment(horizontal="center", vertical="center")
+
+    preenchimento_vermelho = PatternFill(fill_type="solid", fgColor="FF0000")
+    preenchimento_verde = PatternFill(fill_type="solid", fgColor="00B050")
+
+    borda_fina = Border(
+        left=Side(style="thin", color="000000"),
+        right=Side(style="thin", color="000000"),
+        top=Side(style="thin", color="000000"),
+        bottom=Side(style="thin", color="000000")
+    )
+
+    col_idx_percentual = None
+
+    for cell in ws[1]:
+        if cell.value == "% EXECUTADO":
+            col_idx_percentual = cell.column
+            break
+
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.font = fonte_negrito
+            cell.alignment = alinhamento_centralizado
+            cell.border = borda_fina
+
+    if col_idx_percentual is not None:
+        for row in range(2, ws.max_row + 1):
+            celula_percentual = ws.cell(row=row, column=col_idx_percentual)
+            celula_percentual.number_format = '0"%"'
+
+            valor = celula_percentual.value
+            try:
+                percentual = float(valor)
+            except (TypeError, ValueError):
+                continue
+
+            if percentual == 0:
+                for col in range(1, ws.max_column + 1):
+                    celula = ws.cell(row=row, column=col)
+                    celula.fill = preenchimento_vermelho
+                    celula.font = fonte_branca_negrito
+                    celula.border = borda_fina
+            elif percentual == 100:
+                for col in range(1, ws.max_column + 1):
+                    celula = ws.cell(row=row, column=col)
+                    celula.fill = preenchimento_verde
+                    celula.font = fonte_negrito
+                    celula.border = borda_fina
+
+    # Ajuste automático de largura de colunas com folga extra
+    for coluna in ws.columns:
+        max_len = 0
+        coluna_letra = get_column_letter(coluna[0].column)
+
+        for cell in coluna:
+            valor = "" if cell.value is None else str(cell.value)
+            tamanho = len(valor)
+            if tamanho > max_len:
+                max_len = tamanho
+
+        largura_ajustada = max_len + 4
+        ws.column_dimensions[coluna_letra].width = largura_ajustada
+
+    wb.save(caminho_xlsx)
+
+
+# ================= SALVAR RESULTADO =================
+def salvar_resultado(linhas, sufixo=None, periodo_inicio=None, periodo_fim=None, abrir_excel=False):
+    garantir_pasta_saida()
+
+    df = tratar_linhas(linhas)
+
+    detalhe_periodo = ""
+    if periodo_inicio and periodo_fim:
+        ini_nome = data_para_nome_arquivo(periodo_inicio)
+        fim_nome = data_para_nome_arquivo(periodo_fim)
+        detalhe_periodo = f"_{ini_nome}" if ini_nome == fim_nome else f"_{ini_nome}_a_{fim_nome}"
+
+    if sufixo == "AMERICANA":
+        nome = f"Parcial_Americana{detalhe_periodo}"
+    elif sufixo == "PIRACICABA":
+        nome = f"Parcial_Piracicaba{detalhe_periodo}"
+    else:
+        nome = f"planejamento_tratado{detalhe_periodo}_{timestamp_str()}"
+
+    caminho_xlsx = os.path.join(PASTA_SAIDA, f"{nome}.xlsx")
+
+    # Salva somente o Excel tratado
+    df.to_excel(caminho_xlsx, index=False)
+
+    # Tenta formatar o Excel sem impedir a continuidade do fluxo
+    try:
+        formatar_excel(caminho_xlsx)
+    except Exception as e:
+        print(f"Aviso: não foi possível formatar o Excel '{caminho_xlsx}': {e}")
+
+    print("\nArquivo salvo com sucesso:")
+    print(f"Excel tratado: {os.path.abspath(caminho_xlsx)}")
+
+    if abrir_excel:
+        abrir_arquivo(caminho_xlsx)
+
+    return caminho_xlsx
+
+
+# ================= EXECUÇÃO POR BASE =================
+def executar_fluxo_base(url, usuario, senha, nome_base, app=None, periodo_inicio=None, periodo_fim=None):
+    print("\n" + "=" * 80)
+    print(f"INICIANDO FLUXO DA BASE: {nome_base}")
+    print("=" * 80)
+
+    if app:
+        app.set_status(f"Processando base {nome_base}")
+        app.set_substatus("Abrindo navegador")
+
+    driver = iniciar_driver()
+
+    try:
+        print("Abrindo portal...")
+        driver.get(url)
+
+        if app:
+            app.set_substatus("Fazendo login")
+
+        preencher_login(driver, usuario, senha)
+        aguardar_tela_principal(driver)
+
+        if app:
+            app.set_substatus("Entrando em Planejamento / Operação")
+
+        clicar_card_planejamento_operacao(driver)
+        aguardar_tela_planejamento(driver)
+
+        if app:
+            app.set_substatus(f"Selecionando base {nome_base}")
+
+        expandir_e_marcar_base(driver, nome_base)
+
+        if periodo_inicio and periodo_fim:
+            if app:
+                app.set_substatus(f"Ajustando data {periodo_inicio} até {periodo_fim}")
+            preencher_periodo_datas(driver, periodo_inicio, periodo_fim)
+
+        if app:
+            app.set_substatus("Confirmando filtro e preparando grade")
+
+        clicar_botao_destacado_vermelho(driver)
+        clicar_botao_tela_cheia_grade(driver)
+
+        if app:
+            app.set_substatus("Extraindo dados da grade")
+
+        linhas = extrair_somente_tres_colunas(driver)
+
+        if app:
+            app.set_substatus("Gerando Excel")
+
+        sufixo = slug_base(nome_base)
+        caminho_xlsx = salvar_resultado(
+            linhas,
+            sufixo=sufixo,
+            periodo_inicio=periodo_inicio,
+            periodo_fim=periodo_fim
+        )
+
+        enviar_para_github(caminho_xlsx)
+
+        print("\nFluxo concluído com sucesso.")
+        print(f"Base: {nome_base}")
+        print(f"Arquivo Excel: {os.path.abspath(caminho_xlsx)}")
+
+        return {
+            "base": nome_base,
+            "periodo_inicio": periodo_inicio,
+            "periodo_fim": periodo_fim,
+            "xlsx": caminho_xlsx,
+            "linhas": len(linhas)
+        }
+
+    finally:
+        driver.quit()
+
+
+
+import shutil
+from datetime import datetime
+
+def enviar_para_github(caminho_arquivo):
+    try:
+        repo_path = r"C:\Users\user\Desktop\trata_csv\painel-faturamento"
+
+        destino_pasta = os.path.join(repo_path, "dashboard", "leitura")
+        os.makedirs(destino_pasta, exist_ok=True)
+
+        # 🔥 cria nome com timestamp (igual sistema de corte)
+        nome_base = os.path.basename(caminho_arquivo).replace(".xlsx","")
+        agora = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nome = f"{nome_base}_{agora}.xlsx"
+
+        destino = os.path.join(destino_pasta, nome)
+
+        shutil.copy2(caminho_arquivo, destino)
+
+        # 🔥 git completo
+        subprocess.run(["git", "pull", "--rebase"], cwd=repo_path)
+        subprocess.run(["git", "add", "."], cwd=repo_path)
+        subprocess.run(["git", "commit", "-m", f"Auto leitura {nome}"], cwd=repo_path)
+        subprocess.run(["git", "push"], cwd=repo_path)
+
+        print(f"✅ Enviado para GitHub: {nome}")
+
+    except Exception as e:
+        print(f"Erro geral: {e}")
+
+
+# ================= MAIN =================
+def main(app=None, base_selecionada="AMBAS", data_inicio_txt=None, data_fim_txt=None):
+    load_dotenv()
+
+    url = os.getenv("CPFL_URL")
+    usuario = os.getenv("CPFL_USUARIO")
+    senha = os.getenv("CPFL_SENHA")
+
+    if not url or not usuario or not senha:
+        raise Exception("Verifique se CPFL_URL, CPFL_USUARIO e CPFL_SENHA estão no arquivo .env")
+
+    hoje = datetime.now().strftime("%d/%m/%Y")
+    data_inicio_txt = data_inicio_txt or hoje
+    data_fim_txt = data_fim_txt or data_inicio_txt
+    periodos = gerar_periodos_diarios(data_inicio_txt, data_fim_txt)
+
+    if base_selecionada == "AMERICANA":
+        bases = ["AMERICANA [B]"]
+    elif base_selecionada == "PIRACICABA":
+        bases = ["PIRACICABA [B]"]
+    else:
+        bases = ["AMERICANA [B]", "PIRACICABA [B]"]
+
+    print("Períodos gerados para exportação diária:")
+    for ini, fim in periodos:
+        print(f"- {ini} até {fim}")
+
+    resultados = []
+    total_execucoes = len(bases) * len(periodos)
+    contador = 0
+
+    # Sequencial de propósito: como o navegador fica visível, isso facilita acompanhar
+    # e evita duas janelas alterando filtros ao mesmo tempo.
+    for periodo_inicio, periodo_fim in periodos:
+        for base in bases:
+            contador += 1
+            try:
+                if app:
+                    app.set_status(f"Processando {contador}/{total_execucoes}")
+                    app.set_substatus(f"{base} | {periodo_inicio} até {periodo_fim}")
+
+                resultado = executar_fluxo_base(
+                    url, usuario, senha, base,
+                    periodo_inicio=periodo_inicio,
+                    periodo_fim=periodo_fim,
+                    app=app
+                )
+                resultados.append(resultado)
+
+            except TimeoutException as e:
+                print(f"\nTempo de espera excedido na base {base} no período {periodo_inicio} até {periodo_fim}.")
+                print(f"Detalhes: {e}")
+            except Exception as e:
+                print(f"\nOcorreu um erro durante a automação da base {base} no período {periodo_inicio} até {periodo_fim}.")
+                print(f"Detalhes: {e}")
+
+    print("\n" + "=" * 80)
+    print("RESUMO FINAL")
+    print("=" * 80)
+
+    arquivos = []
+    if resultados:
+        for r in resultados:
+            caminho_abs = os.path.abspath(r["xlsx"])
+            arquivos.append(caminho_abs)
+            print(f"Base: {r['base']}")
+            print(f"Período: {r.get('periodo_inicio')} até {r.get('periodo_fim')}")
+            print(f"Linhas extraídas antes do tratamento: {r['linhas']}")
+            print(f"Excel tratado: {caminho_abs}")
+            print("-" * 80)
+    else:
+        print("Nenhuma base foi processada com sucesso.")
+
+    if app:
+        app.atualizar_arquivos(arquivos)
+        app.set_status("Execução encerrada")
+        app.set_substatus("Resumo final disponível no log")
+
+    return {"resultados": resultados, "arquivos": arquivos}
+
+
+# ================= EXTRAÇÃO COMPLETA POR TAREFA (V5) =================
+# Esta versão substitui a extração antiga de 3 colunas.
+# Agora a chave é a coluna TAREFA, para contar cada tarefa apenas uma vez,
+# inclusive quando não houver AGENTE COMERCIAL preenchido.
+
+COLUNAS_TAREFA_DESEJADAS = [
+    "TAREFA",
+    "STATUS",
+    "UNIDADE",
+    "DESCRIÇÃO",
+    "TIPO",
+    "MUNICÍPIO",
+    "DT PREVISTA",
+    "DT LIMITE",
+    "DT PLANEJA",
+    "AGENTE COMERCIAL",
+    "T. INSTALA",
+    "T. VISITADA",
+    "T. TELEMED",
+    "T. DISTRIB",
 ]
 
-ARQUIVOS_LEITURA = {
-    # Formato antigo: Parcial_Americana*.xlsx / Parcial_Piracicaba*.xlsx
-    # Formato novo do extrator de tarefas: Tarefas_Americana*.xlsx / Tarefas_Piracicaba*.xlsx
-    # Consolidado novo: Resumo_D_por_base_municipio*.xlsx
-    "Americana": [
-        "Tarefas_Americana*.xlsx",
-        "Parcial_Americana.xlsx",
-        "Parcial_Americana*.xlsx",
-        "Resumo_D_por_base_municipio*.xlsx",
-    ],
-    "Piracicaba": [
-        "Tarefas_Piracicaba*.xlsx",
-        "Parcial_Piracicaba.xlsx",
-        "Parcial_Piracicaba*.xlsx",
-        "Resumo_D_por_base_municipio*.xlsx",
-    ],
-}
 
-ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+def normalizar_header_grade(txt):
+    txt = texto_limpo(txt).upper()
+    txt = txt.replace("\n", " ").replace("\r", " ")
+    txt = " ".join(txt.split())
 
-# Como dias anteriores não mudam, mantemos o carregamento geral em 15 minutos
-# e deixamos cálculos históricos/ranqueamentos em cache mais longo.
-CACHE_TTL_SEGUNDOS = 900
-CACHE_TTL_RANKING_SEGUNDOS = 900
-
-# Atualiza a página automaticamente a cada 15 minutos.
-st.markdown(
-    """
-    <script>
-    setTimeout(function(){
-        window.location.reload();
-    }, 900000);
-    </script>
-    """,
-    unsafe_allow_html=True
-)
-
-
-def caminho_arquivo(nome):
-    candidatos = [
-        PASTA_DASHBOARD / nome,
-        PASTA_ATUAL / nome,
-        PASTA_ATUAL / nome.replace(".csv", "(1).csv"),
-    ]
-
-    for caminho in candidatos:
-        if caminho.exists():
-            return caminho
-
-    achados = list(PASTA_ATUAL.glob(nome.replace(".csv", "*.csv"))) + list(PASTA_DASHBOARD.glob(nome.replace(".csv", "*.csv")))
-    return achados[0] if achados else None
-
-
-def caminho_leitura(base_nome):
-    """Localiza a parcial de leitura mais recente para Americana ou Piracicaba."""
-    padroes = ARQUIVOS_LEITURA.get(base_nome, [])
-    candidatos = []
-
-    for pasta in PASTAS_LEITURA:
-        try:
-            if not pasta.exists():
-                continue
-        except Exception:
-            continue
-
-        for padrao in padroes:
-            if "*" in padrao:
-                candidatos.extend(list(pasta.glob(padrao)))
-            else:
-                caminho = pasta / padrao
-                if caminho.exists():
-                    candidatos.append(caminho)
-
-    candidatos = [c for c in candidatos if c.is_file() and c.suffix.lower() in [".xlsx", ".xls"]]
-    if not candidatos:
-        return None
-
-    return max(candidatos, key=lambda p: p.stat().st_mtime)
-
-
-def caminhos_leitura_disponiveis():
-    """Retorna o arquivo mais recente por base."""
-    return {
-        "Americana": caminho_leitura("Americana"),
-        "Piracicaba": caminho_leitura("Piracicaba"),
+    mapa = {
+        "TAREFA": "TAREFA",
+        "STATUS": "STATUS",
+        "UNIDADE": "UNIDADE",
+        "DESCRIÇÃO": "DESCRIÇÃO",
+        "DESCRICAO": "DESCRIÇÃO",
+        "TIPO": "TIPO",
+        "MUNICÍPIO": "MUNICÍPIO",
+        "MUNICIPIO": "MUNICÍPIO",
+        "DT PREVISTA": "DT PREVISTA",
+        "DT LIMITE": "DT LIMITE",
+        "DT PLANEJA": "DT PLANEJA",
+        "DT PLANEJADA": "DT PLANEJA",
+        "AGENTE COMERCIAL": "AGENTE COMERCIAL",
+        "T. INSTALA": "T. INSTALA",
+        "T INSTALA": "T. INSTALA",
+        "T. VISITADA": "T. VISITADA",
+        "T VISITADA": "T. VISITADA",
+        "T. TELEMED": "T. TELEMED",
+        "T TELEMED": "T. TELEMED",
+        "T. DISTRIB": "T. DISTRIB",
+        "T DISTRIB": "T. DISTRIB",
     }
 
+    if txt in mapa:
+        return mapa[txt]
 
-MAPA_MUNICIPIOS_LEITURA = {
-    "AME": "Americana",
-    "COS": "Cosmópolis",
-    "ELF": "Elias Fausto",
-    "HOR": "Hortolândia",
-    "MTM": "Monte Mor",
-    "NOO": "Nova Odessa",
-    "PAU": "Paulínia",
-    "SBO": "Santa Bárbara do Oeste",
-    "SUM": "Sumaré",
-}
+    # Normalizações por aproximação, para o caso do cabeçalho vir quebrado em linhas.
+    sem_ponto = txt.replace(".", "")
+    if "AGENTE" in txt and "COMERCIAL" in txt:
+        return "AGENTE COMERCIAL"
+    if "INSTALA" in txt:
+        return "T. INSTALA"
+    if "VISITADA" in txt:
+        return "T. VISITADA"
+    if "TELEMED" in txt:
+        return "T. TELEMED"
+    if "DISTRIB" in txt:
+        return "T. DISTRIB"
+    if "PREVISTA" in txt:
+        return "DT PREVISTA"
+    if "LIMITE" in txt:
+        return "DT LIMITE"
+    if "PLANEJA" in txt:
+        return "DT PLANEJA"
+    if sem_ponto == "TAREFA":
+        return "TAREFA"
 
-
-def _norm_col_leitura(col):
-    import unicodedata
-    texto = str(col).strip().upper()
-    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
-    texto = texto.replace(".", " ").replace("_", " ").replace("-", " ").replace("/", " ")
-    return " ".join(texto.split())
-
-
-def _ordenar_d(valor):
-    txt = str(valor).upper().replace("D", "").strip()
-    try:
-        return int(txt)
-    except Exception:
-        return 9999
-
-
-def _nome_base_por_arquivo(caminho):
-    nome = Path(caminho).name.upper()
-    if "PIRACICABA" in nome:
-        return "PIRACICABA"
-    if "AMERICANA" in nome:
-        return "AMERICANA"
-    return ""
-
-
-def _normalizar_base_leitura(valor, caminho=None):
-    txt = str(valor or "").strip().upper()
-    if "PIRACICABA" in txt:
-        return "PIRACICABA"
-    if "AMERICANA" in txt:
-        return "AMERICANA"
-    if caminho:
-        return _nome_base_por_arquivo(caminho)
     return txt
 
 
-def _padronizar_colunas_leitura(df):
-    """Padroniza colunas dos formatos antigos e novos da leitura.
-
-    Importante: os Excels gerados pelo extrator podem sair com cabeçalhos abreviados
-    pela tabela do Excel/print, por exemplo:
-    - D OPERAÇÃO / D OPERAÇÃ / D OPERACIONA
-    - FEIT, PARCIA, PENDENT, SEM TOTA
-    Esta função aceita nomes completos e truncados.
-    """
-    mapa = {}
-
-    for col in df.columns:
-        n = _norm_col_leitura(col)
-
-        if n == "BASE":
-            mapa[col] = "BASE"
-
-        elif n in ["TAREFA", "NUMERO TAREFA", "N TAREFA", "ID TAREFA"]:
-            mapa[col] = "TAREFA"
-
-        elif n in ["STATUS", "STATUS TAREFA"]:
-            mapa[col] = "STATUS"
-
-        elif n in ["STATUS OPERACIONAL", "SITUACAO LEITURA", "SITUACAO"]:
-            mapa[col] = "STATUS OPERACIONAL"
-
-        elif n in ["MUNICIPIO", "MUNICIPIO CODIGO", "MUN"]:
-            mapa[col] = "MUNICÍPIO"
-
-        elif n in ["MUNICIPIO NOME", "NOME MUNICIPIO", "CIDADE", "CIDADE NOME"]:
-            mapa[col] = "MUNICÍPIO NOME"
-
-        elif (
-            n in ["D", "D OPER", "DIA OPERACIONAL", "D OPERACIONAL", "D OPERACIONA", "D OPERACAO"]
-            or n.startswith("D OPER")
-            or n.startswith("D OPERA")
-        ):
-            mapa[col] = "D OPERACIONAL"
-
-        elif n in ["DT PREVISTA", "DATA PREVISTA"]:
-            mapa[col] = "DT PREVISTA"
-
-        elif n in ["DT LIMITE", "DATA LIMITE"]:
-            mapa[col] = "DT LIMITE"
-
-        elif n in ["DT PLANEJA", "DT PLANEJADA", "DATA PLANEJADA"]:
-            mapa[col] = "DT PLANEJA"
-
-        elif n in ["AGENTE COMERCIAL", "AGENTE"]:
-            mapa[col] = "AGENTE COMERCIAL"
-
-        elif n in ["T INSTALA", "T INSTALADA", "TOTAL INSTALA", "TOTAL INSTALADA", "INSTALA", "INSTALADA"]:
-            mapa[col] = "T. INSTALA"
-
-        elif n in ["T VISITADA", "TOTAL VISITADA", "VISITADA"]:
-            mapa[col] = "T. VISITADA"
-
-        elif n in ["FALTAM", "FALTA"] or n.startswith("FALT"):
-            mapa[col] = "FALTAM"
-
-        elif n in ["DESCRICAO", "DESCRICAO TAREFA"]:
-            mapa[col] = "DESCRIÇÃO"
-
-        elif n == "TIPO":
-            mapa[col] = "TIPO"
-
-        elif (
-            n in ["TOTAL TAREFAS", "TOTAL TAREFA", "TOTAL TARE", "TOTAL"]
-            or n.startswith("TOTAL TARE")
-        ):
-            mapa[col] = "TOTAL TAREFA"
-
-        elif n in ["FEITA", "FEIT", "FINALIZADA"] or n.startswith("FEIT"):
-            mapa[col] = "FEITA"
-
-        elif n in ["PARCIAL", "PARCIA"] or n.startswith("PARCIA"):
-            mapa[col] = "PARCIAL"
-
-        elif n in ["PENDENTE", "PENDENT"] or n.startswith("PENDENT"):
-            mapa[col] = "PENDENTE"
-
-        elif n in ["SEM TOTAL", "SEM TOTA"] or n.startswith("SEM TOTA"):
-            mapa[col] = "SEM TOTAL"
-
-    return df.rename(columns=mapa)
-
-def _classificar_status_operacional(row):
-    status = str(row.get("STATUS OPERACIONAL", "") or "").strip().upper()
-    if status in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
-        return status
-
-    status_tela = str(row.get("STATUS", "") or "").strip().upper()
-    instala = pd.to_numeric(row.get("T. INSTALA", 0), errors="coerce")
-    visitada = pd.to_numeric(row.get("T. VISITADA", 0), errors="coerce")
-    instala = 0 if pd.isna(instala) else int(instala)
-    visitada = 0 if pd.isna(visitada) else int(visitada)
-
-    if instala <= 0:
-        return "SEM TOTAL"
-    if visitada >= instala or "FINAL" in status_tela:
-        return "FEITA"
-    if visitada > 0:
-        return "PARCIAL"
-    return "PENDENTE"
-
-
-def _preparar_tarefas_leitura(df, caminho=None):
-    """Prepara aba de tarefas real, quando existe coluna TAREFA."""
-    df = _padronizar_colunas_leitura(df.copy())
-
-    if "TAREFA" not in df.columns:
-        return pd.DataFrame()
-
-    for col in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "STATUS", "STATUS OPERACIONAL", "AGENTE COMERCIAL", "DESCRIÇÃO", "TIPO"]:
-        if col not in df.columns:
-            df[col] = ""
-        df[col] = df[col].fillna("").astype(str).str.strip()
-
-    for col in ["T. INSTALA", "T. VISITADA", "FALTAM"]:
-        if col not in df.columns:
-            df[col] = 0
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
-
-    for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
-
-    df["TAREFA"] = df["TAREFA"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
-    df = df[df["TAREFA"] != ""].copy()
-    if df.empty:
-        return pd.DataFrame()
-
-    if "BASE" not in df.columns or (df["BASE"].fillna("").astype(str).str.strip() == "").all():
-        df["BASE"] = _nome_base_por_arquivo(caminho)
-    else:
-        df["BASE"] = df["BASE"].apply(lambda v: _normalizar_base_leitura(v, caminho))
-
-    df["MUNICÍPIO"] = df["MUNICÍPIO"].str.upper().replace("", "SEM MUNICÍPIO")
-    if "MUNICÍPIO NOME" not in df.columns or (df["MUNICÍPIO NOME"].fillna("").astype(str).str.strip() == "").all():
-        df["MUNICÍPIO NOME"] = df["MUNICÍPIO"].map(MAPA_MUNICIPIOS_LEITURA).fillna(df["MUNICÍPIO"])
-    else:
-        sem_nome = df["MUNICÍPIO NOME"].fillna("").astype(str).str.strip() == ""
-        df.loc[sem_nome, "MUNICÍPIO NOME"] = df.loc[sem_nome, "MUNICÍPIO"].map(MAPA_MUNICIPIOS_LEITURA).fillna(df.loc[sem_nome, "MUNICÍPIO"])
-
-    if (df["D OPERACIONAL"].fillna("").astype(str).str.strip() == "").all():
-        df["D OPERACIONAL"] = "D?"
-    df["D OPERACIONAL"] = df["D OPERACIONAL"].astype(str).str.upper().str.strip()
-
-    df["STATUS OPERACIONAL"] = df.apply(_classificar_status_operacional, axis=1)
-    df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0).astype(int)
-
-    # Garante tarefa única dentro do arquivo/base.
-    df["_completude"] = df.notna().sum(axis=1) + (df["T. INSTALA"] > 0).astype(int) + (df["T. VISITADA"] > 0).astype(int)
-    df = df.sort_values("_completude", ascending=False).drop_duplicates(subset=["BASE", "TAREFA"], keep="first").drop(columns=["_completude"])
-    df["FORMATO_ORIGEM"] = "TAREFAS"
-    return df.reset_index(drop=True)
-
-
-def _preparar_agentes_leitura_antigo(df, caminho=None):
-    """Fallback para o formato antigo: Sheet1 com AGENTE COMERCIAL/T. INSTALA/T. VISITADA.
-
-    Esse formato não traz tarefa, município nem D. Para o painel não quebrar, criamos
-    linhas sintéticas por agente e marcamos D?/SEM MUNICÍPIO. Quando o extrator novo
-    gerar TAREFAS_*.xlsx, o painel passa a usar D e município reais automaticamente.
-    """
-    df = _padronizar_colunas_leitura(df.copy())
-    obrig = {"AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA"}
-    if not obrig.issubset(set(df.columns)):
-        return pd.DataFrame()
-
-    base_nome = _nome_base_por_arquivo(caminho)
-    for col in ["AGENTE COMERCIAL"]:
-        df[col] = df[col].fillna("").astype(str).str.strip()
-    for col in ["T. INSTALA", "T. VISITADA"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
-
-    df = df[(df["AGENTE COMERCIAL"] != "") | (df["T. INSTALA"] > 0) | (df["T. VISITADA"] > 0)].copy()
-    if df.empty:
-        return pd.DataFrame()
-
-    df.loc[df["AGENTE COMERCIAL"] == "", "AGENTE COMERCIAL"] = "SEM AGENTE"
-    df["BASE"] = base_nome
-    df["MUNICÍPIO"] = "SEM MUNICÍPIO"
-    df["MUNICÍPIO NOME"] = "Sem município no arquivo"
-    df["D OPERACIONAL"] = "D?"
-    df["STATUS"] = ""
-    df["STATUS OPERACIONAL"] = df.apply(_classificar_status_operacional, axis=1)
-    df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0).astype(int)
-    df["TAREFA"] = [f"LEGADO-{base_nome}-{i+1:05d}" for i in range(len(df))]
-    df["FORMATO_ORIGEM"] = "PARCIAL_AGENTE"
-    return df.reset_index(drop=True)
-
-
-def _preparar_resumo_leitura(df, caminho=None):
-    df = _padronizar_colunas_leitura(df.copy())
-    if "BASE" not in df.columns:
-        df["BASE"] = _nome_base_por_arquivo(caminho)
-    df["BASE"] = df["BASE"].apply(lambda v: _normalizar_base_leitura(v, caminho))
-
-    if "D OPERACIONAL" not in df.columns:
-        return pd.DataFrame()
-
-    # Em alguns arquivos de resumo por município existe apenas MUNICÍPIO NOME
-    # (sem o código AME/COS/etc). Nesse caso usamos o próprio nome como identificador,
-    # em vez de cair em TOTAL/SEM MUNICÍPIO.
-    if "MUNICÍPIO NOME" not in df.columns and "MUNICÍPIO" in df.columns:
-        df["MUNICÍPIO NOME"] = df["MUNICÍPIO"]
-    if "MUNICÍPIO" not in df.columns and "MUNICÍPIO NOME" in df.columns:
-        df["MUNICÍPIO"] = df["MUNICÍPIO NOME"]
-
-    for col in ["MUNICÍPIO", "MUNICÍPIO NOME"]:
-        if col not in df.columns:
-            df[col] = "TOTAL" if col == "MUNICÍPIO" else "TOTAL DA BASE"
-        df[col] = df[col].fillna("").astype(str).str.strip()
-
-    df["MUNICÍPIO"] = df["MUNICÍPIO"].replace("", "TOTAL")
-    df["MUNICÍPIO NOME"] = df["MUNICÍPIO NOME"].replace("", "TOTAL DA BASE")
-
-    for col in ["TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"]:
-        if col not in df.columns:
-            df[col] = 0
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
-
-    saida = df[[c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in df.columns]].copy()
-    saida["FORMATO_ORIGEM"] = "RESUMO"
-    return saida
-
-
-def _prioridade_aba_tarefas(nome_aba):
-    n = _norm_col_leitura(nome_aba)
-    if "TAREFAS CONSOLIDADAS" in n:
-        return 100
-    if n == "TAREFAS":
-        return 90
-    return 10
-
-
-def _prioridade_aba_resumo(nome_aba):
-    n = _norm_col_leitura(nome_aba)
-    if "DETALHE MUNICIPIO" in n:
-        return 100
-    if "RESUMO GERAL" in n:
-        return 90
-    if "RESUMO MUNICIPIO" in n:
-        return 80
-    if "RESUMO" in n:
-        return 50
-    return 10
-
-
-def _ler_excel_leitura_robusto(caminho):
-    """Lê formatos antigo e novo do extrator.
-
-    Novo individual: RESUMO, RESUMO_MUNICIPIO, TAREFAS, abas por município.
-    Novo consolidado: RESUMO_GERAL, DETALHE_MUNICIPIO, TAREFAS_CONSOLIDADAS.
-    Antigo: Sheet1 com AGENTE COMERCIAL/T. INSTALA/T. VISITADA.
-    """
-    caminho = str(caminho)
-    xls = pd.ExcelFile(caminho, engine="openpyxl")
-    candidatos_tarefas = []
-    candidatos_resumo = []
-    candidatos_legado = []
-    diagnostico = []
-
-    for aba in xls.sheet_names:
-        try:
-            bruto = pd.read_excel(caminho, sheet_name=aba, engine="openpyxl")
-        except Exception as e:
-            diagnostico.append(f"{aba}: erro ao ler ({e})")
-            continue
-        if bruto.empty:
-            diagnostico.append(f"{aba}: vazia")
-            continue
-
-        cols_norm = {_norm_col_leitura(c) for c in bruto.columns}
-        tem_tarefa = "TAREFA" in cols_norm
-        tem_resumo = ("D OPERACIONAL" in cols_norm or "D" in cols_norm) and ("TOTAL TAREFAS" in cols_norm or "TOTAL TAREFA" in cols_norm or "FEITA" in cols_norm)
-        tem_legado = {"AGENTE COMERCIAL", "T INSTALA", "T VISITADA"}.issubset(cols_norm)
-
-        if tem_tarefa:
-            df_t = _preparar_tarefas_leitura(bruto, caminho)
-            if not df_t.empty:
-                prioridade = _prioridade_aba_tarefas(aba)
-                df_t["ARQUIVO"] = Path(caminho).name
-                df_t["ABA"] = aba
-                candidatos_tarefas.append((prioridade, aba, df_t))
-                diagnostico.append(f"{aba}: tarefas reconhecidas ({len(df_t)}) | prioridade {prioridade}")
-                continue
-
-        if tem_resumo:
-            df_r = _preparar_resumo_leitura(bruto, caminho)
-            if not df_r.empty:
-                prioridade = _prioridade_aba_resumo(aba)
-                df_r["ARQUIVO"] = Path(caminho).name
-                df_r["ABA"] = aba
-                candidatos_resumo.append((prioridade, aba, df_r))
-                diagnostico.append(f"{aba}: resumo reconhecido ({len(df_r)}) | prioridade {prioridade}")
-                continue
-
-        if tem_legado:
-            df_l = _preparar_agentes_leitura_antigo(bruto, caminho)
-            if not df_l.empty:
-                df_l["ARQUIVO"] = Path(caminho).name
-                df_l["ABA"] = aba
-                candidatos_legado.append((1, aba, df_l))
-                diagnostico.append(f"{aba}: formato antigo por agente reconhecido ({len(df_l)})")
-                continue
-
-        diagnostico.append(f"{aba}: colunas não reconhecidas: {list(bruto.columns)[:10]}")
-
-    # Evita duplicar tarefas: quando existe TAREFAS/TAREFAS_CONSOLIDADAS, ignora abas por município.
-    tarefas = []
-    if candidatos_tarefas:
-        max_prio = max(p for p, _, _ in candidatos_tarefas)
-        escolhidos = [(aba, df) for p, aba, df in candidatos_tarefas if p == max_prio]
-        tarefas = [df for _, df in escolhidos]
-        diagnostico.append("Usando aba(s) de tarefas: " + ", ".join(aba for aba, _ in escolhidos))
-    elif candidatos_legado:
-        tarefas = [df for _, _, df in candidatos_legado]
-        diagnostico.append("Usando fallback legado por agente: " + ", ".join(aba for _, aba, _ in candidatos_legado))
-
-    resumos = []
-    if candidatos_resumo:
-        max_prio = max(p for p, _, _ in candidatos_resumo)
-        escolhidos_r = [(aba, df) for p, aba, df in candidatos_resumo if p == max_prio]
-        resumos = [df for _, df in escolhidos_r]
-        diagnostico.append("Usando aba(s) de resumo: " + ", ".join(aba for aba, _ in escolhidos_r))
-
-    df_tarefas = pd.concat(tarefas, ignore_index=True) if tarefas else pd.DataFrame()
-    if not df_tarefas.empty:
-        df_tarefas["_ord"] = df_tarefas["D OPERACIONAL"].apply(_ordenar_d)
-        # dedup final entre abas/arquivos, mantendo a primeira linha mais completa.
-        df_tarefas["_completude"] = df_tarefas.notna().sum(axis=1) + (df_tarefas.get("T. INSTALA", 0) > 0).astype(int)
-        df_tarefas = (
-            df_tarefas.sort_values(["_completude", "_ord"], ascending=[False, True])
-            .drop_duplicates(subset=["BASE", "TAREFA"], keep="first")
-            .drop(columns=["_ord", "_completude"], errors="ignore")
-            .reset_index(drop=True)
-        )
-
-    df_resumo = pd.concat(resumos, ignore_index=True) if resumos else pd.DataFrame()
-    return df_tarefas, df_resumo, diagnostico
-
-
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
-def carregar_leitura_completa_cache(chaves_arquivos):
-    # chaves_arquivos = tupla de (base, caminho, mtime) para invalidar cache quando atualizar.
-    tarefas = []
-    resumos = []
-    diag = []
-    for base_nome, caminho_str, _mtime in chaves_arquivos:
-        if not caminho_str:
-            continue
-        df_t, df_r, d = _ler_excel_leitura_robusto(caminho_str)
-        if not df_t.empty:
-            tarefas.append(df_t)
-        if not df_r.empty:
-            resumos.append(df_r)
-        diag.extend([f"{base_nome} / {linha}" for linha in d])
-
-    df_tarefas = pd.concat(tarefas, ignore_index=True) if tarefas else pd.DataFrame()
-    df_resumo = pd.concat(resumos, ignore_index=True) if resumos else pd.DataFrame()
-    return df_tarefas, df_resumo, diag
-
-
-def carregar_leitura_completa():
-    arquivos = {base: caminho for base, caminho in caminhos_leitura_disponiveis().items() if caminho}
-    chaves = tuple((base, str(caminho), caminho.stat().st_mtime) for base, caminho in arquivos.items())
-    df_tarefas, df_resumo, diag = carregar_leitura_completa_cache(chaves)
-    return df_tarefas, df_resumo, arquivos, diag
-
-
-def _resumo_leitura_from_tarefas(base):
-    if base.empty:
-        return pd.DataFrame()
-    df = base.copy()
-    for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
-        df[col] = (df["STATUS OPERACIONAL"] == col).astype(int)
-
-    resumo = (
-        df.groupby(["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"], dropna=False)
-        .agg(
-            **{
-                "TOTAL TAREFA": ("TAREFA", "nunique"),
-                "FEITA": ("FEITA", "sum"),
-                "PARCIAL": ("PARCIAL", "sum"),
-                "PENDENTE": ("PENDENTE", "sum"),
-                "SEM TOTAL": ("SEM TOTAL", "sum"),
-                "FALTAM": ("FALTAM", "sum"),
-                "T. INSTALA": ("T. INSTALA", "sum"),
-                "T. VISITADA": ("T. VISITADA", "sum"),
-            }
-        )
-        .reset_index()
-    )
-    resumo["ORDEM_D"] = resumo["D OPERACIONAL"].apply(_ordenar_d)
-    return resumo.sort_values(["BASE", "ORDEM_D", "MUNICÍPIO NOME"]).drop(columns=["ORDEM_D"])
-
-
-def _formatar_df_parcial_agente(df):
-    if df.empty:
-        return df
-    cols = [c for c in ["BASE", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "STATUS OPERACIONAL"] if c in df.columns]
-    out = df[cols].copy()
-    if "STATUS OPERACIONAL" in out.columns:
-        out = out.rename(columns={"STATUS OPERACIONAL": "STATUS"})
-    return out.sort_values([c for c in ["BASE", "FALTAM", "AGENTE COMERCIAL"] if c in out.columns], ascending=[True, False, True][:len([c for c in ["BASE", "FALTAM", "AGENTE COMERCIAL"] if c in out.columns])])
-
-
-def _resumo_parcial_agente(df):
-    if df.empty:
-        return pd.DataFrame()
-    base = df.copy()
-    for col in ["T. INSTALA", "T. VISITADA", "FALTAM"]:
-        if col not in base.columns:
-            base[col] = 0
-        base[col] = pd.to_numeric(base[col], errors="coerce").fillna(0).astype(int)
-    if "AGENTE COMERCIAL" not in base.columns:
-        base["AGENTE COMERCIAL"] = ""
-    return (
-        base.groupby(["BASE", "AGENTE COMERCIAL"], dropna=False)
-        .agg({"T. INSTALA": "sum", "T. VISITADA": "sum", "FALTAM": "sum"})
-        .reset_index()
-        .sort_values(["BASE", "FALTAM", "AGENTE COMERCIAL"], ascending=[True, False, True])
-    )
-
-
-def mostrar_painel_leitura():
-    st.subheader("📖 Contrato Leitura")
-    st.caption("Acompanhamento CWSI por base, município, D operacional e parcial do dia.")
-
-    df_tarefas, df_resumo_arquivo, arquivos, diagnostico = carregar_leitura_completa()
-
-    if not arquivos:
-        st.warning("Nenhum arquivo de leitura encontrado. Envie os Excels para dashboard/leitura ou mantenha em C:\\Users\\user\\Desktop\\LEITURA\\saida.")
-        return
-
-    with st.expander("Arquivos carregados", expanded=False):
-        for base_nome, caminho in arquivos.items():
-            mtime = arquivo_mtime_datetime(caminho)
-            if mtime:
-                st.caption(f"{base_nome}: {caminho} • atualizado em {mtime.strftime('%d/%m/%Y %H:%M:%S')}")
-            else:
-                st.caption(f"{base_nome}: {caminho}")
-        if diagnostico:
-            st.markdown("**Diagnóstico das abas:**")
-            st.code("\n".join(diagnostico[:120]))
-
-    if df_tarefas.empty and df_resumo_arquivo.empty:
-        st.error("Os arquivos foram encontrados, mas nenhuma aba reconhecida foi carregada. Abra o expander acima e confira o diagnóstico das abas.")
-        return
-
-    # Se o arquivo tem resumo por município/D, ele é a fonte principal da visão operacional.
-    # O fallback legado AGENTE COMERCIAL/T. INSTALA/T. VISITADA fica somente na aba Parcial do dia.
-    df_parcial = pd.DataFrame()
-    df_tarefas_reais = pd.DataFrame()
-    if not df_tarefas.empty:
-        origem = df_tarefas.get("FORMATO_ORIGEM", pd.Series([""] * len(df_tarefas), index=df_tarefas.index)).astype(str)
-        df_parcial = df_tarefas[origem == "PARCIAL_AGENTE"].copy()
-        df_tarefas_reais = df_tarefas[origem != "PARCIAL_AGENTE"].copy()
-
-    if not df_resumo_arquivo.empty:
-        df_operacional = df_resumo_arquivo.copy()
-    elif not df_tarefas_reais.empty:
-        df_operacional = _resumo_leitura_from_tarefas(df_tarefas_reais)
-    else:
-        df_operacional = pd.DataFrame()
-
-    if df_operacional.empty and df_parcial.empty:
-        st.error("Encontrei arquivos, mas não há dados operacionais nem parcial por agente para mostrar.")
-        return
-
-    aba_operacional, aba_parcial = st.tabs(["📊 D por município", "📋 Parcial do dia"])
-
-    with aba_operacional:
-        if df_operacional.empty:
-            st.warning("Não encontrei a aba/estrutura de resumo por D e município. Verifique se o extrator subiu o arquivo novo com RESUMO_MUNICIPIO ou DETALHE_MUNICIPIO.")
-        else:
-            st.markdown("#### Filtros")
-            f1, f2, f3 = st.columns([1.2, 1.2, 1.8])
-            bases_disp = sorted(df_operacional.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-            d_disp = sorted(df_operacional.get("D OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(), key=_ordenar_d)
-            municipios_disp = sorted(df_operacional.get("MUNICÍPIO NOME", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-            municipios_disp = [m for m in municipios_disp if m and str(m).upper() not in ["TOTAL DA BASE", "TOTAL"]]
-
-            bases_sel = f1.multiselect("Base", bases_disp, default=bases_disp, key="leit_base_op")
-            d_sel = f2.multiselect("D", d_disp, default=d_disp, key="leit_d_op")
-            municipios_sel = f3.multiselect("Município", municipios_disp, default=municipios_disp, key="leit_mun_op")
-
-            resumo = df_operacional.copy()
-            if bases_sel and "BASE" in resumo.columns:
-                resumo = resumo[resumo["BASE"].isin(bases_sel)]
-            if d_sel and "D OPERACIONAL" in resumo.columns:
-                resumo = resumo[resumo["D OPERACIONAL"].isin(d_sel)]
-            if municipios_sel and "MUNICÍPIO NOME" in resumo.columns:
-                resumo = resumo[resumo["MUNICÍPIO NOME"].isin(municipios_sel)]
-
-            for col in ["TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"]:
-                if col not in resumo.columns:
-                    resumo[col] = 0
-                resumo[col] = pd.to_numeric(resumo[col], errors="coerce").fillna(0).astype(int)
-
-            total_tarefas = int(resumo["TOTAL TAREFA"].sum())
-            feitas = int(resumo["FEITA"].sum())
-            parciais = int(resumo["PARCIAL"].sum())
-            pendentes = int(resumo["PENDENTE"].sum())
-            sem_total = int(resumo["SEM TOTAL"].sum())
-            faltam = int(resumo["FALTAM"].sum())
-            perc = (feitas / total_tarefas * 100) if total_tarefas else 0
-
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            c1.metric("Tarefas", numero(total_tarefas))
-            c2.metric("Feitas", numero(feitas))
-            c3.metric("Parciais", numero(parciais))
-            c4.metric("Pendentes", numero(pendentes))
-            c5.metric("Sem total", numero(sem_total))
-            c6.metric("Execução", f"{perc:.1f}%".replace(".", ","))
-
-            if faltam:
-                st.markdown(f"<div class='zero-card'><b>Instalações faltantes:</b> {numero(faltam)}</div>", unsafe_allow_html=True)
-
-            st.markdown("#### Resumo por base e D")
-            resumo_base_d = (
-                resumo.groupby(["BASE", "D OPERACIONAL"], dropna=False)
-                .agg({"TOTAL TAREFA": "sum", "FEITA": "sum", "PARCIAL": "sum", "PENDENTE": "sum", "SEM TOTAL": "sum", "FALTAM": "sum", "T. INSTALA": "sum", "T. VISITADA": "sum"})
-                .reset_index()
-            )
-            if not resumo_base_d.empty:
-                resumo_base_d["ORDEM_D"] = resumo_base_d["D OPERACIONAL"].apply(_ordenar_d)
-                resumo_base_d = resumo_base_d.sort_values(["BASE", "ORDEM_D"]).drop(columns=["ORDEM_D"])
-            st.dataframe(resumo_base_d, use_container_width=True, hide_index=True)
-
-            st.markdown("#### Detalhe por município")
-            detalhe = resumo.copy()
-            if "ORDEM_D" not in detalhe.columns:
-                detalhe["ORDEM_D"] = detalhe["D OPERACIONAL"].apply(_ordenar_d)
-            detalhe = detalhe.sort_values([c for c in ["BASE", "MUNICÍPIO NOME", "ORDEM_D"] if c in detalhe.columns]).drop(columns=["ORDEM_D"], errors="ignore")
-            colunas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in detalhe.columns]
-            st.dataframe(detalhe[colunas], use_container_width=True, hide_index=True)
-
-            if not resumo_base_d.empty:
-                chart_df = resumo_base_d.melt(
-                    id_vars=["BASE", "D OPERACIONAL"],
-                    value_vars=["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"],
-                    var_name="STATUS",
-                    value_name="QTD",
-                )
-                grafico = (
-                    alt.Chart(chart_df)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("D OPERACIONAL:N", sort=sorted(chart_df["D OPERACIONAL"].unique().tolist(), key=_ordenar_d)),
-                        y="QTD:Q",
-                        color="STATUS:N",
-                        column="BASE:N",
-                        tooltip=["BASE", "D OPERACIONAL", "STATUS", "QTD"],
-                    )
-                    .properties(height=260)
-                )
-                st.altair_chart(grafico, use_container_width=True)
-
-    with aba_parcial:
-        st.caption("Parcial por agente comercial, alimentada pela aba/formato AGENTE COMERCIAL + T. INSTALA + T. VISITADA.")
-        if df_parcial.empty:
-            # Se não houver aba legada, usa tarefas reais como detalhe operacional.
-            if df_tarefas_reais.empty:
-                st.warning("Não encontrei parcial por agente neste arquivo.")
-            else:
-                st.info("Não encontrei parcial por agente. Exibindo tarefas detalhadas do arquivo novo.")
-                detalhe = df_tarefas_reais.copy()
-                for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
-                    if col in detalhe.columns:
-                        detalhe[col] = pd.to_datetime(detalhe[col], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
-                cols = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in detalhe.columns]
-                st.dataframe(detalhe[cols], use_container_width=True, hide_index=True)
-        else:
-            bases_disp_p = sorted(df_parcial.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-            base_sel_p = st.multiselect("Base da parcial", bases_disp_p, default=bases_disp_p, key="leit_base_parcial")
-            parcial_filtrada = df_parcial.copy()
-            if base_sel_p:
-                parcial_filtrada = parcial_filtrada[parcial_filtrada["BASE"].isin(base_sel_p)]
-
-            total_instala = int(pd.to_numeric(parcial_filtrada.get("T. INSTALA", 0), errors="coerce").fillna(0).sum())
-            total_visitada = int(pd.to_numeric(parcial_filtrada.get("T. VISITADA", 0), errors="coerce").fillna(0).sum())
-            total_faltam = int(pd.to_numeric(parcial_filtrada.get("FALTAM", 0), errors="coerce").fillna(0).sum())
-            percentual = (total_visitada / total_instala * 100) if total_instala else 0
-
-            p1, p2, p3, p4 = st.columns(4)
-            p1.metric("T. Instala", numero(total_instala))
-            p2.metric("T. Visitada", numero(total_visitada))
-            p3.metric("Faltam", numero(total_faltam))
-            p4.metric("% Executado", f"{percentual:.1f}%".replace(".", ","))
-
-            resumo_agente = _resumo_parcial_agente(parcial_filtrada)
-            tabela = resumo_agente.copy()
-            if not tabela.empty:
-                tabela["% EXECUTADO"] = 0.0
-                mask = tabela["T. INSTALA"] > 0
-                tabela.loc[mask, "% EXECUTADO"] = ((tabela.loc[mask, "T. VISITADA"] / tabela.loc[mask, "T. INSTALA"]) * 100).round(1)
-                tabela["% EXECUTADO"] = tabela["% EXECUTADO"].apply(lambda v: f"{float(v):.1f}%".replace(".", ","))
-            st.dataframe(tabela, use_container_width=True, hide_index=True)
-
-
-def mostrar_base_leitura(base_nome):
-    """Mantido por compatibilidade; agora mostra o painel completo integrado."""
-    mostrar_painel_leitura()
-
-
-
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
-def ler_csv(caminho):
-    df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
-
-    for col in df.columns:
-        if "FATURAMENTO" in col:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-        if col in ["QTD_NOTAS", "QTD_EXECUTORES", "DIA_SEMANA_NUM"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
-
-    return df
-
-
-def dinheiro(valor):
-    try:
-        return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except Exception:
-        return valor
-
-
-def numero(valor):
-    try:
-        return f"{int(valor):,}".replace(",", ".")
-    except Exception:
-        return valor
-
-
-def formatar_tabela(df):
-    df2 = df.copy()
-
-    colunas_moeda = ORDEM_DIAS + [
-        "CORTE", "RELIGUE", "TOTAL", "MÍNIMO", "MÁXIMO", "VALOR",
-        "Total semana", "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
-    ]
-
-    for col in df2.columns:
-        if "FATURAMENTO" in col or col in colunas_moeda:
-            df2[col] = df2[col].apply(dinheiro)
-        elif col in ["QTD_NOTAS", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "EXPRESS", "TOTAL_NOTAS"]:
-            df2[col] = df2[col].apply(numero)
-
-    return df2
-
-
-
-
-def preparar_tabela_ranking(df, colunas_moeda=None):
-    """Formata ranking sem depender de Styler/Jinja2, evitando erro no Streamlit Cloud."""
-    if df.empty:
-        return df
-
-    df2 = df.copy()
-    colunas_moeda = colunas_moeda or []
-
-    for col in df2.columns:
-        if col in colunas_moeda or "FATURAMENTO" in col or col == "TICKET_MÉDIO":
-            df2[col] = df2[col].apply(dinheiro)
-        elif col in ["POSIÇÃO", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "EXPRESS", "DIAS_ATIVOS", "QTD_EQUIPES", "QTD_RECURSOS"]:
-            df2[col] = df2[col].apply(numero)
-        elif col in ["MÉDIA_NOTAS_DIA"]:
-            df2[col] = df2[col].apply(lambda v: f"{float(v):.2f}".replace(".", ","))
-
-    return df2
-
-
-def mostrar_podio_ranking(ranking, nome_coluna="RECURSO"):
-    """Mostra os três primeiros colocados com destaque compatível com tema claro/escuro."""
-    if ranking.empty:
-        return
-
-    classes = ["gold", "silver", "bronze"]
-    medalhas = ["🥇", "🥈", "🥉"]
-    for i, (_, row) in enumerate(ranking.head(3).iterrows()):
-        st.markdown(
-            f"""
-            <div class="ranking-podium {classes[i]}">
-                <b>{medalhas[i]} {numero(row.get('POSIÇÃO', i + 1))}º — {row.get(nome_coluna, '')}</b><br>
-                {numero(row.get('NOTAS', 0))} notas • {dinheiro(row.get('FATURAMENTO_ATRIBUÍDO', 0))} em faturamento
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
-def montar_base_executores(notas):
-    """Monta base de ranking por RECURSO/equipe, incluindo recusas para auditoria."""
-    parcial = preparar_parcial_do_dia(notas, incluir_recusas=True)
-
-    if parcial.empty:
-        return pd.DataFrame()
-
-    base = parcial.copy()
-    if "RECURSO" not in base.columns:
-        base["RECURSO"] = ""
-
-    base["RECURSO"] = base["RECURSO"].fillna("").astype(str).str.strip().str.upper()
-    base = base[base["RECURSO"] != ""].copy()
-
-    if base.empty:
-        return pd.DataFrame()
-
-    if "EH_RECUSA" not in base.columns:
-        base["EH_RECUSA"] = 0
-    base["EH_RECUSA"] = pd.to_numeric(base["EH_RECUSA"], errors="coerce").fillna(0).astype(int)
-
-    base["ORDEM_SERVICO_PAGAVEL"] = base["ORDEM_DE_SERVICO"].where(base["EH_RECUSA"] == 0, pd.NA)
-    base["ORDEM_SERVICO_RECUSA"] = base["ORDEM_DE_SERVICO"].where(base["EH_RECUSA"] == 1, pd.NA)
-    base["DATA_PAGAVEL"] = base["DATA"].where(base["EH_RECUSA"] == 0, pd.NA)
-
-    base["FATURAMENTO_ATRIBUÍDO"] = pd.to_numeric(base.get("FATURAMENTO", 0), errors="coerce").fillna(0)
-    base["FATURAMENTO_MIN_ATRIBUÍDO"] = pd.to_numeric(base.get("FATURAMENTO_MIN", 0), errors="coerce").fillna(0)
-    base["FATURAMENTO_MAX_ATRIBUÍDO"] = pd.to_numeric(base.get("FATURAMENTO_MAX", 0), errors="coerce").fillna(0)
-
-    base["MES"] = base["DATA_DT"].dt.strftime("%m/%Y")
-    base["SEMANA_INICIO_DT"] = base["DATA_DT"] - pd.to_timedelta(base["DATA_DT"].dt.weekday, unit="D")
-    base["SEMANA"] = base["SEMANA_INICIO_DT"].dt.strftime("%d/%m/%Y")
-    return base
-
-
-def filtrar_base_executores(base, contrato, tipo_periodo, valor_periodo):
-    df = base.copy()
-
-    if contrato != "Todos" and "CONTRATO" in df.columns:
-        df = df[df["CONTRATO"] == contrato]
-
-    if tipo_periodo == "Dia" and valor_periodo:
-        df = df[df["DATA"] == valor_periodo]
-    elif tipo_periodo == "Semana" and valor_periodo:
-        df = df[df["SEMANA"] == valor_periodo]
-    elif tipo_periodo == "Mês" and valor_periodo:
-        df = df[df["MES"] == valor_periodo]
-
-    return df
-
-
-def calcular_ranking_executores(base_filtrada, criterio="Notas"):
-    if base_filtrada.empty:
-        return pd.DataFrame()
-
-    base_calc = base_filtrada.copy()
-    for col in ["ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]:
-        if col not in base_calc.columns:
-            base_calc[col] = pd.NA
-
-    ranking = (
-        base_calc.groupby("RECURSO", dropna=False)
-        .agg(
-            NOTAS=("ORDEM_SERVICO_PAGAVEL", "nunique"),
-            RECUSAS=("ORDEM_SERVICO_RECUSA", "nunique"),
-            CORTES=("EH_CORTE", "sum"),
-            RELIGUES=("EH_RELIGUE", "sum"),
-            DIAS_ATIVOS=("DATA_PAGAVEL", "nunique"),
-            QTD_EQUIPES=("RECURSO", "nunique"),
-            FATURAMENTO_ATRIBUÍDO=("FATURAMENTO_ATRIBUÍDO", "sum"),
-            FATURAMENTO_MIN_ATRIBUÍDO=("FATURAMENTO_MIN_ATRIBUÍDO", "sum"),
-            FATURAMENTO_MAX_ATRIBUÍDO=("FATURAMENTO_MAX_ATRIBUÍDO", "sum"),
-            FATURAMENTO_EQUIPE=("FATURAMENTO", "sum"),
-        )
-        .reset_index()
-    )
-
-    ranking["MÉDIA_NOTAS_DIA"] = ranking.apply(
-        lambda r: (r["NOTAS"] / r["DIAS_ATIVOS"]) if r["DIAS_ATIVOS"] else 0,
-        axis=1,
-    )
-    ranking["TICKET_MÉDIO"] = ranking.apply(
-        lambda r: (r["FATURAMENTO_ATRIBUÍDO"] / r["NOTAS"]) if r["NOTAS"] else 0,
-        axis=1,
-    )
-
-    coluna_ordem = "NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO"
-    ranking = ranking.sort_values([coluna_ordem, "NOTAS", "RECUSAS"], ascending=[False, False, False]).reset_index(drop=True)
-    ranking.insert(0, "POSIÇÃO", range(1, len(ranking) + 1))
-
-    return ranking
-
-
-def calcular_recusas_por_tipo(base_filtrada):
-    """Resume as recusas por equipe e por motivo no período filtrado."""
-    if base_filtrada.empty or "EH_RECUSA" not in base_filtrada.columns:
-        return pd.DataFrame(columns=["RECURSO", "CONTRATO", "RECUSA", "QTD_RECUSAS"])
-
-    recusas = base_filtrada.copy()
-    recusas["EH_RECUSA"] = pd.to_numeric(recusas.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
-    recusas = recusas[recusas["EH_RECUSA"] == 1].copy()
-
-    if recusas.empty:
-        return pd.DataFrame(columns=["RECURSO", "CONTRATO", "RECUSA", "QTD_RECUSAS"])
-
-    recusas["RECUSA"] = recusas.get("RECUSA", "").fillna("").astype(str).str.strip()
-    recusas.loc[recusas["RECUSA"] == "", "RECUSA"] = "Não informado"
-
-    resumo = (
-        recusas.groupby(["RECURSO", "CONTRATO", "RECUSA"], dropna=False)
-        .agg(QTD_RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
-        .reset_index()
-        .sort_values(["RECURSO", "QTD_RECUSAS", "RECUSA"], ascending=[True, False, True])
-    )
-    return resumo
-
-
-@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
-def opcoes_periodo_ranking(base):
-    """Pré-calcula listas de datas/semanas/meses para o ranking."""
-    if base.empty:
-        return [], [], []
-
-    dias = (
-        base[["DATA", "DATA_DT"]]
-        .drop_duplicates()
-        .sort_values("DATA_DT", ascending=False)["DATA"]
-        .tolist()
-    )
-
-    semanas = (
-        base[["SEMANA", "SEMANA_INICIO_DT"]]
-        .drop_duplicates()
-        .sort_values("SEMANA_INICIO_DT", ascending=False)["SEMANA"]
-        .tolist()
-    )
-
-    meses_df = base[["MES", "DATA_DT"]].drop_duplicates().copy()
-    meses_df["PERIODO"] = pd.to_datetime(meses_df["DATA_DT"]).dt.to_period("M")
-    meses = (
-        meses_df[["MES", "PERIODO"]]
-        .drop_duplicates()
-        .sort_values("PERIODO", ascending=False)["MES"]
-        .tolist()
-    )
-
-    return dias, semanas, meses
-
-
-@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
-def ranking_recursos_cacheado(base, contrato, tipo_periodo, valor_periodo, criterio):
-    """Filtra e calcula o ranking em cache para acelerar trocas de filtro."""
-    base_filtrada = filtrar_base_executores(base, contrato, tipo_periodo, valor_periodo)
-    ranking = calcular_ranking_executores(base_filtrada, criterio)
-    return base_filtrada, ranking
-
-
-def carregar_bases():
-    bases = {}
-    faltando = []
-
-    for chave, nome in ARQUIVOS.items():
-        caminho = caminho_arquivo(nome)
-
-        if caminho:
-            bases[chave] = ler_csv(str(caminho))
-        else:
-            faltando.append(nome)
-
-    return bases, faltando
-
-
-# ==============================
-# REGRAS DE CONTRATO / FATURAMENTO
-# Usadas na aba "Parcial do dia"
-# ==============================
-
-def eh_disjuntor_jundiai(recurso):
-    recurso_norm = str(recurso).strip().upper()
-    return recurso_norm.startswith("JUN55") or recurso_norm.startswith("JUN59") or recurso_norm.startswith("SAL55")
-
-
-def eh_disjuntor_santa_cruz(recurso):
-    import re
-    recurso_norm = str(recurso).strip().upper()
-    m = re.search(r"(\d+)", recurso_norm)
-    if not m:
-        return False
-    primeiros_numeros = m.group(1)
-    return primeiros_numeros.startswith("89") or primeiros_numeros.startswith("20")
-
-
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
-def preparar_parcial_do_dia(notas, incluir_recusas=False):
-    """
-    Monta a base da parcial do dia.
-
-    Por padrão, mantém o comportamento antigo: considera apenas notas pagáveis,
-    ou seja, sem recusa.
-
-    Quando incluir_recusas=True, mantém também as recusas para exibição na aba
-    "Parcial do dia". As recusas entram com faturamento zerado e NÃO contam como
-    notas feitas nos indicadores/ranking.
-    """
-    if notas.empty:
-        return pd.DataFrame()
-
-    df = notas.copy()
-
-    for col in ["ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "RECUSA", "ELETRICISTA1", "ELETRICISTA2", "DATA"]:
-        if col not in df.columns:
-            df[col] = ""
-        df[col] = df[col].fillna("").astype(str).str.strip()
-
-    if "QTD_EXECUTORES" not in df.columns:
-        df["QTD_EXECUTORES"] = ((df["ELETRICISTA1"] != "").astype(int) + (df["ELETRICISTA2"] != "").astype(int))
-    else:
-        df["QTD_EXECUTORES"] = pd.to_numeric(df["QTD_EXECUTORES"], errors="coerce").fillna(0).astype(int)
-
-    df["GRUPO_NOTA"] = df["GRUPO_NOTA"].str.upper()
-    df["RECURSO"] = df["RECURSO"].str.upper()
-    df["RECUSA"] = df["RECUSA"].fillna("").astype(str).str.strip()
-    df["EH_RECUSA"] = (df["RECUSA"] != "").astype(int)
-
-    # No modo padrão, mantém apenas notas pagáveis.
-    # No modo incluir_recusas=True, as recusas permanecem apenas para exibição.
-    if not incluir_recusas:
-        df = df[df["RECUSA"] == ""].copy()
-
-    linhas = []
-
-    for _, row in df.iterrows():
-        recurso = row.get("RECURSO", "")
-        grupo = row.get("GRUPO_NOTA", "")
-        qtd_exec = int(row.get("QTD_EXECUTORES", 0) or 0)
-        eh_recusa = str(row.get("RECUSA", "")).strip() != ""
-
-        contrato = ""
-        faturamento = 0.0
-        faturamento_min = 0.0
-        faturamento_max = 0.0
-
-        if eh_disjuntor_jundiai(recurso):
-            contrato = "Disjuntor Jundiaí"
-            if not eh_recusa:
-                faturamento = {"CORTE": 13.72, "RELIGUE": 27.43}.get(grupo, 0.0)
-                faturamento_min = faturamento
-                faturamento_max = faturamento
-
-        elif eh_disjuntor_santa_cruz(recurso):
-            contrato = "Disjuntor Santa Cruz"
-            if not eh_recusa:
-                faturamento = {"CORTE": 11.98, "RELIGUE": 23.97}.get(grupo, 0.0)
-                faturamento_min = faturamento
-                faturamento_max = faturamento
-
-        elif str(recurso).startswith("JUN58") and qtd_exec >= 2:
-            contrato = "STC Jundiai"
-            if not eh_recusa:
-                faturamento_min = {"CORTE": 38.18, "RELIGUE": 36.36}.get(grupo, 0.0)
-                faturamento_max = {"CORTE": 45.45, "RELIGUE": 50.91}.get(grupo, 0.0)
-                faturamento = faturamento_min
-
-        if contrato:
-            item = row.to_dict()
-            item["CONTRATO"] = contrato
-            item["FATURAMENTO"] = faturamento
-            item["FATURAMENTO_MIN"] = faturamento_min
-            item["FATURAMENTO_MAX"] = faturamento_max
-            item["EH_CORTE"] = 1 if (grupo == "CORTE" and not eh_recusa) else 0
-            item["EH_RELIGUE"] = 1 if (grupo == "RELIGUE" and not eh_recusa) else 0
-            item["EH_RECUSA"] = 1 if eh_recusa else 0
-            linhas.append(item)
-
-    if not linhas:
-        return pd.DataFrame()
-
-    parcial = pd.DataFrame(linhas)
-    parcial["DATA_DT"] = pd.to_datetime(parcial["DATA"], dayfirst=True, errors="coerce")
-    parcial = parcial.dropna(subset=["DATA_DT"])
-    parcial["DATA"] = parcial["DATA_DT"].dt.strftime("%d/%m/%Y")
-
-    return parcial
-
-
-
-
-def meses_disponiveis_da_base(notas):
-    """Retorna os meses disponíveis na base acumulada, do mais recente para o mais antigo."""
-    if notas.empty:
-        return pd.DataFrame(columns=["MES", "PERIODO"])
-
-    df = notas.copy()
-    coluna_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in df.columns else "DATA"
-
-    if coluna_data not in df.columns:
-        return pd.DataFrame(columns=["MES", "PERIODO"])
-
-    datas = pd.to_datetime(df[coluna_data], dayfirst=True, errors="coerce")
-    periodos = datas.dt.to_period("M")
-
-    meses = (
-        pd.DataFrame({"PERIODO": periodos})
-        .dropna()
-        .drop_duplicates()
-        .sort_values("PERIODO", ascending=False)
-    )
-
-    if meses.empty:
-        return pd.DataFrame(columns=["MES", "PERIODO"])
-
-    meses["MES"] = meses["PERIODO"].dt.strftime("%m/%Y")
-    return meses[["MES", "PERIODO"]].reset_index(drop=True)
-
-
-
-def data_maxima_do_mes(notas, mes):
-    """Retorna a maior data encontrada dentro de um mês no formato MM/AAAA."""
-    if notas.empty:
-        return None
-
-    df = notas.copy()
-    coluna_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in df.columns else "DATA"
-
-    if coluna_data not in df.columns:
-        return None
-
-    datas = pd.to_datetime(df[coluna_data], dayfirst=True, errors="coerce")
-    periodo_mes = pd.Period(f"{mes[3:7]}-{mes[0:2]}", freq="M")
-    datas_mes = datas[datas.dt.to_period("M") == periodo_mes]
-
-    if datas_mes.dropna().empty:
-        return None
-
-    return datas_mes.max()
-
-
-def texto_mes_com_parcial(notas, mes):
-    """Mostra o mês e, se ainda não fechou, informa até qual data há dados."""
-    data_max = data_maxima_do_mes(notas, mes)
-
-    if data_max is None:
-        return mes
-
-    periodo_mes = data_max.to_period("M")
-    ultimo_dia_mes = periodo_mes.end_time.normalize()
-
-    if data_max.normalize() < ultimo_dia_mes:
-        return f"{mes} (parcial até {data_max.strftime('%d/%m/%Y')})"
-
-    return f"{mes} (mês fechado)"
-
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
-def resumo_por_periodo(notas, meses_escolhidos, contrato_escolhido="Todos"):
-    """Monta resumo financeiro por contrato e por grupo para os meses escolhidos."""
-    parcial = preparar_parcial_do_dia(notas)
-
-    if parcial.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    if not meses_escolhidos:
-        meses_base = meses_disponiveis_da_base(notas)
-        if meses_base.empty:
-            return pd.DataFrame(), pd.DataFrame()
-        meses_escolhidos = [meses_base.iloc[0]["MES"]]
-
-    parcial["MES"] = parcial["DATA_DT"].dt.strftime("%m/%Y")
-    parcial = parcial[parcial["MES"].isin(meses_escolhidos)].copy()
-
-    if contrato_escolhido != "Todos" and "CONTRATO" in parcial.columns:
-        parcial = parcial[parcial["CONTRATO"] == contrato_escolhido]
-
-    if parcial.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    resumo_contrato = (
-        parcial.groupby("CONTRATO", dropna=False)
-        .agg(
-            TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
-            CORTES=("EH_CORTE", "sum"),
-            RELIGUES=("EH_RELIGUE", "sum"),
-            FATURAMENTO=("FATURAMENTO", "sum"),
-            FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
-            FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
-        )
-        .reset_index()
-        .sort_values("FATURAMENTO", ascending=False)
-    )
-
-    resumo_grupo = (
-        parcial.groupby(["CONTRATO", "GRUPO_NOTA"], dropna=False)
-        .agg(
-            TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
-            FATURAMENTO=("FATURAMENTO", "sum"),
-            FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
-            FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
-        )
-        .reset_index()
-    )
-
-    resumo_contrato = aplicar_express_no_resumo_contrato(
-        resumo_contrato,
-        notas,
-        meses_escolhidos,
-        contrato_escolhido,
-    )
-
-    if not resumo_contrato.empty and "FATURAMENTO" in resumo_contrato.columns:
-        resumo_contrato = resumo_contrato.sort_values("FATURAMENTO", ascending=False)
-
-    return resumo_contrato, resumo_grupo
-
-
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
-def calcular_resumo_mensal(notas, mes, contrato_escolhido="Todos"):
-    resumo_contrato, _ = resumo_por_periodo(notas, [mes], contrato_escolhido)
-
-    if resumo_contrato.empty:
-        return {
-            "FATURAMENTO": 0.0,
-            "TOTAL_NOTAS": 0,
-            "CORTES": 0,
-            "RELIGUES": 0,
-            "EXPRESS": 0,
-            "FATURAMENTO_EXPRESS": 0.0,
-            "FATURAMENTO_MIN": 0.0,
-            "FATURAMENTO_MAX": 0.0,
+def obter_mapa_headers_visiveis(driver):
+    dados = driver.execute_script("""
+        function visivel(el){
+            if (!el) return false;
+            const st = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return st.visibility !== 'hidden' && st.display !== 'none' && r.width > 2 && r.height > 2;
+        }
+        function limpar(t){ return (t || '').replace(/\s+/g, ' ').trim(); }
+
+        const table = document.querySelector('[data-qa-target-table="1"]');
+        if (!table) return {ok:false, erro:'Tabela alvo não encontrada.'};
+
+        let headerRows = [...table.querySelectorAll('thead tr')].filter(visivel);
+        if (!headerRows.length) {
+            headerRows = [...table.querySelectorAll('tr')].filter(visivel).slice(0, 3);
         }
 
-    return {
-        "FATURAMENTO": float(resumo_contrato["FATURAMENTO"].sum()),
-        "TOTAL_NOTAS": int(resumo_contrato["TOTAL_NOTAS"].sum()),
-        "CORTES": int(resumo_contrato["CORTES"].sum()),
-        "RELIGUES": int(resumo_contrato["RELIGUES"].sum()),
-        "EXPRESS": int(resumo_contrato["EXPRESS"].sum()) if "EXPRESS" in resumo_contrato.columns else 0,
-        "FATURAMENTO_EXPRESS": float(resumo_contrato["FATURAMENTO_EXPRESS"].sum()) if "FATURAMENTO_EXPRESS" in resumo_contrato.columns else 0.0,
-        "FATURAMENTO_MIN": float(resumo_contrato["FATURAMENTO_MIN"].sum()),
-        "FATURAMENTO_MAX": float(resumo_contrato["FATURAMENTO_MAX"].sum()),
-    }
-
-
-def variacao_percentual(atual, anterior):
-    if anterior == 0:
-        if atual == 0:
-            return "0,0%"
-        return "novo"
-    valor = ((atual - anterior) / anterior) * 100
-    sinal = "+" if valor >= 0 else ""
-    return f"{sinal}{valor:.1f}%".replace(".", ",")
-
-
-def arquivo_mtime_datetime(caminho):
-    """Retorna a data/hora de São Paulo da última modificação do arquivo."""
-    try:
-        return datetime.fromtimestamp(
-            Path(caminho).stat().st_mtime,
-            tz=ZoneInfo("America/Sao_Paulo")
-        )
-    except Exception:
-        return None
-
-
-def contar_notas_por_contrato(notas):
-    """
-    Conta notas feitas por contrato, sem contar recusas.
-    Também retorna o total geral.
-    """
-    parcial = preparar_parcial_do_dia(notas)
-
-    contagens = {"Todos": 0}
-
-    if parcial.empty:
-        return contagens
-
-    contagens["Todos"] = int(parcial["ORDEM_DE_SERVICO"].nunique())
-
-    por_contrato = (
-        parcial.groupby("CONTRATO", dropna=False)["ORDEM_DE_SERVICO"]
-        .nunique()
-        .to_dict()
-    )
-
-    for contrato, qtd in por_contrato.items():
-        contagens[str(contrato)] = int(qtd)
-
-    return contagens
-
-
-
-def normalizar_executor(valor):
-    """Normaliza código de executor vindo da base de notas ou da planilha de express."""
-    if pd.isna(valor):
-        return ""
-    texto = str(valor).strip()
-    if texto.endswith(".0"):
-        texto = texto[:-2]
-    return texto
-
-
-def normalizar_ordem_servico(valor):
-    """Normaliza Ordem de Serviço/NOTA para permitir o cruzamento entre Excel Express e CSV de notas."""
-    if pd.isna(valor):
-        return ""
-    texto = str(valor).strip()
-    if texto.endswith(".0"):
-        texto = texto[:-2]
-    # Mantém só dígitos quando a nota veio como número/texto com pontuação.
-    apenas_digitos = "".join(ch for ch in texto if ch.isdigit())
-    return apenas_digitos or texto.upper()
-
-
-def normalizar_nome_pessoa(valor):
-    """Normaliza nome para fazer o DE/PARA do Pagamento Express sem depender de acentos/caixa/espaços."""
-    import re
-    import unicodedata
-
-    if pd.isna(valor):
-        return ""
-
-    texto = str(valor).strip().upper()
-    texto = unicodedata.normalize("NFKD", texto)
-    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
-    texto = re.sub(r"\s+", " ", texto)
-    return texto.strip()
-
-
-DEPARA_NOME_RECURSO_EXPRESS = {
-    normalizar_nome_pessoa("FERNANDO LOPES TEIXEIRA"): "JUN5537-EMP",
-    normalizar_nome_pessoa("MATHEUS RIBEIRO SILVA"): "JUN5994-EMP",
-    normalizar_nome_pessoa("IVANILSON ANTONIO DA SILVA"): "SAL5507-EMP",
-    normalizar_nome_pessoa("JESSICA TAYANE DE SOUZA PEREIRA"): "JUN5983-EMP",
-    normalizar_nome_pessoa("NATAN GONCALVES GARCIA"): "JUN5539-EMP",
-    normalizar_nome_pessoa("WESLEY BRUNO MESSIAS PEREIRA"): "SAL5505-EMP",
-    normalizar_nome_pessoa("RENATO DE LIMA"): "JUN5972-EMP",
-    normalizar_nome_pessoa("GUILHERME VINICIUS DOS SANTOS"): "JUN5973-EMP",
-    normalizar_nome_pessoa("JEANDERSON LUIZ NEVES DE JESUS"): "JUN5974-EMP",
-    normalizar_nome_pessoa("JOSE DANILO SANTOS DA SILVA"): "JUN5975-EMP",
-    normalizar_nome_pessoa("FRANCISCO JOSE DE SOUSA FILHO"): "JUN5976-EMP",
-    normalizar_nome_pessoa("FRANCISCO JOSE DE SOUZA FILHO"): "JUN5976-EMP",
-    normalizar_nome_pessoa("MISAEL DE SOUZA ESTRELA"): "JUN5977-EMP",
-    normalizar_nome_pessoa("JENIFFER RODRIGUES"): "JUN5981-EMP",
-    normalizar_nome_pessoa("KEMERSON JAQUES DA CRUZ"): "JUN5982-EMP",
-    normalizar_nome_pessoa("CHARMONE DIONATAS PINHEIRO RODRIGUES"): "JUN5993-EMP",
-    normalizar_nome_pessoa("JEFERSON DE SOUZA DA SILVA"): "JUN5990-EMP",
-    normalizar_nome_pessoa("THAINA MORAIS DIAS"): "JUN5991-EMP",
-    normalizar_nome_pessoa("THAINA DE MORAIS DIAS"): "JUN5991-EMP",
-    normalizar_nome_pessoa("IVANA LAIS DE PAULA OLIVEIRA"): "JUN5992-EMP",
-    normalizar_nome_pessoa("SIDNEI DE MORAIS SOARES"): "SAL5500-EMP",
-    normalizar_nome_pessoa("RAFAEL DELFINO DA SILVA"): "SAL5504-EMP",
-    normalizar_nome_pessoa("ELIO CALDEIRA RIBEIRO JUNIOR"): "JUN5929",
-    normalizar_nome_pessoa("EVANDRO GOMES ANASTACIO"): "SAL5506-EMP",
-    normalizar_nome_pessoa("RONALDO CESAR JACINTO FRANCISCO"): "JUN5995-EMP",
-    normalizar_nome_pessoa("ANDERSON ALEXANDRE NORONHA CAMARGO"): "SAL5508-EMP",
-    normalizar_nome_pessoa("HENRIQUE SOTTO MARTINS"): "SAL5509-EMP",
-    normalizar_nome_pessoa("BRUNO LEONARDO CAETANO DE OLIVEIRA"): "JUN5925",
-    normalizar_nome_pessoa("JOSE DANILO DA SILVA SANTOS"): "JUN5927",
-    normalizar_nome_pessoa("ELSON ALESSANDRO RODRIGUES"): "SAL5515-EMP",
-    normalizar_nome_pessoa("RENE DA SILVA PEREIRA"): "SAL5520-EMP",
-    normalizar_nome_pessoa("CLEITON MEDRADO SILVA"): "SAL5521-EMP",
-    normalizar_nome_pessoa("LUCAS CHAGAS"): "JUN5970-EMP",
-    normalizar_nome_pessoa("JARBAS PEREIRA DOS SANTOS"): "JUN5978-EMP",
-    normalizar_nome_pessoa("LEANDRO DOS SANTOS"): "JUN5980-EMP",
-    normalizar_nome_pessoa("ADRIANO ROSA DA SILVA"): "JUN5971-EMP",
-    normalizar_nome_pessoa("TIAGO CALANDRINI DE OLIVEIRA"): "JUN5979-EMP",
-
-
-    # Santa Cruz - DE/PARA por número da equipe. O app resolve automaticamente
-    # o prefixo correto da base (ex.: 8913 -> MOC8913-EMP).
-    normalizar_nome_pessoa("ELDER FABIANO DOS SANTOS"): "8901",
-    normalizar_nome_pessoa("REGINALDO APARECIDO RODRIGUES"): "8903",
-    normalizar_nome_pessoa("JORGE HUGO DE SOUZA"): "8904",
-    normalizar_nome_pessoa("ITN8905"): "8905",
-    normalizar_nome_pessoa("LUCAS ALVES CARRIEL"): "8906",
-    normalizar_nome_pessoa("LEANDRO APARECIDO"): "8907",
-    normalizar_nome_pessoa("PAMELA SALLES AFONSO"): "8933",
-    normalizar_nome_pessoa("RAUL VINICIUS BUZZO BARBOSA"): "8902",
-    normalizar_nome_pessoa("RAUL VINICIUS BUZZO BARBOSA."): "8902",
-    normalizar_nome_pessoa("FERNANDO HERNANDES JESUINO"): "8913",
-    normalizar_nome_pessoa("CRISTIAN KAUAN SILVA DE ALMEIDA"): "8909",
-    normalizar_nome_pessoa("YURI DA COSTA PAULA"): "2002",
-    normalizar_nome_pessoa("ANTONIO CESAR"): "8910",
-    normalizar_nome_pessoa("LUIS GUSTAVO SALES ALVES"): "8911",
-    normalizar_nome_pessoa("WAGNER BALDUINO DA ROCHA"): "8914",
-    normalizar_nome_pessoa("PAULO HENRIQUE DA SILVA"): "8999",
-    normalizar_nome_pessoa("JOAO VINICIUS DA SILVA"): "8916",
-    normalizar_nome_pessoa("THIAGO CARLOS DA SILVA DE MELLO"): "8932",
-    normalizar_nome_pessoa("HENRY DE ALMEIDA"): "8922",
-    normalizar_nome_pessoa("HENRY ALESSANDRO ANTUNES DE ALMEIDA"): "ITN8922-EMP",
-    normalizar_nome_pessoa("JOAO VICTOR OLIVEIRA SABOROSA"): "ITN8905-EMP",
-    normalizar_nome_pessoa("JOÃO VICTOR OLIVEIRA SABOROSA"): "ITN8905-EMP",
-    normalizar_nome_pessoa("PAMELLA SALLES AFONSO"): "ITN8933-EMP",
-    normalizar_nome_pessoa("PAMELLA SALLES AFONSO ITN8933"): "ITN8933-EMP",
-    normalizar_nome_pessoa("JOAO VINICIUS DOMINGOS QUILICE DA SILVA"): "SJD8916-EMP",
-    normalizar_nome_pessoa("JOÃO VINICIUS DOMINGOS QUILICE DA SILVA"): "SJD8916-EMP",
-    normalizar_nome_pessoa("LUCAS CAMARGO"): "8921",
-}
-
-
-# Carro STC estimado - só conta quando a dupla completa bate.
-# O valor mapeado é só o número; o app transforma em JUN58xx-EMP.
-DEPARA_DUPLA_CARRO_EXPRESS = {
-    frozenset([normalizar_nome_pessoa("ANDERSON GOMES DA SILVA"), normalizar_nome_pessoa("IGOR TORRES BEZERRA")]): "5808",
-    frozenset([normalizar_nome_pessoa("EDUARDO DOS SANTOS"), normalizar_nome_pessoa("CARLOS LEANDRO LOPES DE SOUZA")]): "5812",
-    frozenset([normalizar_nome_pessoa("JULIANO CESAR DOS SANTOS"), normalizar_nome_pessoa("JOAO PAULO ROMANHA DOS SANTOS")]): "5803",
-    frozenset([normalizar_nome_pessoa("ALEXANDRE LUIZ SANTANA PRAJELAS"), normalizar_nome_pessoa("FELIPE HENRIQUE DE SOUZA FERREIRA")]): "5802",
-    frozenset([normalizar_nome_pessoa("LUIS FELIPE SA DOS SANTOS"), normalizar_nome_pessoa("WESLEY APARECIDO DE SA SOUZA")]): "5817",
-    frozenset([normalizar_nome_pessoa("LUCIANO HENRIQUE DE SOUZA"), normalizar_nome_pessoa("ORLANDO MANOEL DE SOUZA JANSEN")]): "5814",
-    frozenset([normalizar_nome_pessoa("ANDERSON PEREIRA SANTOS"), normalizar_nome_pessoa("DIOLENO CONCEICAO NOGUEIRA")]): "5801",
-    frozenset([normalizar_nome_pessoa("ANDERSON SILVA LEONARDO"), normalizar_nome_pessoa("JEFERSON E SILVA GOMES")]): "5820",
-    frozenset([normalizar_nome_pessoa("LUCAS EDUARDO LOPES DE SOUZA"), normalizar_nome_pessoa("JHONATAN MATHEUS LOPES DE SOUZA")]): "5810",
-    frozenset([normalizar_nome_pessoa("ADILSON APARECIDO VASCO"), normalizar_nome_pessoa("RILDO AUGUSTO DOS SANTOS")]): "5806",
-    frozenset([normalizar_nome_pessoa("MARISTON OLIVEIRA NASCIMENTO"), normalizar_nome_pessoa("VALDECI SARDELA")]): "5807",
-}
-
-
-def recurso_carro_por_dupla(nome_1_norm, nome_2_norm):
-    """Retorna o recurso do Carro quando os DOIS nomes da dupla batem."""
-    nome_1_norm = str(nome_1_norm).strip()
-    nome_2_norm = str(nome_2_norm).strip()
-    if not nome_1_norm or not nome_2_norm:
-        return ""
-    return DEPARA_DUPLA_CARRO_EXPRESS.get(frozenset([nome_1_norm, nome_2_norm]), "")
-
-
-def contrato_por_recurso_express(recurso):
-    recurso = str(recurso).strip().upper()
-    if eh_disjuntor_jundiai(recurso):
-        return "Disjuntor Jundiaí"
-    if eh_disjuntor_santa_cruz(recurso):
-        return "Disjuntor Santa Cruz"
-    if recurso.startswith("JUN58"):
-        return "STC Jundiai"
-    return ""
-
-
-def codigo_numerico_recurso(valor):
-    """Extrai o código numérico de um recurso/equipe, ex.: MOC8913-EMP -> 8913."""
-    import re
-    texto = str(valor).strip().upper()
-    m = re.search(r"(\d+)", texto)
-    return m.group(1) if m else ""
-
-
-@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
-def mapa_codigo_para_recurso_real(notas):
-    """
-    Monta um mapa código numérico -> RECURSO real encontrado na base.
-    Isso permite cadastrar Santa Cruz só como 8913 e converter para MOC8913-EMP,
-    ITN8922-EMP etc., conforme aparece no ranking.
-    """
-    parcial = preparar_parcial_do_dia(notas, incluir_recusas=True)
-    if parcial.empty or "RECURSO" not in parcial.columns:
-        return {}
-
-    tmp = parcial[["RECURSO"]].copy()
-    tmp["RECURSO"] = tmp["RECURSO"].fillna("").astype(str).str.strip().str.upper()
-    tmp = tmp[tmp["RECURSO"] != ""].copy()
-    if tmp.empty:
-        return {}
-
-    tmp["CODIGO_RECURSO"] = tmp["RECURSO"].apply(codigo_numerico_recurso)
-    tmp = tmp[tmp["CODIGO_RECURSO"] != ""].copy()
-    if tmp.empty:
-        return {}
-
-    contagem = (
-        tmp.groupby(["CODIGO_RECURSO", "RECURSO"])
-        .size()
-        .reset_index(name="QTD")
-        .sort_values(["CODIGO_RECURSO", "QTD"], ascending=[True, False])
-    )
-    contagem = contagem.drop_duplicates(subset=["CODIGO_RECURSO"], keep="first")
-    return dict(zip(contagem["CODIGO_RECURSO"], contagem["RECURSO"]))
-
-
-def resolver_recurso_depara(valor, mapa_codigo_recurso):
-    """
-    Resolve o valor do DE/PARA para o recurso real do ranking.
-    - Se vier completo (SAL5508-EMP), mantém.
-    - Se vier só número (8913), busca na base e vira MOC8913-EMP/ITN8913-EMP etc.
-    """
-    recurso = str(valor).strip().upper()
-    if recurso == "" or recurso in ["NAN", "NONE"]:
-        return ""
-    if recurso.isdigit():
-        # Santa Cruz normalmente é resolvido pelo mapa da base (MOC/ITN/etc.).
-        # Para Carro, se a base não tiver o recurso no mapa, força o padrão JUN58xx-EMP.
-        if recurso.startswith("58"):
-            return mapa_codigo_recurso.get(recurso, f"JUN{recurso}-EMP")
-        return mapa_codigo_recurso.get(recurso, recurso)
-    return recurso
-
-
-def caminho_pagamento_express():
-    """
-    Procura a planilha manual de Pagamento Express.
-
-    Aceita nomes como:
-    - pagamento_express.xlsx
-    - pagamento_express.xlsx.xlsx
-    - pagamento_express.csv
-    - express.xlsx
-    - express.csv
-    """
-    nomes = [
-        "pagamento_express.xlsx",
-        "pagamento_express.xlsx.xlsx",
-        "pagamento_express.csv",
-        "express.xlsx",
-        "express.csv",
-    ]
-
-    for nome in nomes:
-        for pasta in [PASTA_DASHBOARD, PASTA_ATUAL]:
-            caminho = pasta / nome
-            if caminho.exists():
-                return caminho
-
-    for pasta in [PASTA_DASHBOARD, PASTA_ATUAL]:
-        achados = (
-            list(pasta.glob("pagamento_express*.xlsx"))
-            + list(pasta.glob("pagamento_express*.csv"))
-            + list(pasta.glob("express*.xlsx"))
-            + list(pasta.glob("express*.csv"))
-        )
-        if achados:
-            return achados[0]
-
-    return None
-
-
-def ler_pagamento_express(caminho):
-    """
-    Lê a planilha manual do Pagamento Express.
-
-    Versão robusta:
-    - não depende de acento no nome das colunas;
-    - aplica filtro de VALIDAÇÃO de forma não destrutiva;
-    - se o filtro de validação zerar o arquivo, mantém as linhas e mostra auditoria;
-    - lê DT_REFERENCIA mesmo quando a coluna vem como data real do Excel;
-    - usa NOME_EXECUTOR_01/02 para o DE/PARA Nome -> Recurso.
-    """
-    if not caminho:
-        return pd.DataFrame()
-
-    caminho = str(caminho)
-
-    try:
-        if caminho.lower().endswith(".xlsx"):
-            df_original = pd.read_excel(caminho, engine="openpyxl")
-        else:
-            try:
-                df_original = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
-            except Exception:
-                df_original = pd.read_csv(caminho, sep=",", encoding="utf-8-sig")
-    except Exception as e:
-        df_erro = pd.DataFrame()
-        df_erro.attrs["ERRO_LEITURA_EXPRESS"] = str(e)
-        return df_erro
-
-    if df_original.empty:
-        return pd.DataFrame()
-
-    df = df_original.copy()
-    df.columns = [str(c).strip().upper() for c in df.columns]
-
-    # Mapa de colunas normalizadas, tolerando acento/espaço.
-    colunas_norm = {normalizar_nome_pessoa(c): c for c in df.columns}
-
-    def achar_coluna(*nomes):
-        for nome in nomes:
-            chave = normalizar_nome_pessoa(nome)
-            if chave in colunas_norm:
-                return colunas_norm[chave]
-        return None
-
-    # Filtro de validação NÃO destrutivo.
-    # Seu arquivo já é um arquivo de pagamento express; o filtro só é usado se encontrar linhas.
-    col_validacao = achar_coluna("VALIDAÇÃO", "VALIDACAO")
-    linhas_brutas = len(df)
-    linhas_pos_validacao = None
-    if col_validacao:
-        validacao_txt = df[col_validacao].fillna("").astype(str).apply(normalizar_nome_pessoa)
-        mascara_express = validacao_txt.str.contains("PAGAMENTO", na=False) & validacao_txt.str.contains("EXPRESS", na=False)
-        linhas_pos_validacao = int(mascara_express.sum())
-        if linhas_pos_validacao > 0:
-            df = df[mascara_express].copy()
-        else:
-            # Se o filtro não encontrou nada, não zera o arquivo.
-            df = df.copy()
-
-    df.attrs["EXPRESS_LINHAS_BRUTAS"] = linhas_brutas
-    df.attrs["EXPRESS_LINHAS_POS_VALIDACAO"] = linhas_pos_validacao
-
-    # NOTA/OS fica disponível para auditoria, mas a contabilização usa o nome.
-    col_nota = achar_coluna("NOTA", "ORDEM_DE_SERVICO", "ORDEM DE SERVICO", "OS")
-    if col_nota:
-        df["NOTA_NORM"] = df[col_nota].apply(normalizar_ordem_servico)
-    else:
-        df["NOTA_NORM"] = ""
-
-    # Nome principal da pessoa no arquivo Express.
-    col_nome_1 = achar_coluna("NOME_EXECUTOR_01", "NOME EXECUTOR 01", "NOME_EXECUTOR", "NOME EXECUTOR")
-    col_nome_2 = achar_coluna("NOME_EXECUTOR_02", "NOME EXECUTOR 02")
-    col_executor = achar_coluna("EXECUTOR")
-
-    if col_nome_1:
-        df["NOME_EXPRESS"] = df[col_nome_1].fillna("").astype(str).str.strip()
-    elif col_executor:
-        df["NOME_EXPRESS"] = df[col_executor].fillna("").astype(str).str.strip()
-    else:
-        df["NOME_EXPRESS"] = ""
-
-    # Mantém o segundo nome separado para o contrato Carro.
-    # Importante: não misturar NOME_EXECUTOR_02 dentro do NOME_EXPRESS principal,
-    # porque Jundiaí/Santa Cruz continuam usando o nome 01 individualmente.
-    if col_nome_2:
-        df["NOME_EXPRESS_02"] = df[col_nome_2].fillna("").astype(str).str.strip()
-    else:
-        df["NOME_EXPRESS_02"] = ""
-
-    # Se o nome 01 vier vazio, aí sim usa o nome 02 como fallback para não perder
-    # linhas antigas que tinham só uma coluna de executor.
-    if col_nome_2:
-        mascara_vazia = df["NOME_EXPRESS"].eq("") | df["NOME_EXPRESS"].str.upper().eq("NAN")
-        df.loc[mascara_vazia, "NOME_EXPRESS"] = (
-            df.loc[mascara_vazia, col_nome_2].fillna("").astype(str).str.strip()
-        )
-
-    df["NOME_EXPRESS"] = df["NOME_EXPRESS"].replace({"nan": "", "NaN": "", "None": ""})
-    df["NOME_EXPRESS_02"] = df["NOME_EXPRESS_02"].replace({"nan": "", "NaN": "", "None": ""})
-    df["NOME_EXPRESS_NORM"] = df["NOME_EXPRESS"].apply(normalizar_nome_pessoa)
-    df["NOME_EXPRESS_02_NORM"] = df["NOME_EXPRESS_02"].apply(normalizar_nome_pessoa)
-    df = df[(df["NOME_EXPRESS_NORM"] != "") | (df["NOME_EXPRESS_02_NORM"] != "")].copy()
-
-    # Data de referência do Express.
-    col_data = achar_coluna(
-        "DT_REFERENCIA", "DT REFERENCIA", "DT_REFERÊNCIA", "DT REFERÊNCIA",
-        "DATA_REFERENCIA", "DATA REFERENCIA", "DATA_REFERÊNCIA", "DATA REFERÊNCIA", "DATA"
-    )
-
-    if col_data is None:
-        for col in df.columns:
-            col_norm = normalizar_nome_pessoa(col)
-            if ("REFERENCIA" in col_norm or "REF" in col_norm) and ("DATA" in col_norm or "DT" in col_norm):
-                col_data = col
-                break
-
-    if col_data is not None:
-        serie_data = df[col_data]
-        df["DATA_EXPRESS_DT"] = pd.to_datetime(serie_data, dayfirst=True, errors="coerce")
-
-        # Fallback para datas numéricas do Excel.
-        if df["DATA_EXPRESS_DT"].isna().all():
-            serie_num = pd.to_numeric(serie_data, errors="coerce")
-            df["DATA_EXPRESS_DT"] = pd.to_datetime(serie_num, unit="D", origin="1899-12-30", errors="coerce")
-    else:
-        df["DATA_EXPRESS_DT"] = pd.NaT
-
-    df.attrs["EXPRESS_COLUNAS"] = list(df_original.columns)
-    df.attrs["EXPRESS_COL_VALIDACAO"] = col_validacao or ""
-    df.attrs["EXPRESS_COL_DATA"] = col_data or ""
-    df.attrs["EXPRESS_COL_NOME_1"] = col_nome_1 or ""
-
-    return df
-
-
-
-@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
-def mapa_executor_recurso(notas):
-    """
-    Cria o de/para EXECUTOR -> RECURSO/CONTRATO usando a própria base de notas.
-    Considera que cada executor é único e pertence a um único recurso.
-    """
-    parcial = preparar_parcial_do_dia(notas, incluir_recusas=True)
-
-    if parcial.empty:
-        return pd.DataFrame(columns=["EXECUTOR_NORM", "RECURSO", "CONTRATO"])
-
-    linhas = []
-
-    for col in ["ELETRICISTA1", "ELETRICISTA2"]:
-        if col in parcial.columns:
-            tmp = parcial[[col, "RECURSO", "CONTRATO"]].copy()
-            tmp = tmp.rename(columns={col: "EXECUTOR"})
-            tmp["EXECUTOR_NORM"] = tmp["EXECUTOR"].apply(normalizar_executor)
-            tmp = tmp[tmp["EXECUTOR_NORM"] != ""].copy()
-            linhas.append(tmp[["EXECUTOR_NORM", "RECURSO", "CONTRATO"]])
-
-    if not linhas:
-        return pd.DataFrame(columns=["EXECUTOR_NORM", "RECURSO", "CONTRATO"])
-
-    mapa = pd.concat(linhas, ignore_index=True).drop_duplicates(subset=["EXECUTOR_NORM"])
-    mapa["RECURSO"] = mapa["RECURSO"].fillna("").astype(str).str.strip().str.upper()
-    mapa["CONTRATO"] = mapa["CONTRATO"].fillna("").astype(str).str.strip()
+        const headers = [];
+        for (const tr of headerRows) {
+            const cells = [...tr.children].filter(visivel);
+            cells.forEach((cell, idx) => {
+                const txt = limpar(cell.innerText || cell.textContent);
+                if (txt) headers.push({idx: idx, text: txt});
+            });
+        }
+
+        return {ok:true, headers};
+    """)
+
+    if not dados.get("ok"):
+        raise Exception(dados.get("erro", "Falha ao mapear cabeçalhos."))
+
+    mapa = {}
+    for h in dados.get("headers", []):
+        nome = normalizar_header_grade(h.get("text", ""))
+        if nome in COLUNAS_TAREFA_DESEJADAS and nome not in mapa:
+            mapa[nome] = int(h.get("idx", 0))
 
     return mapa
 
 
-def valor_express_por_contrato(contrato):
-    """
-    Express faturado como religue para equipes de disjuntor.
-    Carro é diferente; por enquanto fica zerado no faturamento express.
-    """
-    contrato = str(contrato)
-    if contrato == "Disjuntor Jundiaí":
-        return 27.43
-    if contrato == "Disjuntor Santa Cruz":
-        return 23.97
-    if contrato == "STC Jundiai":
-        return 38.18
-    return 0.0
-
-
-def calcular_express_mensal(notas, mes):
-    """
-    Calcula Pagamento Express por RECURSO para o mês escolhido.
-
-    Regra definitiva: usa o DE/PARA manual Nome -> Recurso.
-    Isso evita depender de executor, recurso vindo no Excel ou casamento por OS
-    quando a nota não bate exatamente com a base atual.
-    """
-    caminho = caminho_pagamento_express()
-
-    if not caminho:
-        return pd.DataFrame(), "", pd.DataFrame(), ""
-
-    express = ler_pagamento_express(str(caminho))
-    if express.empty:
-        return pd.DataFrame(), "", pd.DataFrame(), str(caminho)
-
-    data_max_txt = ""
-    if "DATA_EXPRESS_DT" in express.columns and express["DATA_EXPRESS_DT"].notna().any():
-        express["MES_EXPRESS"] = express["DATA_EXPRESS_DT"].dt.strftime("%m/%Y")
-        express = express[express["MES_EXPRESS"] == mes].copy()
-        data_max = express["DATA_EXPRESS_DT"].max()
-        data_max_txt = data_max.strftime("%d/%m/%Y") if pd.notna(data_max) else ""
-
-    # Se a planilha não tiver data válida, não joga tudo fora: deixa a auditoria mostrar
-    # o que foi lido. Para este arquivo específico, DT_REFERENCIA deve filtrar 03/2026.
-    if express.empty:
-        return pd.DataFrame(), data_max_txt, pd.DataFrame(), str(caminho)
-
-    mapa_codigo_recurso = mapa_codigo_para_recurso_real(notas)
-
-    # Jundiaí/Santa Cruz: mantêm exatamente a lógica que já funcionava, por nome individual.
-    express["RECURSO_DEPARA"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS).fillna("")
-
-    # Carro: regra adicional, sem interferir nos outros contratos.
-    # Só conta se houver NOME_EXECUTOR_01 e NOME_EXECUTOR_02 e a dupla completa bater.
-    if "NOME_EXPRESS_02_NORM" not in express.columns:
-        express["NOME_EXPRESS_02_NORM"] = ""
-
-    express["RECURSO_CARRO"] = express.apply(
-        lambda r: recurso_carro_por_dupla(
-            r.get("NOME_EXPRESS_NORM", ""),
-            r.get("NOME_EXPRESS_02_NORM", ""),
-        ),
-        axis=1,
-    )
-
-    # O Carro tem prioridade apenas quando a dupla bate; caso contrário, permanece o DE/PARA antigo.
-    mascara_carro = express["RECURSO_CARRO"].fillna("").astype(str).str.strip() != ""
-    express.loc[mascara_carro, "RECURSO_DEPARA"] = express.loc[mascara_carro, "RECURSO_CARRO"]
-
-    express["RECURSO"] = express["RECURSO_DEPARA"].apply(lambda v: resolver_recurso_depara(v, mapa_codigo_recurso))
-    express["RECURSO"] = express["RECURSO"].fillna("").astype(str).str.strip().str.upper()
-    express["CONTRATO"] = express["RECURSO"].apply(contrato_por_recurso_express)
-
-    sem_vinculo = express[(express["RECURSO"] == "") | (express["CONTRATO"] == "")].copy()
-    express_ok = express[(express["RECURSO"] != "") & (express["CONTRATO"] != "")].copy()
-
-    if express_ok.empty:
-        return pd.DataFrame(), data_max_txt, sem_vinculo, str(caminho)
-
-    resumo = (
-        express_ok.groupby(["RECURSO", "CONTRATO"], dropna=False)
-        .size()
-        .reset_index(name="EXPRESS")
-    )
-
-    resumo["EXPRESS"] = pd.to_numeric(resumo["EXPRESS"], errors="coerce").fillna(0).astype(int)
-    resumo["FATURAMENTO_EXPRESS"] = resumo.apply(
-        lambda r: r["EXPRESS"] * valor_express_por_contrato(r.get("CONTRATO", "")),
-        axis=1,
-    )
-
-    return resumo, data_max_txt, sem_vinculo, str(caminho)
-
-
-def resumo_express_periodo(notas, meses, contrato_escolhido="Todos"):
-    """
-    Resume o Pagamento Express por contrato para um ou mais meses.
-
-    O Express usa a coluna DT_REFERENCIA da planilha para cair no mês certo
-    e o DE/PARA Nome -> Recurso para descobrir o contrato.
-    """
-    if not meses:
-        return pd.DataFrame(columns=["CONTRATO", "EXPRESS", "FATURAMENTO_EXPRESS"])
-
-    partes = []
-    for mes in meses:
-        express_resumo, _, _, _ = calcular_express_mensal(notas, mes)
-        if express_resumo.empty:
-            continue
-        tmp = express_resumo.copy()
-        if contrato_escolhido != "Todos" and "CONTRATO" in tmp.columns:
-            tmp = tmp[tmp["CONTRATO"] == contrato_escolhido].copy()
-        if not tmp.empty:
-            partes.append(tmp)
-
-    if not partes:
-        return pd.DataFrame(columns=["CONTRATO", "EXPRESS", "FATURAMENTO_EXPRESS"])
-
-    express = pd.concat(partes, ignore_index=True)
-    resumo = (
-        express.groupby("CONTRATO", dropna=False)
-        .agg(
-            EXPRESS=("EXPRESS", "sum"),
-            FATURAMENTO_EXPRESS=("FATURAMENTO_EXPRESS", "sum"),
-        )
-        .reset_index()
-    )
-    resumo["EXPRESS"] = pd.to_numeric(resumo["EXPRESS"], errors="coerce").fillna(0).astype(int)
-    resumo["FATURAMENTO_EXPRESS"] = pd.to_numeric(resumo["FATURAMENTO_EXPRESS"], errors="coerce").fillna(0.0)
-    return resumo
-
-
-def aplicar_express_no_resumo_contrato(resumo_contrato, notas, meses, contrato_escolhido="Todos"):
-    """Soma Express ao resumo financeiro mensal/por período."""
-    resumo = resumo_contrato.copy()
-
-    if "EXPRESS" not in resumo.columns:
-        resumo["EXPRESS"] = 0
-    if "FATURAMENTO_EXPRESS" not in resumo.columns:
-        resumo["FATURAMENTO_EXPRESS"] = 0.0
-
-    express = resumo_express_periodo(notas, meses, contrato_escolhido)
-    if express.empty:
-        return resumo
-
-    resumo = resumo.merge(express, on="CONTRATO", how="outer", suffixes=("", "_NOVO"))
-
-    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES"]:
-        if col not in resumo.columns:
-            resumo[col] = 0
-        resumo[col] = pd.to_numeric(resumo[col], errors="coerce").fillna(0).astype(int)
-
-    for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
-        if col not in resumo.columns:
-            resumo[col] = 0.0
-        resumo[col] = pd.to_numeric(resumo[col], errors="coerce").fillna(0.0)
-
-    resumo["EXPRESS"] = pd.to_numeric(resumo.get("EXPRESS", 0), errors="coerce").fillna(0).astype(int)
-    resumo["EXPRESS_NOVO"] = pd.to_numeric(resumo.get("EXPRESS_NOVO", 0), errors="coerce").fillna(0).astype(int)
-    resumo["FATURAMENTO_EXPRESS"] = pd.to_numeric(resumo.get("FATURAMENTO_EXPRESS", 0), errors="coerce").fillna(0.0)
-    resumo["FATURAMENTO_EXPRESS_NOVO"] = pd.to_numeric(resumo.get("FATURAMENTO_EXPRESS_NOVO", 0), errors="coerce").fillna(0.0)
-
-    resumo["EXPRESS"] = resumo["EXPRESS"] + resumo["EXPRESS_NOVO"]
-    resumo["FATURAMENTO_EXPRESS"] = resumo["FATURAMENTO_EXPRESS"] + resumo["FATURAMENTO_EXPRESS_NOVO"]
-
-    # Express entra no total de notas e no faturamento mensal do contrato.
-    resumo["TOTAL_NOTAS"] = resumo["TOTAL_NOTAS"] + resumo["EXPRESS"]
-    resumo["FATURAMENTO"] = resumo["FATURAMENTO"] + resumo["FATURAMENTO_EXPRESS"]
-    resumo["FATURAMENTO_MIN"] = resumo["FATURAMENTO_MIN"] + resumo["FATURAMENTO_EXPRESS"]
-    resumo["FATURAMENTO_MAX"] = resumo["FATURAMENTO_MAX"] + resumo["FATURAMENTO_EXPRESS"]
-
-    resumo = resumo.drop(columns=[c for c in ["EXPRESS_NOVO", "FATURAMENTO_EXPRESS_NOVO"] if c in resumo.columns])
-
-    if "CONTRATO" in resumo.columns:
-        resumo["CONTRATO"] = resumo["CONTRATO"].fillna(contrato_escolhido if contrato_escolhido != "Todos" else "")
-
-    return resumo
-
-
-def aplicar_express_no_ranking_mensal(ranking, notas, mes, contrato_ranking):
-    """
-    Soma Pagamento Express ao ranking mensal por RECURSO.
-
-    Express entra em:
-    - NOTAS;
-    - EXPRESS;
-    - FATURAMENTO_ATRIBUÍDO;
-    - FATURAMENTO_EQUIPE.
-    """
-    ranking = ranking.copy()
-    express_resumo, data_max_txt, sem_vinculo, caminho = calcular_express_mensal(notas, mes)
-
-    if "EXPRESS" not in ranking.columns:
-        ranking["EXPRESS"] = 0
-    if "FATURAMENTO_EXPRESS" not in ranking.columns:
-        ranking["FATURAMENTO_EXPRESS"] = 0.0
-
-    if express_resumo.empty:
-        total_express = 0
-        fat_express = 0.0
-        return ranking, express_resumo, data_max_txt, sem_vinculo, caminho, total_express, fat_express
-
-    if contrato_ranking != "Todos" and "CONTRATO" in express_resumo.columns:
-        express_resumo = express_resumo[express_resumo["CONTRATO"] == contrato_ranking].copy()
-
-    if express_resumo.empty:
-        total_express = 0
-        fat_express = 0.0
-        return ranking, express_resumo, data_max_txt, sem_vinculo, caminho, total_express, fat_express
-
-    total_express = int(express_resumo["EXPRESS"].sum())
-    fat_express = float(express_resumo["FATURAMENTO_EXPRESS"].sum())
-
-    ranking = ranking.merge(
-        express_resumo[["RECURSO", "EXPRESS", "FATURAMENTO_EXPRESS"]],
-        on="RECURSO",
-        how="outer",
-        suffixes=("", "_NOVO"),
-    )
-
-    for col in ["NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS", "QTD_EQUIPES"]:
-        if col not in ranking.columns:
-            ranking[col] = 0
-        ranking[col] = pd.to_numeric(ranking[col], errors="coerce").fillna(0)
-
-    for col in [
-        "FATURAMENTO_ATRIBUÍDO", "FATURAMENTO_MIN_ATRIBUÍDO",
-        "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE"
-    ]:
-        if col not in ranking.columns:
-            ranking[col] = 0.0
-        ranking[col] = pd.to_numeric(ranking[col], errors="coerce").fillna(0.0)
-
-    ranking["EXPRESS"] = pd.to_numeric(ranking.get("EXPRESS", 0), errors="coerce").fillna(0)
-    ranking["EXPRESS_NOVO"] = pd.to_numeric(ranking.get("EXPRESS_NOVO", 0), errors="coerce").fillna(0)
-    ranking["FATURAMENTO_EXPRESS"] = pd.to_numeric(ranking.get("FATURAMENTO_EXPRESS", 0), errors="coerce").fillna(0.0)
-    ranking["FATURAMENTO_EXPRESS_NOVO"] = pd.to_numeric(ranking.get("FATURAMENTO_EXPRESS_NOVO", 0), errors="coerce").fillna(0.0)
-
-    ranking["EXPRESS"] = (ranking["EXPRESS"] + ranking["EXPRESS_NOVO"]).astype(int)
-    ranking["FATURAMENTO_EXPRESS"] = ranking["FATURAMENTO_EXPRESS"] + ranking["FATURAMENTO_EXPRESS_NOVO"]
-
-    ranking["NOTAS"] = (ranking["NOTAS"] + ranking["EXPRESS"]).astype(int)
-    ranking["FATURAMENTO_ATRIBUÍDO"] = ranking["FATURAMENTO_ATRIBUÍDO"] + ranking["FATURAMENTO_EXPRESS"]
-    ranking["FATURAMENTO_EQUIPE"] = ranking["FATURAMENTO_EQUIPE"] + ranking["FATURAMENTO_EXPRESS"]
-
-    ranking = ranking.drop(columns=[
-        c for c in ["EXPRESS_NOVO", "FATURAMENTO_EXPRESS_NOVO", "POSIÇÃO"]
-        if c in ranking.columns
-    ])
-
-    ranking["DIAS_ATIVOS"] = pd.to_numeric(ranking["DIAS_ATIVOS"], errors="coerce").fillna(0).astype(int)
-    ranking["MÉDIA_NOTAS_DIA"] = ranking.apply(
-        lambda r: (r["NOTAS"] / r["DIAS_ATIVOS"]) if r["DIAS_ATIVOS"] else 0,
-        axis=1,
-    )
-    ranking["TICKET_MÉDIO"] = ranking.apply(
-        lambda r: (r["FATURAMENTO_ATRIBUÍDO"] / r["NOTAS"]) if r["NOTAS"] else 0,
-        axis=1,
-    )
-
-    ranking = ranking.sort_values(["NOTAS", "FATURAMENTO_ATRIBUÍDO"], ascending=False).reset_index(drop=True)
-    ranking.insert(0, "POSIÇÃO", range(1, len(ranking) + 1))
-
-    return ranking, express_resumo, data_max_txt, sem_vinculo, caminho, total_express, fat_express
-
-
-def resumo_parcial_mais_recente(notas, contrato_escolhido="Todos"):
-    """
-    Calcula a produção da data mais recente da base.
-    Usa apenas notas feitas, sem recusas.
-    """
-    parcial = preparar_parcial_do_dia(notas)
-
-    resumo = {
-        "data": "",
-        "notas": 0,
-        "cortes": 0,
-        "religues": 0,
-        "por_contrato": {},
-    }
-
-    if parcial.empty:
-        return resumo
-
-    ultima_data_dt = parcial["DATA_DT"].max()
-    parcial_dia = parcial[parcial["DATA_DT"] == ultima_data_dt].copy()
-
-    resumo["data"] = ultima_data_dt.strftime("%d/%m/%Y")
-    resumo["notas"] = int(parcial_dia["ORDEM_DE_SERVICO"].nunique())
-    resumo["cortes"] = int(parcial_dia["EH_CORTE"].sum())
-    resumo["religues"] = int(parcial_dia["EH_RELIGUE"].sum())
-
-    for contrato, df_contrato in parcial_dia.groupby("CONTRATO", dropna=False):
-        contrato = str(contrato)
-        resumo["por_contrato"][contrato] = {
-            "notas": int(df_contrato["ORDEM_DE_SERVICO"].nunique()),
-            "cortes": int(df_contrato["EH_CORTE"].sum()),
-            "religues": int(df_contrato["EH_RELIGUE"].sum()),
-        }
-
-    return resumo
-
-
-def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
-    """
-    Mantém um snapshot local da última atualização do CSV.
-
-    Agora o comparativo principal é da produção do dia mais recente:
-    notas, cortes e religues desde a atualização anterior.
-    """
-    caminho_status = STATUS_SNAPSHOT_PATH
-    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
-    mtime_dt = arquivo_mtime_datetime(caminho_notas) if caminho_notas else None
-    mtime = mtime_dt.isoformat() if mtime_dt else ""
-
-    try:
-        tamanho_arquivo = Path(caminho_notas).stat().st_size if caminho_notas else 0
-    except Exception:
-        tamanho_arquivo = 0
-
-    arquivo_id = f"{mtime}|{tamanho_arquivo}"
-
-    contagens = contar_notas_por_contrato(notas)
-    total_atual = int(contagens.get("Todos", 0))
-
-    parcial_atual = resumo_parcial_mais_recente(notas, contrato_escolhido)
-
-    status_antigo = {}
-    snapshot_erro = ""
-    if caminho_status.exists():
-        try:
-            status_antigo = json.loads(caminho_status.read_text(encoding="utf-8"))
-        except Exception:
-            status_antigo = {}
-
-    arquivo_id_antigo = status_antigo.get("arquivo_id", "")
-    parcial_anterior = status_antigo.get("parcial_atual", {})
-    contagens_anteriores = status_antigo.get("contagens", {})
-
-    primeira_execucao = not bool(parcial_anterior)
-
-    if arquivo_id != arquivo_id_antigo:
-        if primeira_execucao:
-            delta_hoje = 0
-            delta_cortes = 0
-            delta_religues = 0
-            deltas_por_contrato = {
-                contrato: {"notas": 0, "cortes": 0, "religues": 0}
-                for contrato in parcial_atual.get("por_contrato", {}).keys()
-            }
-            delta_geral_base = 0
-        else:
-            # Se mudou a data, começa um novo baseline para o novo dia.
-            mesma_data = parcial_atual.get("data") == parcial_anterior.get("data")
-
-            if mesma_data:
-                delta_hoje = max(0, int(parcial_atual.get("notas", 0)) - int(parcial_anterior.get("notas", 0)))
-                delta_cortes = max(0, int(parcial_atual.get("cortes", 0)) - int(parcial_anterior.get("cortes", 0)))
-                delta_religues = max(0, int(parcial_atual.get("religues", 0)) - int(parcial_anterior.get("religues", 0)))
-            else:
-                delta_hoje = 0
-                delta_cortes = 0
-                delta_religues = 0
-
-            deltas_por_contrato = {}
-            parcial_ant_por_contrato = parcial_anterior.get("por_contrato", {}) if mesma_data else {}
-
-            for contrato, valores in parcial_atual.get("por_contrato", {}).items():
-                anterior = parcial_ant_por_contrato.get(contrato, {})
-                deltas_por_contrato[contrato] = {
-                    "notas": max(0, int(valores.get("notas", 0)) - int(anterior.get("notas", valores.get("notas", 0)))),
-                    "cortes": max(0, int(valores.get("cortes", 0)) - int(anterior.get("cortes", valores.get("cortes", 0)))),
-                    "religues": max(0, int(valores.get("religues", 0)) - int(anterior.get("religues", valores.get("religues", 0)))),
-                }
-
-            delta_geral_base = max(0, total_atual - int(contagens_anteriores.get("Todos", total_atual)))
-
-        status = {
-            "arquivo_id": arquivo_id,
-            "mtime": mtime,
-            "ultima_verificacao": agora.isoformat(),
-            "contagens": contagens,
-            "parcial_atual": parcial_atual,
-            "ultimo_delta_geral_base": int(delta_geral_base),
-            "ultimo_delta_hoje": int(delta_hoje),
-            "ultimo_delta_cortes": int(delta_cortes),
-            "ultimo_delta_religues": int(delta_religues),
-            "ultimo_delta_por_contrato": deltas_por_contrato,
-        }
-
-        try:
-            caminho_status.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as e:
-            snapshot_erro = str(e)
-    else:
-        delta_geral_base = int(status_antigo.get("ultimo_delta_geral_base", 0))
-        delta_hoje = int(status_antigo.get("ultimo_delta_hoje", 0))
-        delta_cortes = int(status_antigo.get("ultimo_delta_cortes", 0))
-        delta_religues = int(status_antigo.get("ultimo_delta_religues", 0))
-        deltas_por_contrato = status_antigo.get("ultimo_delta_por_contrato", {})
-
-    delta_contrato_info = deltas_por_contrato.get(contrato_escolhido, {"notas": 0, "cortes": 0, "religues": 0})
-    if contrato_escolhido == "Todos":
-        delta_contrato_info = {
-            "notas": int(delta_hoje),
-            "cortes": int(delta_cortes),
-            "religues": int(delta_religues),
-        }
-
+def mapa_colunas_fixo_pelo_print():
+    # Fallback baseado no layout visto no print depois da confirmação:
+    # 0 checkbox | 1 ícones | 2 TAREFA | 3 STATUS | 4 UNIDADE | 5 DESCRIÇÃO | ...
+    # Esse fallback é usado quando o cabeçalho fica fora da tabela/fora do scroll real e o Selenium
+    # não consegue ler os títulos, mas as células das linhas continuam vindo na ordem correta.
     return {
-        "ultima_atualizacao": mtime_dt,
-        "total_atual": total_atual,
-        "delta_geral_base": int(delta_geral_base),
-        "data_parcial": parcial_atual.get("data", ""),
-        "notas_hoje": int(parcial_atual.get("notas", 0)),
-        "cortes_hoje": int(parcial_atual.get("cortes", 0)),
-        "religues_hoje": int(parcial_atual.get("religues", 0)),
-        "delta_hoje": int(delta_hoje),
-        "delta_cortes": int(delta_cortes),
-        "delta_religues": int(delta_religues),
-        "delta_contrato": int(delta_contrato_info.get("notas", 0)),
-        "delta_contrato_cortes": int(delta_contrato_info.get("cortes", 0)),
-        "delta_contrato_religues": int(delta_contrato_info.get("religues", 0)),
-        "snapshot_caminho": str(caminho_status),
-        "snapshot_erro": snapshot_erro,
+        "TAREFA": 2,
+        "STATUS": 3,
+        "UNIDADE": 4,
+        "DESCRIÇÃO": 5,
+        "TIPO": 6,
+        "MUNICÍPIO": 7,
+        "DT PREVISTA": 8,
+        "DT LIMITE": 9,
+        "DT PLANEJA": 10,
+        "AGENTE COMERCIAL": 11,
+        "T. INSTALA": 12,
+        "T. VISITADA": 13,
+        "T. TELEMED": 14,
+        "T. DISTRIB": 15,
     }
 
 
-def mostrar_status_atualizacao(notas, contrato_escolhido):
-    caminho_notas = caminho_arquivo(ARQUIVOS["notas"])
-    status = atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido)
-
-    ultima = status.get("ultima_atualizacao")
-    ultima_txt = ultima.strftime("%d/%m/%Y %H:%M:%S") if ultima else "não identificado"
-
-    delta_hoje = status.get("delta_hoje", 0)
-    delta_cortes = status.get("delta_cortes", 0)
-    delta_religues = status.get("delta_religues", 0)
-
-    delta_hoje_txt = f"+{numero(delta_hoje)}" if delta_hoje >= 0 else numero(delta_hoje)
-    delta_cortes_txt = f"+{numero(delta_cortes)}" if delta_cortes >= 0 else numero(delta_cortes)
-    delta_religues_txt = f"+{numero(delta_religues)}" if delta_religues >= 0 else numero(delta_religues)
-
-    delta_contrato = status.get("delta_contrato", 0)
-    delta_contrato_cortes = status.get("delta_contrato_cortes", 0)
-    delta_contrato_religues = status.get("delta_contrato_religues", 0)
-
-    delta_contrato_txt = f"+{numero(delta_contrato)}" if delta_contrato >= 0 else numero(delta_contrato)
-    delta_contrato_cortes_txt = f"+{numero(delta_contrato_cortes)}" if delta_contrato_cortes >= 0 else numero(delta_contrato_cortes)
-    delta_contrato_religues_txt = f"+{numero(delta_contrato_religues)}" if delta_contrato_religues >= 0 else numero(delta_contrato_religues)
-
-    data_parcial = status.get("data_parcial", "")
-    texto_data = f" em {data_parcial}" if data_parcial else ""
-    snapshot_erro = status.get("snapshot_erro", "")
-    aviso_snapshot = f"<br><b>⚠️ Snapshot:</b> erro ao salvar comparativo ({snapshot_erro})" if snapshot_erro else ""
-
-    if contrato_escolhido == "Todos":
-        texto_contrato = "Todos os contratos"
-        detalhe = (
-            f"{delta_hoje_txt} notas na última atualização "
-            f"(Cortes: {delta_cortes_txt} • Religues: {delta_religues_txt})"
-        )
-    else:
-        texto_contrato = contrato_escolhido
-        detalhe = (
-            f"{delta_contrato_txt} notas na última atualização "
-            f"(Cortes: {delta_contrato_cortes_txt} • Religues: {delta_contrato_religues_txt})"
-        )
-
-    st.markdown(
-        f"""
-        <div class="status-card">
-            <b>🕒 Última atualização dos dados:</b> {ultima_txt}<br>
-            <b>📈 Parcial do dia{texto_data}:</b> {delta_hoje_txt} notas na última atualização
-            (Cortes: {delta_cortes_txt} • Religues: {delta_religues_txt})<br>
-            <b>📊 Total atual do dia:</b> {numero(status.get("notas_hoje", 0))} notas
-            (Cortes: {numero(status.get("cortes_hoje", 0))} • Religues: {numero(status.get("religues_hoje", 0))})<br>
-            <b>📦 Base geral:</b> {numero(status.get("total_atual", 0))} notas acumuladas<br>
-            <b>📌 {texto_contrato}:</b> {detalhe}{aviso_snapshot}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ==============================
-# CARREGAMENTO
-# ==============================
-
-
-
-
-
-# ==============================
-# VISÕES POR PERFIL
-# ==============================
-
-def filtrar_bases_para_supervisor_stc(bases):
-    """Mantém somente Carro/STC Jundiai e Disjuntor Santa Cruz para o perfil Supervisor STC."""
-    bases_filtradas = {k: v.copy() for k, v in bases.items()}
-    permitidos = set(CONTRATOS_SUPERVISOR_STC)
-
-    for chave in ["contratos", "dias", "carro", "carro_dias"]:
-        df = bases_filtradas.get(chave, pd.DataFrame())
-        if not df.empty and "CONTRATO" in df.columns:
-            bases_filtradas[chave] = df[df["CONTRATO"].isin(permitidos)].copy()
-
-    notas_df = bases_filtradas.get("notas", pd.DataFrame())
-    if not notas_df.empty:
-        try:
-            parcial = preparar_parcial_do_dia(notas_df, incluir_recusas=True)
-            if not parcial.empty and "CONTRATO" in parcial.columns and "ORDEM_DE_SERVICO" in parcial.columns:
-                ordens_permitidas = (
-                    parcial.loc[parcial["CONTRATO"].isin(permitidos), "ORDEM_DE_SERVICO"]
-                    .astype(str)
-                    .unique()
-                    .tolist()
-                )
-                if "ORDEM_DE_SERVICO" in notas_df.columns:
-                    notas_tmp = notas_df.copy()
-                    notas_tmp["ORDEM_DE_SERVICO"] = notas_tmp["ORDEM_DE_SERVICO"].astype(str)
-                    bases_filtradas["notas"] = notas_tmp[notas_tmp["ORDEM_DE_SERVICO"].isin(ordens_permitidas)].copy()
-        except Exception:
-            # Em caso de erro, evita liberar dados de Jundiaí por engano.
-            bases_filtradas["notas"] = notas_df.iloc[0:0].copy()
-
-    return bases_filtradas
-
-
-def _contrato_operacional_sidebar(prefixo_key="stc"):
-    opcoes = ["Todos"] + CONTRATOS_SUPERVISOR_STC
-    key = f"contrato_{prefixo_key}"
-    if key not in st.session_state or st.session_state[key] not in opcoes:
-        st.session_state[key] = "Todos"
-
-    st.sidebar.markdown("### Contratos permitidos")
-    for contrato in opcoes:
-        label = "📊 Todos STC/Santa Cruz" if contrato == "Todos" else f"🔹 {contrato}"
-        if st.sidebar.button(label, use_container_width=True, key=f"btn_{prefixo_key}_{contrato}"):
-            st.session_state[key] = contrato
-            st.rerun()
-    return st.session_state[key]
-
-
-def _remover_colunas_financeiras(df):
-    if df is None or df.empty:
-        return df
-    termos_bloqueados = ["FATURAMENTO", "TICKET", "VALOR", "MÍNIMO", "MAXIMO", "MÁXIMO", "MIN", "MAX"]
-    colunas = [c for c in df.columns if not any(t in str(c).upper() for t in termos_bloqueados)]
-    return df[colunas].copy()
-
-
-def mostrar_painel_supervisor_leitura():
-    st.title("📖 G.Z.U.S. — Supervisor Leitura")
-    st.caption("Acesso restrito ao contrato Leitura. Nenhuma tela financeira ou de corte está disponível neste perfil.")
-    st.sidebar.header("Supervisor Leitura")
-    st.sidebar.info("Contrato Leitura")
-    mostrar_base_leitura("Americana")
-    st.markdown("---")
-    mostrar_base_leitura("Piracicaba")
-
-
-def mostrar_painel_supervisor_stc(bases):
-    """Painel operacional STC/Santa Cruz sem qualquer métrica financeira."""
-    st.title("🤖 G.Z.U.S. — Supervisor STC")
-    st.caption("Visão operacional sem faturamento, ticket médio, valores ou downloads financeiros.")
-
-    notas_stc = bases.get("notas", pd.DataFrame())
-    if notas_stc.empty:
-        st.info("Nenhuma nota disponível para STC Jundiai ou Disjuntor Santa Cruz.")
-        return
-
-    st.sidebar.header("Filtros")
-    if st.sidebar.button("🔄 Atualizar dados", use_container_width=True, key="stc_atualizar"):
-        st.cache_data.clear()
-        st.rerun()
-
-    contrato_escolhido = _contrato_operacional_sidebar("supervisor_stc")
-
-    meses_base = meses_disponiveis_da_base(notas_stc)
-    meses_escolhidos = []
-    if not meses_base.empty:
-        opcoes_meses = meses_base["MES"].tolist()
-        mes_padrao = opcoes_meses[0]
-        meses_escolhidos = st.sidebar.multiselect(
-            "Meses do resumo",
-            opcoes_meses,
-            default=[mes_padrao],
-            key="stc_meses_resumo",
-        ) or [mes_padrao]
-
-    parcial_com_recusas = preparar_parcial_do_dia(notas_stc, incluir_recusas=True)
-    if contrato_escolhido != "Todos" and not parcial_com_recusas.empty:
-        parcial_com_recusas = parcial_com_recusas[parcial_com_recusas["CONTRATO"] == contrato_escolhido].copy()
-
-    abas = st.tabs(["Resumo operacional", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana", "Notas"])
-
-    with abas[0]:
-        st.subheader("Resumo operacional")
-        if parcial_com_recusas.empty:
-            st.info("Sem dados operacionais para o filtro selecionado.")
-        else:
-            df_periodo = parcial_com_recusas.copy()
-            if meses_escolhidos:
-                df_periodo["MES"] = df_periodo["DATA_DT"].dt.strftime("%m/%Y")
-                df_periodo = df_periodo[df_periodo["MES"].isin(meses_escolhidos)].copy()
-
-            pagaveis = df_periodo[pd.to_numeric(df_periodo.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy()
-            recusas = df_periodo[pd.to_numeric(df_periodo.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 1].copy()
-
-            total_notas = int(pagaveis["ORDEM_DE_SERVICO"].nunique()) if not pagaveis.empty else 0
-            total_cortes = int(pagaveis["EH_CORTE"].sum()) if not pagaveis.empty else 0
-            total_religues = int(pagaveis["EH_RELIGUE"].sum()) if not pagaveis.empty else 0
-            total_recusas = int(recusas["ORDEM_DE_SERVICO"].nunique()) if not recusas.empty else 0
-            recursos_ativos = int(pagaveis["RECURSO"].nunique()) if not pagaveis.empty else 0
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Notas feitas", numero(total_notas))
-            c2.metric("Cortes", numero(total_cortes))
-            c3.metric("Religues", numero(total_religues))
-            c4.metric("Recusas", numero(total_recusas))
-            st.metric("Recursos ativos", numero(recursos_ativos))
-
-            if not pagaveis.empty:
-                resumo_contrato = (
-                    pagaveis.groupby("CONTRATO", dropna=False)
-                    .agg(TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"), CORTES=("EH_CORTE", "sum"), RELIGUES=("EH_RELIGUE", "sum"), RECURSOS_ATIVOS=("RECURSO", "nunique"))
-                    .reset_index()
-                    .sort_values("TOTAL_NOTAS", ascending=False)
-                )
-                st.markdown("**Produção por contrato**")
-                st.dataframe(resumo_contrato, use_container_width=True, hide_index=True)
-                st.bar_chart(resumo_contrato, x="CONTRATO", y="TOTAL_NOTAS")
-
-    with abas[1]:
-        st.subheader("Parcial do dia")
-        if parcial_com_recusas.empty:
-            st.info("Sem dados para parcial do dia.")
-        else:
-            datas = parcial_com_recusas[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT", ascending=False)
-            data_escolhida = st.selectbox("Escolha o dia", datas["DATA"].tolist(), index=0, key="stc_data_parcial")
-            dia = parcial_com_recusas[parcial_com_recusas["DATA"] == data_escolhida].copy()
-            pagaveis = dia[pd.to_numeric(dia.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy()
-            recusas = dia[pd.to_numeric(dia.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 1].copy()
-
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Notas feitas", numero(pagaveis["ORDEM_DE_SERVICO"].nunique() if not pagaveis.empty else 0))
-            c2.metric("Cortes", numero(int(pagaveis["EH_CORTE"].sum()) if not pagaveis.empty else 0))
-            c3.metric("Religues", numero(int(pagaveis["EH_RELIGUE"].sum()) if not pagaveis.empty else 0))
-            c4.metric("Recusas", numero(recusas["ORDEM_DE_SERVICO"].nunique() if not recusas.empty else 0))
-            c5.metric("Recursos", numero(pagaveis["RECURSO"].nunique() if not pagaveis.empty else 0))
-
-            if not pagaveis.empty:
-                resumo = (
-                    pagaveis.groupby(["RECURSO", "CONTRATO"], dropna=False)
-                    .agg(TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"), CORTES=("EH_CORTE", "sum"), RELIGUES=("EH_RELIGUE", "sum"))
-                    .reset_index()
-                    .sort_values("TOTAL_NOTAS", ascending=False)
-                )
-                resumo.insert(0, "POSIÇÃO", range(1, len(resumo) + 1))
-                st.dataframe(resumo, use_container_width=True, hide_index=True)
-
-            if not recusas.empty:
-                st.markdown("**Recusas do dia por tipo**")
-                rec = (
-                    recusas.groupby(["RECURSO", "CONTRATO", "RECUSA"], dropna=False)
-                    .agg(QTD_RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
-                    .reset_index()
-                    .sort_values(["QTD_RECUSAS", "RECURSO"], ascending=[False, True])
-                )
-                st.dataframe(rec, use_container_width=True, hide_index=True)
-
-    with abas[2]:
-        st.subheader("Ranking de recursos")
-        base_exec = montar_base_executores(notas_stc)
-        if contrato_escolhido != "Todos" and not base_exec.empty:
-            base_exec = base_exec[base_exec["CONTRATO"] == contrato_escolhido].copy()
-
-        if base_exec.empty:
-            st.info("Sem base para ranking.")
-        else:
-            tipo_periodo = st.radio("Período", ["Mês", "Semana", "Dia"], horizontal=True, key="stc_tipo_rank")
-            dias_op, semanas_op, meses_op = opcoes_periodo_ranking(base_exec)
-            if tipo_periodo == "Dia":
-                valor_periodo = st.selectbox("Dia", dias_op, key="stc_rank_dia") if dias_op else None
-            elif tipo_periodo == "Semana":
-                valor_periodo = st.selectbox("Semana", semanas_op, key="stc_rank_semana") if semanas_op else None
-            else:
-                valor_periodo = st.selectbox("Mês", meses_op, key="stc_rank_mes") if meses_op else None
-
-            base_filtrada, ranking = ranking_recursos_cacheado(base_exec, "Todos", tipo_periodo, valor_periodo, "Notas")
-            # Supervisor STC não visualiza Pagamento Express.
-
-            colunas = ["POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "DIAS_ATIVOS", "MÉDIA_NOTAS_DIA"]
-            colunas = [c for c in colunas if c in ranking.columns]
-            st.dataframe(preparar_tabela_ranking(ranking[colunas]), use_container_width=True, hide_index=True)
-            if not ranking.empty:
-                graf = ranking.head(20)[["RECURSO", "NOTAS"]].copy()
-                st.bar_chart(graf, x="RECURSO", y="NOTAS")
-
-            recusas_tipo = calcular_recusas_por_tipo(base_filtrada)
-            if not recusas_tipo.empty:
-                st.markdown("**Total por tipo de recusa**")
-                total_tipo = recusas_tipo.groupby("RECUSA", dropna=False).agg(QTD_RECUSAS=("QTD_RECUSAS", "sum")).reset_index().sort_values("QTD_RECUSAS", ascending=False)
-                st.dataframe(preparar_tabela_ranking(total_tipo), use_container_width=True, hide_index=True)
-                st.markdown("**Detalhamento por equipe, contrato e tipo de recusa**")
-                st.dataframe(preparar_tabela_ranking(recusas_tipo), use_container_width=True, hide_index=True)
-
-    with abas[3]:
-        st.subheader("Comparativo mensal operacional")
-        if meses_base.empty:
-            st.info("Sem meses disponíveis.")
-        else:
-            opcoes_meses = meses_base["MES"].tolist()
-            mes_escolhido = st.selectbox("Escolha o mês", opcoes_meses, index=0, key="stc_comp_mes")
-            periodo_escolhido = meses_base.loc[meses_base["MES"] == mes_escolhido, "PERIODO"].iloc[0]
-            mes_anterior = (periodo_escolhido - 1).strftime("%m/%Y")
-            def resumo_operacional_mes(mes_ref):
-                df_mes = parcial_com_recusas.copy()
-                if not df_mes.empty:
-                    df_mes["MES"] = df_mes["DATA_DT"].dt.strftime("%m/%Y")
-                    df_mes = df_mes[df_mes["MES"] == mes_ref].copy()
-                pag = df_mes[pd.to_numeric(df_mes.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy() if not df_mes.empty else pd.DataFrame()
-                return {
-                    "TOTAL_NOTAS": int(pag["ORDEM_DE_SERVICO"].nunique()) if not pag.empty else 0,
-                    "CORTES": int(pag["EH_CORTE"].sum()) if not pag.empty else 0,
-                    "RELIGUES": int(pag["EH_RELIGUE"].sum()) if not pag.empty else 0,
-                }
-
-            atual = resumo_operacional_mes(mes_escolhido)
-            anterior = resumo_operacional_mes(mes_anterior)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Notas", numero(atual["TOTAL_NOTAS"]), variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"]))
-            c2.metric("Cortes", numero(atual["CORTES"]), variacao_percentual(atual["CORTES"], anterior["CORTES"]))
-            c3.metric("Religues", numero(atual["RELIGUES"]), variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"]))
-            tabela = pd.DataFrame([
-                {"Indicador": "Notas", mes_escolhido: numero(atual["TOTAL_NOTAS"]), mes_anterior: numero(anterior["TOTAL_NOTAS"]), "Variação": variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"])},
-                {"Indicador": "Cortes", mes_escolhido: numero(atual["CORTES"]), mes_anterior: numero(anterior["CORTES"]), "Variação": variacao_percentual(atual["CORTES"], anterior["CORTES"])},
-                {"Indicador": "Religues", mes_escolhido: numero(atual["RELIGUES"]), mes_anterior: numero(anterior["RELIGUES"]), "Variação": variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"])},
-            ])
-            st.dataframe(tabela, use_container_width=True, hide_index=True)
-
-    with abas[4]:
-        st.subheader("Produção por dia da semana")
-        df_dias = parcial_com_recusas.copy()
-        if df_dias.empty:
-            st.info("Sem dados.")
-        else:
-            df_dias = df_dias[pd.to_numeric(df_dias.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy()
-            tabela = (
-                df_dias.groupby(["CONTRATO", "SEMANA_INICIO", "DIA_SEMANA"], dropna=False)
-                .agg(NOTAS=("ORDEM_DE_SERVICO", "nunique"))
-                .reset_index()
-                .pivot_table(index=["CONTRATO", "SEMANA_INICIO"], columns="DIA_SEMANA", values="NOTAS", aggfunc="sum", fill_value=0)
-                .reset_index()
-            )
-            colunas_dias = [c for c in ORDEM_DIAS if c in tabela.columns]
-            tabela["Total semana"] = tabela[colunas_dias].sum(axis=1) if colunas_dias else 0
-            st.dataframe(tabela[["CONTRATO", "SEMANA_INICIO"] + colunas_dias + ["Total semana"]], use_container_width=True, hide_index=True)
-            por_dia = df_dias.groupby("DIA_SEMANA", as_index=False).agg(NOTAS=("ORDEM_DE_SERVICO", "nunique"))
-            por_dia["ordem"] = por_dia["DIA_SEMANA"].map({d: i for i, d in enumerate(ORDEM_DIAS)})
-            por_dia = por_dia.sort_values("ordem")
-            st.bar_chart(por_dia, x="DIA_SEMANA", y="NOTAS")
-
-    with abas[5]:
-        st.subheader("Consulta de notas")
-        df_notas = notas_stc.copy()
-        termo = st.text_input("Buscar por OS, recurso ou recusa", key="stc_busca_notas")
-        if termo:
-            termo_norm = str(termo).upper().strip()
-            mask = pd.Series(False, index=df_notas.index)
-            for col in ["ORDEM_DE_SERVICO", "RECURSO", "RECUSA", "GRUPO_NOTA"]:
-                if col in df_notas.columns:
-                    mask = mask | df_notas[col].fillna("").astype(str).str.upper().str.contains(termo_norm, na=False)
-            df_notas = df_notas[mask].copy()
-        df_notas = _remover_colunas_financeiras(df_notas)
-        st.dataframe(df_notas.head(1000), use_container_width=True, hide_index=True)
-
-# ==============================
-# G.Z.U.S. — CHATBOT LOCAL
-# Gestão Inteligente de Serviços
-# ==============================
-
-NOME_ASSISTENTE = "G.Z.U.S."
-SUBTITULO_ASSISTENTE = "Gestão Inteligente de Serviços"
-
-
-def _normalizar_chat(texto):
-    """Normaliza texto para comparação simples, sem depender de IA/API externa."""
-    import unicodedata
-    import re
-
-    texto = "" if texto is None else str(texto)
-    texto = unicodedata.normalize("NFKD", texto).encode("ASCII", "ignore").decode("ASCII")
-    texto = texto.upper().strip()
-    texto = re.sub(r"\s+", " ", texto)
-    return texto
-
-
-def _nome_mes_chat(mes):
-    nomes = {
-        "01": "Janeiro", "02": "Fevereiro", "03": "Março", "04": "Abril",
-        "05": "Maio", "06": "Junho", "07": "Julho", "08": "Agosto",
-        "09": "Setembro", "10": "Outubro", "11": "Novembro", "12": "Dezembro",
-    }
+def amostra_valida_para_mapa_fixo(driver, mapa):
+    """Confere se a tela atual parece mesmo com o layout do print.
+    A validação procura número de tarefa na coluna 2 e datas/valores nas colunas seguintes.
+    """
     try:
-        mm, aa = str(mes).split("/")
-        return f"{nomes.get(mm, mm)}/{aa}"
-    except Exception:
-        return str(mes or "período selecionado")
+        rows = coletar_amostra_linhas_visiveis(driver)
+    except Exception as e:
+        print(f"Não consegui validar mapa fixo por amostra: {e}")
+        return False
 
-
-def _meses_chat_disponiveis(base):
-    if base.empty or "DATA_DT" not in base.columns:
-        return []
-
-    meses = (
-        base[["DATA_DT"]]
-        .dropna()
-        .assign(
-            MES=lambda d: d["DATA_DT"].dt.strftime("%m/%Y"),
-            PERIODO=lambda d: d["DATA_DT"].dt.to_period("M"),
-        )[["MES", "PERIODO"]]
-        .drop_duplicates()
-        .sort_values("PERIODO", ascending=False)["MES"]
-        .tolist()
-    )
-    return meses
-
-
-def _extrair_mes_chat(pergunta, meses_disponiveis, contexto=None):
     import re
+    linhas_com_tarefa = 0
+    linhas_com_status = 0
+    linhas_com_totais = 0
 
-    contexto = contexto or {}
-    pergunta_norm = _normalizar_chat(pergunta)
+    for row in rows[:30]:
+        if len(row) <= 13:
+            continue
 
-    achado = re.search(r"\b(0?[1-9]|1[0-2])[/\-](20\d{2}|\d{2})\b", pergunta_norm)
-    if achado:
-        mes = int(achado.group(1))
-        ano = int(achado.group(2))
-        if ano < 100:
-            ano += 2000
-        candidato = f"{mes:02d}/{ano}"
-        if candidato in meses_disponiveis:
+        tarefa = texto_limpo(row[mapa["TAREFA"]].get("text", ""))
+        status = texto_limpo(row[mapa["STATUS"]].get("text", "")).upper()
+        instala = texto_limpo(row[mapa["T. INSTALA"]].get("text", ""))
+        visitada = texto_limpo(row[mapa["T. VISITADA"]].get("text", ""))
+
+        if re.search(r"\d{4,}", tarefa):
+            linhas_com_tarefa += 1
+        if any(p in status for p in ["FINAL", "PEND", "PARC", "ABERT", "EXEC"]):
+            linhas_com_status += 1
+        if eh_numero_simples(instala) or eh_numero_simples(visitada):
+            linhas_com_totais += 1
+
+    print(
+        "Validação do mapa fixo pelo print -> "
+        f"tarefas={linhas_com_tarefa}, status={linhas_com_status}, totais={linhas_com_totais}"
+    )
+    return linhas_com_tarefa >= 1 and (linhas_com_status >= 1 or linhas_com_totais >= 1)
+
+
+def posicionar_grade_para_tarefas(driver):
+    metricas = obter_metricas_scroll_grade(driver)
+    if not metricas:
+        raise Exception("Não consegui obter métricas de scroll da grade.")
+
+    # Primeiro tenta pelo caminho ideal: ler cabeçalhos reais.
+    max_left = max(0, int(metricas["scrollWidth"] - metricas["clientWidth"]))
+    passo = max(160, int(metricas["clientWidth"] * 0.35))
+    posicoes = gerar_posicoes(0, max_left, passo)
+
+    melhor = None
+    for left in posicoes:
+        definir_scroll_grade(driver, left=left, top=0)
+        mapa = obter_mapa_headers_visiveis(driver)
+        score = 0
+        for col in ["TAREFA", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA"]:
+            if col in mapa:
+                score += 1
+        print(f"Cabeçalhos visíveis em left={left}: {mapa} | score={score}")
+
+        candidato = {"left": left, "mapa": mapa, "score": score}
+        if melhor is None or candidato["score"] > melhor["score"]:
+            melhor = candidato
+        if score >= 6:
+            print("Mapa de colunas de tarefa encontrado com boa confiança.")
             return candidato
 
-    # "mês 03", "mes 3", "no mês 03", "e no 03?"
-    achado_mes_num = re.search(r"(?:\bMES\b|\bEM\b|\bNO\b|\bNO MES\b|\bMES DE\b|\bE NO\b)\s*(0?[1-9]|1[0-2])\b", pergunta_norm)
-    if achado_mes_num:
-        numero_mes = f"{int(achado_mes_num.group(1)):02d}"
-        ano_ctx = str(contexto.get("mes", ""))[-4:] if contexto.get("mes") else ""
-        if ano_ctx:
-            candidato = f"{numero_mes}/{ano_ctx}"
-            if candidato in meses_disponiveis:
-                return candidato
-        for mes_disp in meses_disponiveis:
-            if mes_disp.startswith(numero_mes + "/"):
-                return mes_disp
+    if melhor and melhor["score"] >= 4 and "TAREFA" in melhor["mapa"]:
+        print("Usando melhor mapa de colunas encontrado:")
+        print(melhor)
+        definir_scroll_grade(driver, left=melhor["left"], top=0)
+        return melhor
 
-    mapa_meses = {
-        "JANEIRO": "01", "FEVEREIRO": "02", "MARCO": "03", "MARÇO": "03", "ABRIL": "04",
-        "MAIO": "05", "JUNHO": "06", "JULHO": "07", "AGOSTO": "08", "SETEMBRO": "09",
-        "OUTUBRO": "10", "NOVEMBRO": "11", "DEZEMBRO": "12",
-    }
-    for nome, numero_mes in mapa_meses.items():
-        if nome in pergunta_norm:
-            achado_ano = re.search(r"\b(20\d{2})\b", pergunta_norm)
-            if achado_ano:
-                candidato = f"{numero_mes}/{achado_ano.group(1)}"
-                if candidato in meses_disponiveis:
-                    return candidato
+    # Fallback para o layout do print: cabeçalhos não foram lidos, mas as linhas estão na ordem correta.
+    print("Cabeçalhos não vieram pelo DOM. Tentando fallback pelo layout do print em left=0...")
+    definir_scroll_grade(driver, left=0, top=0)
+    mapa_fixo = mapa_colunas_fixo_pelo_print()
+    if amostra_valida_para_mapa_fixo(driver, mapa_fixo):
+        print("Usando mapa fixo validado pelo conteúdo das linhas:")
+        print(mapa_fixo)
+        return {"left": 0, "mapa": mapa_fixo, "score": 6, "fallback": "layout_print"}
 
-            ano_ctx = str(contexto.get("mes", ""))[-4:] if contexto.get("mes") else ""
-            if ano_ctx:
-                candidato = f"{numero_mes}/{ano_ctx}"
-                if candidato in meses_disponiveis:
-                    return candidato
-
-            for mes_disp in meses_disponiveis:
-                if mes_disp.startswith(numero_mes + "/"):
-                    return mes_disp
-
-    if any(t in pergunta_norm for t in ["ESSE MES", "MES ATUAL", "ATUAL", "MENSAL", "NO MES", "MES"]):
-        return meses_disponiveis[0] if meses_disponiveis else None
-
-    return None
+    raise Exception("Não consegui identificar as colunas principais da grade de tarefas nem validar o fallback pelo print.")
 
 
-def _identificar_contrato_chat(pergunta, contratos_disponiveis):
-    pergunta_norm = _normalizar_chat(pergunta)
+def ler_linhas_visiveis_tarefas(driver, mapa_colunas):
+    dados = driver.execute_script("""
+        function visivel(el){
+            if (!el) return false;
+            const st = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return st.visibility !== 'hidden' && st.display !== 'none' && r.width > 2 && r.height > 2;
+        }
+        function limpar(t){ return (t || '').replace(/\s+/g, ' ').trim(); }
 
-    if "TODOS" in pergunta_norm or "GERAL" in pergunta_norm:
-        return None
+        const mapa = arguments[0];
+        const table = document.querySelector('[data-qa-target-table="1"]');
+        if (!table) return {ok:false, erro:'Tabela alvo não encontrada.'};
 
-    atalhos = {
-        "STC JUNDIAI": "STC Jundiai",
-        "STC JUNDIA": "STC Jundiai",
-        "CARRO": "STC Jundiai",
-        "JUN58": "STC Jundiai",
-        "SANTA CRUZ": "Disjuntor Santa Cruz",
-        "ST CRUZ": "Disjuntor Santa Cruz",
-        "JUNDIAI": "Disjuntor Jundiaí",
-        "JUNDIA": "Disjuntor Jundiaí",
-        "DISJUNTOR JUNDIAI": "Disjuntor Jundiaí",
-        "DISJUNTOR SANTA CRUZ": "Disjuntor Santa Cruz",
-    }
-
-    for chave, contrato in atalhos.items():
-        if chave in pergunta_norm and contrato in contratos_disponiveis:
-            return contrato
-
-    for contrato in contratos_disponiveis:
-        if _normalizar_chat(contrato) in pergunta_norm:
-            return contrato
-
-    return None
-
-
-def _identificar_recurso_chat(pergunta, recursos_disponiveis):
-    import re
-
-    pergunta_norm = _normalizar_chat(pergunta)
-    recursos_norm = {str(r).upper().strip(): r for r in recursos_disponiveis if str(r).strip()}
-
-    # Match literal: JUN5981-EMP, ITN8905-EMP etc.
-    for recurso_norm, recurso_original in recursos_norm.items():
-        if recurso_norm and recurso_norm in pergunta_norm:
-            return recurso_original
-
-    # Match sem sufixo/prefixo: "5981 fez quanto?", "equipe 5802", "ITN 8905".
-    codigos = re.findall(r"\b\d{4}\b", pergunta_norm)
-    for codigo in codigos:
-        candidatos = [r for r in recursos_disponiveis if codigo_numerico_recurso(r) == codigo]
-        if len(candidatos) == 1:
-            return candidatos[0]
-
-        if candidatos:
-            # Prioriza JUN para códigos 55/58/59; isso ajuda frases curtas como "5981".
-            candidatos_jun = [r for r in candidatos if str(r).upper().startswith("JUN")]
-            if candidatos_jun:
-                return candidatos_jun[0]
-            return candidatos[0]
-
-    return None
-
-
-def _pergunta_eh_complemento_chat(pergunta_norm):
-    """Detecta continuações curtas como 'e no mês 03?' ou 'mas conta express'."""
-    termos = [
-        "E NO", "E EM", "MAS", "TAMBEM", "TAMBÉM", "AGORA", "COM EXPRESS",
-        "CONTA EXPRESS", "CONTAR EXPRESS", "INCLUI EXPRESS", "INCLUIR EXPRESS",
-        "NO MES", "MES 0", "MES 1", "E O", "E A", "E DE"
-    ]
-    curta = len(pergunta_norm.split()) <= 8
-    return curta or any(t in pergunta_norm for t in termos)
-
-
-def _pergunta_ultimos_meses_chat(pergunta_norm):
-    return any(t in pergunta_norm for t in [
-        "ULTIMOS MESES", "ÚLTIMOS MESES", "ULTIMAS MESES", "NOS ULTIMOS",
-        "ULTIMOS 3", "ULTIMOS 4", "ULTIMOS 5", "ULTIMOS 6",
-        "POR MES", "MES A MES", "MENSAL DOS", "HISTORICO", "HISTÓRICO"
-    ])
-
-
-def _tipo_consulta_chat(pergunta_norm):
-    if any(t in pergunta_norm for t in ["RECUSA", "RECUSAS", "CONTA PAGA", "SEM ACESSO"]):
-        return "recusas"
-    if "EXPRESS" in pergunta_norm:
-        return "express"
-    if any(t in pergunta_norm for t in ["FATUR", "RECEITA", "VALOR", "R$"]):
-        return "faturamento"
-    if any(t in pergunta_norm for t in ["QUEM MAIS", "TOP", "RANKING", "LIDER", "LÍDER", "MAIOR PRODU"]):
-        return "ranking"
-    if any(t in pergunta_norm for t in ["COMO FOI", "RESUMO", "QUANTO", "QUANTAS", "QUANTOS", "FEZ", "PRODU", "NOTAS"]):
-        return "resumo"
-    return "resumo"
-
-
-def _resumo_numerico_chat(df):
-    if df.empty:
-        return {
-            "notas": 0,
-            "cortes": 0,
-            "religues": 0,
-            "recusas": 0,
-            "faturamento": 0.0,
-            "recursos": 0,
-            "dias_ativos": 0,
+        let rows = [...table.querySelectorAll('tbody tr')].filter(visivel);
+        if (!rows.length) {
+            rows = [...table.querySelectorAll('tr')].filter(visivel).slice(1);
         }
 
-    eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
-    pagaveis = df[eh_recusa == 0].copy()
-    recusas = df[eh_recusa == 1].copy()
+        const out = [];
+        for (const tr of rows) {
+            const cells = [...tr.children].filter(visivel);
+            if (!cells.length) continue;
 
-    return {
-        "notas": int(pagaveis["ORDEM_DE_SERVICO"].nunique()) if "ORDEM_DE_SERVICO" in pagaveis.columns else 0,
-        "cortes": int(pd.to_numeric(pagaveis.get("EH_CORTE", 0), errors="coerce").fillna(0).sum()),
-        "religues": int(pd.to_numeric(pagaveis.get("EH_RELIGUE", 0), errors="coerce").fillna(0).sum()),
-        "recusas": int(recusas["ORDEM_DE_SERVICO"].nunique()) if "ORDEM_DE_SERVICO" in recusas.columns else 0,
-        "faturamento": float(pd.to_numeric(pagaveis.get("FATURAMENTO", 0), errors="coerce").fillna(0).sum()),
-        "recursos": int(pagaveis["RECURSO"].nunique()) if "RECURSO" in pagaveis.columns else 0,
-        "dias_ativos": int(pagaveis["DATA"].nunique()) if "DATA" in pagaveis.columns else 0,
-    }
+            const row = {};
+            for (const [nome, idx] of Object.entries(mapa)) {
+                row[nome] = cells[idx] ? limpar(cells[idx].innerText || cells[idx].textContent) : "";
+            }
+            out.push(row);
+        }
+        return {ok:true, rows: out};
+    """, mapa_colunas)
 
+    if not dados.get("ok"):
+        raise Exception(dados.get("erro", "Falha ao ler linhas visíveis de tarefas."))
 
-def _express_chat_periodo(notas, mes, contrato=None, recurso=None):
-    if not mes:
-        return {"express": 0, "faturamento_express": 0.0, "tem_base": False}
-
-    express_resumo, _, _, caminho = calcular_express_mensal(notas, mes)
-    if express_resumo.empty:
-        return {"express": 0, "faturamento_express": 0.0, "tem_base": bool(caminho)}
-
-    df = express_resumo.copy()
-    if contrato:
-        df = df[df["CONTRATO"] == contrato].copy()
-    if recurso:
-        df = df[df["RECURSO"] == recurso].copy()
-
-    return {
-        "express": int(pd.to_numeric(df.get("EXPRESS", 0), errors="coerce").fillna(0).sum()) if not df.empty else 0,
-        "faturamento_express": float(pd.to_numeric(df.get("FATURAMENTO_EXPRESS", 0), errors="coerce").fillna(0).sum()) if not df.empty else 0.0,
-        "tem_base": bool(caminho),
-    }
+    return dados.get("rows", [])
 
 
-def _resumo_recusas_tipo(df):
-    if df.empty or "EH_RECUSA" not in df.columns:
-        return pd.DataFrame(columns=["RECUSA", "QTD"])
+def chave_tarefa(row):
+    tarefa = texto_limpo(row.get("TAREFA", ""))
+    # A tarefa pode aparecer com ícones ou cadeado; pega o primeiro número comprido.
+    import re
+    m = re.search(r"\d{4,}", tarefa)
+    return m.group(0) if m else tarefa
 
-    eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
-    recusas = df[eh_recusa == 1].copy()
-    if recusas.empty:
-        return pd.DataFrame(columns=["RECUSA", "QTD"])
 
-    recusas["RECUSA"] = recusas.get("RECUSA", "").fillna("").astype(str).str.strip()
-    recusas.loc[recusas["RECUSA"] == "", "RECUSA"] = "Não informado"
+def extrair_somente_tres_colunas(driver):
+    print("\n================ EXTRAÇÃO COMPLETA POR TAREFA ================\n")
 
-    return (
-        recusas.groupby("RECUSA", dropna=False)
-        .agg(QTD=("ORDEM_DE_SERVICO", "nunique"))
-        .reset_index()
-        .sort_values("QTD", ascending=False)
+    aguardar_grade_pronta(driver)
+    localizar_tabela_e_scroll_reais(driver)
+
+    dados_mapa = posicionar_grade_para_tarefas(driver)
+    mapa_colunas = dados_mapa["mapa"]
+    print("Mapa final de colunas:")
+    print(mapa_colunas)
+
+    if "TAREFA" not in mapa_colunas:
+        raise Exception("A coluna TAREFA não foi encontrada. Não dá para deduplicar as tarefas com segurança.")
+
+    metricas = obter_metricas_scroll_grade(driver)
+    if not metricas:
+        raise Exception("Não consegui obter as métricas da grade.")
+
+    max_top = max(0, int(metricas["scrollHeight"] - metricas["clientHeight"]))
+    passo_vertical = 40 if int(metricas.get("clientHeight", 0)) < 120 else max(120, int(metricas["clientHeight"] * 0.55))
+    posicoes_v = gerar_posicoes(0, max_top, passo_vertical)
+
+    print("Posições verticais para varredura completa:", posicoes_v)
+
+    registros = {}
+
+    for bloco_idx, top in enumerate(posicoes_v, start=1):
+        print(f"--- Bloco vertical {bloco_idx}/{len(posicoes_v)} | top={top} ---")
+        definir_scroll_grade(driver, top=top)
+
+        linhas = ler_linhas_visiveis_tarefas(driver, mapa_colunas)
+        print(f"Linhas visíveis lidas: {len(linhas)}")
+
+        for row in linhas:
+            registro = {col: texto_limpo(row.get(col, "")) for col in COLUNAS_TAREFA_DESEJADAS}
+            chave = chave_tarefa(registro)
+            if not chave or not chave.isdigit():
+                continue
+
+            # Considera cada tarefa somente uma vez. Se ela aparecer duplicada,
+            # mantém a primeira ocorrência completa encontrada.
+            if chave not in registros:
+                registro["TAREFA"] = chave
+                registros[chave] = registro
+
+    linhas_finais = list(registros.values())
+
+    if not linhas_finais:
+        raise Exception("A extração terminou sem consolidar nenhuma tarefa.")
+
+    print(f"\nExtração concluída. Tarefas únicas consolidadas: {len(linhas_finais)}")
+    return linhas_finais
+
+
+def numero_int(valor):
+    txt = texto_limpo(valor)
+    if not txt:
+        return 0
+    import re
+    m = re.search(r"-?\d+", txt.replace(".", ""))
+    if not m:
+        return 0
+    try:
+        return int(m.group(0))
+    except Exception:
+        return 0
+
+
+def classificar_situacao(status, instala, visitada):
+    st = texto_limpo(status).upper()
+    if instala > 0:
+        if visitada >= instala:
+            return "FEITA"
+        if visitada > 0:
+            return "PARCIAL"
+        return "PENDENTE"
+
+    if "FINAL" in st or "CONCLU" in st:
+        return "FEITA"
+    if "PEND" in st or "ABERT" in st:
+        return "PENDENTE"
+    return "SEM TOTAL"
+
+
+def tratar_linhas(linhas):
+    df = pd.DataFrame(linhas)
+
+    for col in COLUNAS_TAREFA_DESEJADAS:
+        if col not in df.columns:
+            df[col] = ""
+
+    df = df[COLUNAS_TAREFA_DESEJADAS].copy()
+    for col in df.columns:
+        df[col] = df[col].apply(texto_limpo)
+
+    df["TAREFA"] = df["TAREFA"].apply(lambda x: chave_tarefa({"TAREFA": x}))
+    df = df[df["TAREFA"] != ""].copy()
+    df = df.drop_duplicates(subset=["TAREFA"], keep="first")
+
+    for col in ["T. INSTALA", "T. VISITADA", "T. TELEMED", "T. DISTRIB"]:
+        df[col] = df[col].apply(numero_int)
+
+    df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0)
+    df["% EXECUTADO"] = 0.0
+    mask = df["T. INSTALA"] > 0
+    df.loc[mask, "% EXECUTADO"] = ((df.loc[mask, "T. VISITADA"] / df.loc[mask, "T. INSTALA"]) * 100).round(2)
+    df["SITUAÇÃO LEITURA"] = df.apply(
+        lambda r: classificar_situacao(r.get("STATUS", ""), int(r.get("T. INSTALA", 0)), int(r.get("T. VISITADA", 0))),
+        axis=1
     )
 
-
-def _destaques_executivos_chat(resumo, express_qtd, resumo_recusas):
-    notas = int(resumo.get("notas", 0) or 0)
-    recusas = int(resumo.get("recusas", 0) or 0)
-    total_operacional = notas + express_qtd + recusas
-    taxa_recusa = (recusas / total_operacional * 100) if total_operacional else 0
-
-    destaques = []
-
-    if taxa_recusa >= 20:
-        destaques.append(f"⚠️ Destaque: taxa de recusa alta ({taxa_recusa:.1f}%).".replace(".", ","))
-    elif taxa_recusa >= 10:
-        destaques.append(f"⚠️ Atenção: recusas representam {taxa_recusa:.1f}% do volume operacional.".replace(".", ","))
-
-    if not resumo_recusas.empty:
-        top = resumo_recusas.iloc[0]
-        qtd_top = int(top["QTD"])
-        if qtd_top > 0:
-            destaques.append(f"Principal motivo de recusa: **{top['RECUSA']}** ({numero(qtd_top)}).")
-
-    if express_qtd > 0:
-        destaques.append(f"Pagamento express identificado: **{numero(express_qtd)}** atendimento(s).")
-
-    if not destaques:
-        destaques.append("Sem alerta crítico no período consultado.")
-
-    return destaques
-
-
-def _escopo_texto_chat(contrato=None, recurso=None):
-    if recurso:
-        return f"equipe **{recurso}**"
-    if contrato:
-        return f"contrato **{contrato}**"
-    return "visão geral"
-
-
-def _filtrar_base_chat(base, mes=None, contrato=None, recurso=None):
-    df = base.copy()
-    if mes:
-        df = df[df["DATA_DT"].dt.strftime("%m/%Y") == mes].copy()
-    if contrato:
-        df = df[df["CONTRATO"] == contrato].copy()
-    if recurso:
-        df = df[df["RECURSO"] == recurso].copy()
+    ordem = [
+        "TAREFA", "SITUAÇÃO LEITURA", "STATUS", "UNIDADE", "DESCRIÇÃO", "TIPO", "MUNICÍPIO",
+        "DT PREVISTA", "DT LIMITE", "DT PLANEJA", "AGENTE COMERCIAL",
+        "T. INSTALA", "T. VISITADA", "FALTAM", "% EXECUTADO", "T. TELEMED", "T. DISTRIB"
+    ]
+    df = df[ordem]
+    df = df.sort_values(by=["SITUAÇÃO LEITURA", "% EXECUTADO", "TAREFA"], ascending=[True, True, True]).reset_index(drop=True)
     return df
 
 
+def montar_resumo_tarefas(df):
+    total_tarefas = len(df)
+    total_instala = int(df["T. INSTALA"].sum()) if "T. INSTALA" in df else 0
+    total_visitada = int(df["T. VISITADA"].sum()) if "T. VISITADA" in df else 0
+    total_faltam = int(df["FALTAM"].sum()) if "FALTAM" in df else 0
 
-def responder_chatbot_leitura(pergunta):
-    """Chat simples para o perfil Leitura, restrito às parciais de leitura."""
-    pergunta_norm = _normalizar_chat(pergunta)
-    bases = []
-    if "AMERICANA" in pergunta_norm:
-        bases = ["Americana"]
-    elif "PIRACICABA" in pergunta_norm:
-        bases = ["Piracicaba"]
+    linhas = [
+        {"Indicador": "TOTAL DE TAREFAS ÚNICAS", "Valor": total_tarefas},
+        {"Indicador": "TOTAL T. INSTALA", "Valor": total_instala},
+        {"Indicador": "TOTAL T. VISITADA", "Valor": total_visitada},
+        {"Indicador": "TOTAL FALTAM", "Valor": total_faltam},
+    ]
+
+    if "SITUAÇÃO LEITURA" in df.columns:
+        cont = df["SITUAÇÃO LEITURA"].value_counts().to_dict()
+        for nome in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+            linhas.append({"Indicador": f"TAREFAS {nome}", "Valor": int(cont.get(nome, 0))})
+
+    return pd.DataFrame(linhas)
+
+
+def formatar_excel_tarefas(caminho_xlsx):
+    wb = load_workbook(caminho_xlsx)
+
+    fonte_negrito = Font(bold=True)
+    fonte_branca_negrito = Font(bold=True, color="FFFFFF")
+    alinhamento_centralizado = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    preenchimento_vermelho = PatternFill(fill_type="solid", fgColor="FF0000")
+    preenchimento_amarelo = PatternFill(fill_type="solid", fgColor="FFF2CC")
+    preenchimento_verde = PatternFill(fill_type="solid", fgColor="00B050")
+    preenchimento_header = PatternFill(fill_type="solid", fgColor="1F4E78")
+    borda_fina = Border(
+        left=Side(style="thin", color="000000"),
+        right=Side(style="thin", color="000000"),
+        top=Side(style="thin", color="000000"),
+        bottom=Side(style="thin", color="000000")
+    )
+
+    for ws in wb.worksheets:
+        for cell in ws[1]:
+            cell.font = fonte_branca_negrito
+            cell.alignment = alinhamento_centralizado
+            cell.fill = preenchimento_header
+            cell.border = borda_fina
+
+        situacao_col = None
+        for cell in ws[1]:
+            if cell.value == "SITUAÇÃO LEITURA":
+                situacao_col = cell.column
+                break
+
+        for row in ws.iter_rows(min_row=2):
+            situacao = ""
+            if situacao_col:
+                situacao = str(ws.cell(row=row[0].row, column=situacao_col).value or "").upper()
+            for cell in row:
+                cell.font = fonte_negrito
+                cell.alignment = alinhamento_centralizado
+                cell.border = borda_fina
+                if situacao == "PENDENTE":
+                    cell.fill = preenchimento_vermelho
+                    cell.font = fonte_branca_negrito
+                elif situacao == "PARCIAL":
+                    cell.fill = preenchimento_amarelo
+                elif situacao == "FEITA":
+                    cell.fill = preenchimento_verde
+
+        for coluna in ws.columns:
+            max_len = 0
+            letra = get_column_letter(coluna[0].column)
+            for cell in coluna:
+                valor = "" if cell.value is None else str(cell.value)
+                max_len = max(max_len, len(valor))
+            ws.column_dimensions[letra].width = min(max_len + 4, 42)
+
+        ws.freeze_panes = "A2"
+        try:
+            ws.auto_filter.ref = ws.dimensions
+        except Exception:
+            pass
+
+    wb.save(caminho_xlsx)
+
+
+def salvar_resultado(linhas, sufixo=None, periodo_inicio=None, periodo_fim=None, abrir_excel=False):
+    garantir_pasta_saida()
+
+    df = tratar_linhas(linhas)
+    resumo = montar_resumo_tarefas(df)
+
+    detalhe_periodo = ""
+    if periodo_inicio and periodo_fim:
+        ini_nome = data_para_nome_arquivo(periodo_inicio)
+        fim_nome = data_para_nome_arquivo(periodo_fim)
+        detalhe_periodo = f"_{ini_nome}" if ini_nome == fim_nome else f"_{ini_nome}_a_{fim_nome}"
+
+    if sufixo == "AMERICANA":
+        nome = f"Tarefas_Americana{detalhe_periodo}"
+    elif sufixo == "PIRACICABA":
+        nome = f"Tarefas_Piracicaba{detalhe_periodo}"
     else:
-        bases = ["Americana", "Piracicaba"]
+        nome = f"tarefas_tratadas{detalhe_periodo}_{timestamp_str()}"
 
-    linhas = [f"📖 **{NOME_ASSISTENTE} — Contrato Leitura**", ""]
-    encontrou = False
-    for base_nome in bases:
-        caminho = caminho_leitura(base_nome)
-        if not caminho:
-            linhas.append(f"• **{base_nome}:** parcial não encontrada.")
+    caminho_xlsx = os.path.join(PASTA_SAIDA, f"{nome}.xlsx")
+
+    with pd.ExcelWriter(caminho_xlsx, engine="openpyxl") as writer:
+        resumo.to_excel(writer, index=False, sheet_name="RESUMO")
+        df.to_excel(writer, index=False, sheet_name="TAREFAS")
+
+    try:
+        formatar_excel_tarefas(caminho_xlsx)
+    except Exception as e:
+        print(f"Aviso: não foi possível formatar o Excel '{caminho_xlsx}': {e}")
+
+    print("\nArquivo salvo com sucesso:")
+    print(f"Excel tratado: {os.path.abspath(caminho_xlsx)}")
+    print(f"Tarefas únicas: {len(df)}")
+    try:
+        print(resumo.to_string(index=False))
+    except Exception:
+        pass
+
+    if abrir_excel:
+        abrir_arquivo(caminho_xlsx)
+
+    return caminho_xlsx
+
+
+
+# ================= EXTRAÇÃO COMPLETA POR TAREFA (V6 RÁPIDA) =================
+# Otimização principal:
+# - reduz espera de scroll de 1s para ~0.08s;
+# - lê a grade inteira em um único execute_async_script;
+# - usa passo vertical dinâmico baseado na altura real das linhas;
+# - tenta usar um container de scroll maior quando o detector pega um scroll pequeno demais.
+
+SCROLL_PAUSA_RAPIDA = 0.08
+
+
+def localizar_tabela_e_scroll_reais(driver):
+    resultado = driver.execute_script("""
+        function visivel(el){
+            if (!el) return false;
+            const st = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return st.visibility !== 'hidden' && st.display !== 'none' && r.width > 0 && r.height > 0;
+        }
+
+        const tables = [...document.querySelectorAll('table')].filter(visivel);
+        function scoreTabela(table){
+            const rows = [...table.querySelectorAll('tr')].filter(visivel);
+            const cells = [...table.querySelectorAll('th, td')].filter(visivel);
+            const rect = table.getBoundingClientRect();
+            return rows.length * 100 + cells.length + Math.floor((rect.width * rect.height) / 1000);
+        }
+
+        let bestTable = null;
+        let bestScore = -1;
+        for (const table of tables) {
+            const s = scoreTabela(table);
+            if (s > bestScore) { bestScore = s; bestTable = table; }
+        }
+        if (!bestTable) return {ok:false, erro:'Nenhuma tabela visível encontrada.'};
+
+        // Procura todos os ancestrais com scroll e escolhe o mais útil.
+        // A versão anterior às vezes pegava um scroll de cabeçalho com clientHeight muito baixo.
+        const candidatos = [];
+        let atual = bestTable;
+        while (atual && atual !== document.body && atual !== document.documentElement) {
+            const st = getComputedStyle(atual);
+            const r = atual.getBoundingClientRect();
+            const scrollV = atual.scrollHeight > atual.clientHeight + 20;
+            const scrollH = atual.scrollWidth > atual.clientWidth + 20;
+            const overflowOk = ['auto','scroll'].includes(st.overflowY) || ['auto','scroll'].includes(st.overflowX);
+            if ((scrollV || scrollH) && (overflowOk || scrollV || scrollH)) {
+                candidatos.push({el: atual, score: (scrollV ? atual.clientHeight * 10 : 0) + atual.scrollHeight + r.height});
+            }
+            atual = atual.parentElement;
+        }
+
+        let scrollEl = null;
+        if (candidatos.length) {
+            candidatos.sort((a,b) => b.score - a.score);
+            scrollEl = candidatos[0].el;
+        }
+        if (!scrollEl) scrollEl = document.scrollingElement || document.documentElement;
+
+        bestTable.setAttribute('data-qa-target-table', '1');
+        scrollEl.setAttribute('data-qa-target-scroll', '1');
+
+        return {
+            ok:true,
+            scrollTop: scrollEl.scrollTop,
+            scrollLeft: scrollEl.scrollLeft,
+            scrollHeight: scrollEl.scrollHeight,
+            clientHeight: scrollEl.clientHeight,
+            scrollWidth: scrollEl.scrollWidth,
+            clientWidth: scrollEl.clientWidth,
+            tableRows: bestTable.querySelectorAll('tr').length
+        };
+    """)
+
+    if not resultado or not resultado.get('ok'):
+        raise Exception(resultado.get('erro', 'Não consegui localizar a grade real.'))
+
+    print('Estrutura real da grade localizada (modo rápido):')
+    print(resultado)
+    return resultado
+
+
+def definir_scroll_grade(driver, top=None, left=None, pausa=SCROLL_PAUSA_RAPIDA):
+    driver.execute_script("""
+        const scrollEl = document.querySelector('[data-qa-target-scroll="1"]');
+        if (!scrollEl) return false;
+        if (arguments[0] !== null && arguments[0] !== undefined) scrollEl.scrollTop = arguments[0];
+        if (arguments[1] !== null && arguments[1] !== undefined) scrollEl.scrollLeft = arguments[1];
+        return true;
+    """, top, left)
+    time.sleep(pausa)
+
+
+def ler_todas_linhas_tarefas_rapido(driver, mapa_colunas):
+    dados = driver.execute_async_script("""
+        const mapa = arguments[0];
+        const done = arguments[arguments.length - 1];
+
+        function visivel(el){
+            if (!el) return false;
+            const st = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return st.visibility !== 'hidden' && st.display !== 'none' && r.width > 2 && r.height > 2;
+        }
+        function limpar(t){ return (t || '').replace(/\s+/g, ' ').trim(); }
+        function sleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
+
+        (async () => {
+            const table = document.querySelector('[data-qa-target-table="1"]');
+            const scrollEl = document.querySelector('[data-qa-target-scroll="1"]');
+            if (!table || !scrollEl) {
+                done({ok:false, erro:'Tabela ou scroll alvo não encontrado.'});
+                return;
+            }
+
+            scrollEl.scrollLeft = 0;
+            await sleep(80);
+
+            function rowsVisiveis(){
+                let rows = [...table.querySelectorAll('tbody tr')].filter(visivel);
+                if (!rows.length) rows = [...table.querySelectorAll('tr')].filter(visivel).slice(1);
+                return rows;
+            }
+
+            function lerBloco(){
+                const out = [];
+                for (const tr of rowsVisiveis()) {
+                    const cells = [...tr.children].filter(visivel);
+                    if (!cells.length) continue;
+                    const row = {};
+                    for (const [nome, idx] of Object.entries(mapa)) {
+                        row[nome] = cells[idx] ? limpar(cells[idx].innerText || cells[idx].textContent) : '';
+                    }
+                    out.push(row);
+                }
+                return out;
+            }
+
+            scrollEl.scrollTop = 0;
+            await sleep(120);
+
+            const primeiras = rowsVisiveis();
+            let alturaLinha = 32;
+            if (primeiras.length >= 2) {
+                const a = primeiras[0].getBoundingClientRect();
+                const b = primeiras[1].getBoundingClientRect();
+                const delta = Math.abs(b.top - a.top);
+                if (delta >= 12 && delta <= 80) alturaLinha = delta;
+            }
+
+            // Passo um pouco menor que a janela útil para sobrepor linhas e não perder nada.
+            const janela = Math.max(alturaLinha * 3, scrollEl.clientHeight || 400);
+            const passo = Math.max(alturaLinha, Math.floor(janela - (alturaLinha * 2)));
+            const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+
+            const registros = [];
+            const visitados = new Set();
+            let semMudanca = 0;
+            let top = 0;
+            let blocos = 0;
+
+            while (top <= maxTop + alturaLinha) {
+                scrollEl.scrollTop = Math.min(top, maxTop);
+                await sleep(75);
+                const realTop = Math.round(scrollEl.scrollTop);
+                const chaveTop = String(realTop);
+                if (!visitados.has(chaveTop)) {
+                    visitados.add(chaveTop);
+                    registros.push(...lerBloco());
+                    blocos++;
+                    semMudanca = 0;
+                } else {
+                    semMudanca++;
+                }
+                if (realTop >= maxTop) break;
+                if (semMudanca >= 5) break;
+                top = realTop + passo;
+            }
+
+            // Garante o rodapé.
+            scrollEl.scrollTop = maxTop;
+            await sleep(100);
+            registros.push(...lerBloco());
+
+            done({
+                ok:true,
+                rows: registros,
+                blocos: blocos,
+                rowHeight: alturaLinha,
+                passo: passo,
+                maxTop: maxTop,
+                clientHeight: scrollEl.clientHeight,
+                scrollHeight: scrollEl.scrollHeight
+            });
+        })().catch(e => done({ok:false, erro:String(e && e.stack ? e.stack : e)}));
+    """, mapa_colunas)
+
+    if not dados.get('ok'):
+        raise Exception(dados.get('erro', 'Falha na leitura rápida da grade.'))
+    return dados
+
+
+def extrair_somente_tres_colunas(driver):
+    print("\n================ EXTRAÇÃO COMPLETA POR TAREFA - MODO RÁPIDO ================\n")
+
+    aguardar_grade_pronta(driver)
+    localizar_tabela_e_scroll_reais(driver)
+
+    dados_mapa = posicionar_grade_para_tarefas(driver)
+    mapa_colunas = dados_mapa['mapa']
+    print('Mapa final de colunas:')
+    print(mapa_colunas)
+
+    if 'TAREFA' not in mapa_colunas:
+        raise Exception('A coluna TAREFA não foi encontrada. Não dá para deduplicar as tarefas com segurança.')
+
+    print('Lendo todos os blocos da grade em modo rápido...')
+    leitura = ler_todas_linhas_tarefas_rapido(driver, mapa_colunas)
+    print(
+        f"Leitura rápida: blocos={leitura.get('blocos')} | "
+        f"linhas brutas={len(leitura.get('rows', []))} | "
+        f"rowHeight={leitura.get('rowHeight')} | passo={leitura.get('passo')} | "
+        f"clientHeight={leitura.get('clientHeight')} | scrollHeight={leitura.get('scrollHeight')}"
+    )
+
+    registros = {}
+    for row in leitura.get('rows', []):
+        registro = {col: texto_limpo(row.get(col, '')) for col in COLUNAS_TAREFA_DESEJADAS}
+        chave = chave_tarefa(registro)
+        if not chave or not chave.isdigit():
+            continue
+        if chave not in registros:
+            registro['TAREFA'] = chave
+            registros[chave] = registro
+
+    linhas_finais = list(registros.values())
+    if not linhas_finais:
+        raise Exception('A extração terminou sem consolidar nenhuma tarefa.')
+
+    print(f"\nExtração concluída. Tarefas únicas consolidadas: {len(linhas_finais)}")
+    return linhas_finais
+
+
+
+# ================= CLASSIFICAÇÃO D0 / D1 / D2 POR DIAS ÚTEIS + MUNICÍPIOS (V8) =================
+# D0 = dia útil atual da leitura.
+# D1 = último dia útil anterior.
+# D2 = dois dias úteis anteriores, e assim por diante.
+# A regra abaixo pula sábados, domingos e feriados nacionais brasileiros.
+# Observação: feriados municipais/regionais ainda não entram automaticamente.
+
+from datetime import date as _date_v7
+
+MUNICIPIOS_AMERICANA = {
+    "AME": "AMERICANA",
+    "COS": "COSMÓPOLIS",
+    "ELF": "ELIAS FAUSTO",
+    "HOR": "HORTOLÂNDIA",
+    "MTM": "MONTE MOR",
+    "NOO": "NOVA ODESSA",
+    "PAU": "PAULÍNIA",
+    "SBO": "SANTA BÁRBARA DO OESTE",
+    "SUM": "SUMARÉ",
+}
+
+MUNICIPIOS_CONHECIDOS = dict(MUNICIPIOS_AMERICANA)
+
+
+def nome_municipio(codigo):
+    cod = texto_limpo(codigo).upper()
+    return MUNICIPIOS_CONHECIDOS.get(cod, cod if cod else "SEM MUNICÍPIO")
+
+
+def nome_aba_excel(txt, usados=None):
+    usados = usados if usados is not None else set()
+    nome = texto_limpo(txt).upper()
+    nome = re.sub(r"[\\/*?:\[\]]", "-", nome)
+    nome = nome[:31] if nome else "ABA"
+    base = nome
+    i = 2
+    while nome in usados:
+        sufixo = f"_{i}"
+        nome = (base[:31-len(sufixo)] + sufixo)
+        i += 1
+    usados.add(nome)
+    return nome
+
+
+def _pascoa_v7(ano):
+    """Retorna a data da Páscoa pelo algoritmo de Meeus/Jones/Butcher."""
+    a = ano % 19
+    b = ano // 100
+    c = ano % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    mes = (h + l - 7 * m + 114) // 31
+    dia = ((h + l - 7 * m + 114) % 31) + 1
+    return _date_v7(ano, mes, dia)
+
+
+def feriados_nacionais_brasil(ano):
+    pascoa = _pascoa_v7(ano)
+    fixos = {
+        _date_v7(ano, 1, 1),
+        _date_v7(ano, 4, 21),
+        _date_v7(ano, 5, 1),
+        _date_v7(ano, 9, 7),
+        _date_v7(ano, 10, 12),
+        _date_v7(ano, 11, 2),
+        _date_v7(ano, 11, 15),
+        _date_v7(ano, 11, 20),
+        _date_v7(ano, 12, 25),
+    }
+    moveis = {
+        pascoa - timedelta(days=48),  # Carnaval segunda
+        pascoa - timedelta(days=47),  # Carnaval terça
+        pascoa - timedelta(days=2),   # Sexta-feira Santa
+        pascoa + timedelta(days=60),  # Corpus Christi
+    }
+    return fixos | moveis
+
+
+def eh_dia_util_v7(data):
+    return data.weekday() < 5 and data not in feriados_nacionais_brasil(data.year)
+
+
+def ultimo_dia_util_ate_v7(data):
+    atual = data
+    while not eh_dia_util_v7(atual):
+        atual -= timedelta(days=1)
+    return atual
+
+
+def classificar_dia_operacional_v7(data_leitura, data_referencia=None):
+    if data_referencia is None:
+        data_referencia = datetime.now().date()
+
+    data_referencia = ultimo_dia_util_ate_v7(data_referencia)
+
+    if data_leitura > data_referencia:
+        return "FUTURO"
+
+    if not eh_dia_util_v7(data_leitura):
+        return "NÃO ÚTIL"
+
+    atual = data_referencia
+    indice = 0
+    limite = 0
+    while atual >= data_leitura and limite < 1000:
+        if atual == data_leitura:
+            return f"D{indice}"
+        atual -= timedelta(days=1)
+        while not eh_dia_util_v7(atual):
+            atual -= timedelta(days=1)
+        indice += 1
+        limite += 1
+
+    return f"D{indice}"
+
+
+def indice_d_v7(classe):
+    txt = texto_limpo(classe).upper().replace(" ", "")
+    if txt.startswith("D") and txt[1:].isdigit():
+        return int(txt[1:])
+    if txt == "FUTURO":
+        return -1
+    return 9999
+
+
+def tratar_linhas(linhas, periodo_inicio=None, periodo_fim=None):
+    df = pd.DataFrame(linhas)
+
+    for col in COLUNAS_TAREFA_DESEJADAS:
+        if col not in df.columns:
+            df[col] = ""
+
+    df = df[COLUNAS_TAREFA_DESEJADAS].copy()
+    for col in df.columns:
+        df[col] = df[col].apply(texto_limpo)
+
+    df["TAREFA"] = df["TAREFA"].apply(lambda x: chave_tarefa({"TAREFA": x}))
+    df = df[df["TAREFA"] != ""].copy()
+    df = df.drop_duplicates(subset=["TAREFA"], keep="first")
+
+    for col in ["T. INSTALA", "T. VISITADA", "T. TELEMED", "T. DISTRIB"]:
+        df[col] = df[col].apply(numero_int)
+
+    df["MUNICÍPIO"] = df["MUNICÍPIO"].apply(lambda x: texto_limpo(x).upper())
+    df["MUNICÍPIO NOME"] = df["MUNICÍPIO"].apply(nome_municipio)
+
+    df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0)
+    df["% EXECUTADO"] = 0.0
+    mask = df["T. INSTALA"] > 0
+    df.loc[mask, "% EXECUTADO"] = ((df.loc[mask, "T. VISITADA"] / df.loc[mask, "T. INSTALA"]) * 100).round(2)
+    df["SITUAÇÃO LEITURA"] = df.apply(
+        lambda r: classificar_situacao(r.get("STATUS", ""), int(r.get("T. INSTALA", 0)), int(r.get("T. VISITADA", 0))),
+        axis=1
+    )
+
+    data_base_periodo = None
+    if periodo_inicio:
+        try:
+            data_base_periodo = parse_data_br(periodo_inicio)
+        except Exception:
+            data_base_periodo = None
+
+    if data_base_periodo is None:
+        def _classe_linha(row):
+            for campo in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
+                valor = texto_limpo(row.get(campo, ""))
+                if valor:
+                    try:
+                        return classificar_dia_operacional_v7(parse_data_br(valor[:10]))
+                    except Exception:
+                        pass
+            return "SEM DATA"
+        df["D OPERACIONAL"] = df.apply(_classe_linha, axis=1)
+    else:
+        classe_d = classificar_dia_operacional_v7(data_base_periodo)
+        df["D OPERACIONAL"] = classe_d
+        df["DATA BASE D"] = data_base_periodo.strftime("%d/%m/%Y")
+
+    ordem = [
+        "D OPERACIONAL", "DATA BASE D", "MUNICÍPIO", "MUNICÍPIO NOME", "TAREFA", "SITUAÇÃO LEITURA", "STATUS",
+        "UNIDADE", "DESCRIÇÃO", "TIPO", "DT PREVISTA", "DT LIMITE", "DT PLANEJA", "AGENTE COMERCIAL",
+        "T. INSTALA", "T. VISITADA", "FALTAM", "% EXECUTADO", "T. TELEMED", "T. DISTRIB"
+    ]
+    for col in ordem:
+        if col not in df.columns:
+            df[col] = ""
+
+    df = df[ordem]
+    df["_D_ORDEM"] = df["D OPERACIONAL"].apply(indice_d_v7)
+    df = df.sort_values(
+        by=["MUNICÍPIO", "_D_ORDEM", "SITUAÇÃO LEITURA", "% EXECUTADO", "TAREFA"],
+        ascending=[True, True, True, True, True]
+    ).drop(columns=["_D_ORDEM"]).reset_index(drop=True)
+    return df
+
+
+def montar_resumo_tarefas(df):
+    total_tarefas = len(df)
+    total_instala = int(df["T. INSTALA"].sum()) if "T. INSTALA" in df else 0
+    total_visitada = int(df["T. VISITADA"].sum()) if "T. VISITADA" in df else 0
+    total_faltam = int(df["FALTAM"].sum()) if "FALTAM" in df else 0
+
+    linhas = [
+        {"Indicador": "TOTAL DE TAREFAS ÚNICAS", "Valor": total_tarefas},
+        {"Indicador": "TOTAL T. INSTALA", "Valor": total_instala},
+        {"Indicador": "TOTAL T. VISITADA", "Valor": total_visitada},
+        {"Indicador": "TOTAL FALTAM", "Valor": total_faltam},
+    ]
+
+    if "D OPERACIONAL" in df.columns:
+        cont_d = df["D OPERACIONAL"].value_counts().to_dict()
+        for classe in sorted(cont_d.keys(), key=indice_d_v7):
+            linhas.append({"Indicador": f"TAREFAS {classe}", "Valor": int(cont_d.get(classe, 0))})
+
+    if "SITUAÇÃO LEITURA" in df.columns:
+        cont = df["SITUAÇÃO LEITURA"].value_counts().to_dict()
+        for nome in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+            linhas.append({"Indicador": f"TAREFAS {nome}", "Valor": int(cont.get(nome, 0))})
+
+    if "MUNICÍPIO NOME" in df.columns:
+        linhas.append({"Indicador": "", "Valor": ""})
+        linhas.append({"Indicador": "RESUMO POR MUNICÍPIO", "Valor": ""})
+        for municipio, grupo in df.groupby("MUNICÍPIO NOME", dropna=False):
+            linhas.append({
+                "Indicador": str(municipio),
+                "Valor": f"TAREFAS: {len(grupo)} | INSTALA: {int(grupo['T. INSTALA'].sum())} | VISITADA: {int(grupo['T. VISITADA'].sum())} | FALTAM: {int(grupo['FALTAM'].sum())}"
+            })
+
+    if "D OPERACIONAL" in df.columns and "SITUAÇÃO LEITURA" in df.columns:
+        pivot = (
+            df.pivot_table(index="D OPERACIONAL", columns="SITUAÇÃO LEITURA", values="TAREFA", aggfunc="count", fill_value=0)
+            .reset_index()
+        )
+        pivot["_D_ORDEM"] = pivot["D OPERACIONAL"].apply(indice_d_v7)
+        pivot = pivot.sort_values("_D_ORDEM").drop(columns=["_D_ORDEM"])
+        linhas.append({"Indicador": "", "Valor": ""})
+        linhas.append({"Indicador": "RESUMO POR D E SITUAÇÃO", "Valor": ""})
+        for _, r in pivot.iterrows():
+            partes = []
+            for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+                if col in pivot.columns:
+                    partes.append(f"{col}: {int(r.get(col, 0))}")
+            linhas.append({"Indicador": str(r["D OPERACIONAL"]), "Valor": " | ".join(partes)})
+
+    return pd.DataFrame(linhas)
+
+
+def montar_resumo_municipio(df):
+    if df.empty:
+        return pd.DataFrame()
+
+    idx = ["MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"]
+    resumo = (
+        df.pivot_table(
+            index=idx,
+            columns="SITUAÇÃO LEITURA",
+            values="TAREFA",
+            aggfunc="count",
+            fill_value=0
+        )
+        .reset_index()
+    )
+
+    for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+        if col not in resumo.columns:
+            resumo[col] = 0
+
+    soma = df.groupby(idx, as_index=False).agg({
+        "TAREFA": "count",
+        "T. INSTALA": "sum",
+        "T. VISITADA": "sum",
+        "FALTAM": "sum",
+        "T. TELEMED": "sum",
+        "T. DISTRIB": "sum",
+    }).rename(columns={"TAREFA": "TOTAL TAREFAS"})
+
+    resumo = resumo.merge(soma, on=idx, how="left")
+    resumo["_D_ORDEM"] = resumo["D OPERACIONAL"].apply(indice_d_v7)
+    resumo = resumo.sort_values(["MUNICÍPIO", "_D_ORDEM"]).drop(columns=["_D_ORDEM"])
+
+    return resumo[[
+        "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFAS",
+        "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL",
+        "T. INSTALA", "T. VISITADA", "FALTAM", "T. TELEMED", "T. DISTRIB"
+    ]]
+
+
+def salvar_resultado(linhas, sufixo=None, periodo_inicio=None, periodo_fim=None, abrir_excel=False):
+    garantir_pasta_saida()
+
+    df = tratar_linhas(linhas, periodo_inicio=periodo_inicio, periodo_fim=periodo_fim)
+    resumo = montar_resumo_tarefas(df)
+    resumo_municipio = montar_resumo_municipio(df)
+
+    detalhe_periodo = ""
+    if periodo_inicio and periodo_fim:
+        ini_nome = data_para_nome_arquivo(periodo_inicio)
+        fim_nome = data_para_nome_arquivo(periodo_fim)
+        detalhe_periodo = f"_{ini_nome}" if ini_nome == fim_nome else f"_{ini_nome}_a_{fim_nome}"
+
+    if sufixo == "AMERICANA":
+        nome = f"Tarefas_Americana{detalhe_periodo}"
+    elif sufixo == "PIRACICABA":
+        nome = f"Tarefas_Piracicaba{detalhe_periodo}"
+    else:
+        nome = f"tarefas_tratadas{detalhe_periodo}_{timestamp_str()}"
+
+    caminho_xlsx = os.path.join(PASTA_SAIDA, f"{nome}.xlsx")
+
+    usados = set()
+    with pd.ExcelWriter(caminho_xlsx, engine="openpyxl") as writer:
+        resumo.to_excel(writer, index=False, sheet_name=nome_aba_excel("RESUMO", usados))
+        resumo_municipio.to_excel(writer, index=False, sheet_name=nome_aba_excel("RESUMO_MUNICIPIO", usados))
+        df.to_excel(writer, index=False, sheet_name=nome_aba_excel("TAREFAS", usados))
+
+        # Abas separadas por município. Cada aba mantém o D, situação e totais por tarefa.
+        for codigo, grupo in df.groupby("MUNICÍPIO", dropna=False):
+            municipio_nome = nome_municipio(codigo)
+            aba = nome_aba_excel(f"{codigo}_{municipio_nome}", usados)
+            grupo.drop(columns=[], errors="ignore").to_excel(writer, index=False, sheet_name=aba)
+
+    try:
+        formatar_excel_tarefas(caminho_xlsx)
+    except Exception as e:
+        print(f"Aviso: não foi possível formatar o Excel '{caminho_xlsx}': {e}")
+
+    print("\nArquivo salvo com sucesso:")
+    print(f"Excel tratado: {os.path.abspath(caminho_xlsx)}")
+    print(f"Tarefas únicas: {len(df)}")
+    try:
+        print(resumo.to_string(index=False))
+        print("\nResumo por município:")
+        print(resumo_municipio.to_string(index=False))
+    except Exception:
+        pass
+
+    if abrir_excel:
+        abrir_arquivo(caminho_xlsx)
+
+    return caminho_xlsx
+
+
+def gerar_resumo_d_consolidado_v7(resultados):
+    if not resultados:
+        return None
+
+    linhas_todas = []
+    for r in resultados:
+        caminho = r.get("xlsx")
+        if not caminho or not os.path.exists(caminho):
             continue
         try:
-            df = ler_parcial_leitura(str(caminho))
+            df = pd.read_excel(caminho, sheet_name="TAREFAS")
         except Exception as e:
-            linhas.append(f"• **{base_nome}:** não consegui ler a parcial ({e}).")
+            print(f"Aviso: não consegui ler '{caminho}' para consolidar D: {e}")
             continue
-        if df.empty:
-            linhas.append(f"• **{base_nome}:** parcial vazia.")
+        df["BASE"] = slug_base(r.get("base", ""))
+        df["PERÍODO"] = r.get("periodo_inicio", "")
+        linhas_todas.append(df)
+
+    if not linhas_todas:
+        return None
+
+    df_all = pd.concat(linhas_todas, ignore_index=True)
+    if "D OPERACIONAL" not in df_all.columns:
+        return None
+
+    resumo_d = (
+        df_all.pivot_table(
+            index=["BASE", "D OPERACIONAL"],
+            columns="SITUAÇÃO LEITURA",
+            values="TAREFA",
+            aggfunc="count",
+            fill_value=0
+        )
+        .reset_index()
+    )
+
+    for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+        if col not in resumo_d.columns:
+            resumo_d[col] = 0
+
+    resumo_d["TOTAL TAREFAS"] = resumo_d[["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]].sum(axis=1)
+    resumo_d["_D_ORDEM"] = resumo_d["D OPERACIONAL"].apply(indice_d_v7)
+    resumo_d = resumo_d.sort_values(["BASE", "_D_ORDEM"]).drop(columns=["_D_ORDEM"])
+    resumo_d = resumo_d[["BASE", "D OPERACIONAL", "TOTAL TAREFAS", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]]
+
+    resumo_municipio = pd.DataFrame()
+    if "MUNICÍPIO" in df_all.columns:
+        resumo_municipio = montar_resumo_municipio(df_all)
+        if "BASE" in df_all.columns and not resumo_municipio.empty:
+            resumo_municipio = (
+                df_all.pivot_table(
+                    index=["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"],
+                    columns="SITUAÇÃO LEITURA",
+                    values="TAREFA",
+                    aggfunc="count",
+                    fill_value=0
+                ).reset_index()
+            )
+            for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+                if col not in resumo_municipio.columns:
+                    resumo_municipio[col] = 0
+            soma = df_all.groupby(["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"], as_index=False).agg({
+                "TAREFA": "count", "T. INSTALA": "sum", "T. VISITADA": "sum", "FALTAM": "sum"
+            }).rename(columns={"TAREFA": "TOTAL TAREFAS"})
+            resumo_municipio = resumo_municipio.merge(soma, on=["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"], how="left")
+            resumo_municipio["_D_ORDEM"] = resumo_municipio["D OPERACIONAL"].apply(indice_d_v7)
+            resumo_municipio = resumo_municipio.sort_values(["BASE", "MUNICÍPIO", "_D_ORDEM"]).drop(columns=["_D_ORDEM"])
+
+    detalhe = timestamp_str()
+    caminho = os.path.join(PASTA_SAIDA, f"Resumo_D_por_base_{detalhe}.xlsx")
+    with pd.ExcelWriter(caminho, engine="openpyxl") as writer:
+        resumo_d.to_excel(writer, index=False, sheet_name="RESUMO_D")
+        if not resumo_municipio.empty:
+            resumo_municipio.to_excel(writer, index=False, sheet_name="RESUMO_MUNICIPIO")
+        df_all.to_excel(writer, index=False, sheet_name="TAREFAS_CONSOLIDADAS")
+
+    try:
+        formatar_excel_tarefas(caminho)
+    except Exception as e:
+        print(f"Aviso: não foi possível formatar o resumo consolidado '{caminho}': {e}")
+
+    print("\nResumo consolidado D gerado:")
+    print(os.path.abspath(caminho))
+    try:
+        print(resumo_d.to_string(index=False))
+    except Exception:
+        pass
+    return caminho
+
+
+
+# ================= GITHUB / PAINEL STREAMLIT =================
+def localizar_repo_painel():
+    """Localiza o repositório do painel para copiar os XLSX para dashboard/leitura."""
+    candidatos = []
+    for var in ["PAINEL_REPO_PATH", "GITHUB_REPO_PATH", "REPO_PAINEL_PATH"]:
+        valor = os.getenv(var)
+        if valor:
+            candidatos.append(valor)
+
+    candidatos.extend([
+        r"C:\Users\user\Desktop\trata_csv\painel-faturamento",
+        os.path.join(os.path.expanduser("~"), "Desktop", "trata_csv", "painel-faturamento"),
+        os.getcwd(),
+    ])
+
+    for caminho in candidatos:
+        if not caminho:
             continue
-        encontrou = True
-        total_instala = int(df["T. INSTALA"].sum())
-        total_visitada = int(df["T. VISITADA"].sum())
-        total_faltam = int(df["FALTAM"].sum())
-        percentual = (total_visitada / total_instala * 100) if total_instala else 0
-        linhas.append(f"### {base_nome}")
-        linhas.append(f"• **T. Instala:** {numero(total_instala)}")
-        linhas.append(f"• **T. Visitada:** {numero(total_visitada)}")
-        linhas.append(f"• **Faltam:** {numero(total_faltam)}")
-        linhas.append(f"• **Executado:** {percentual:.1f}%".replace(".", ","))
-        atrasados = df.sort_values(["FALTAM", "% EXECUTADO"], ascending=[False, True]).head(3)
-        if not atrasados.empty:
-            linhas.append("• **Maiores pendências:** " + "; ".join(
-                f"{r['AGENTE COMERCIAL']} ({numero(r['FALTAM'])})" for _, r in atrasados.iterrows()
-            ))
-        linhas.append("")
+        caminho = os.path.abspath(os.path.expanduser(caminho))
+        if os.path.isdir(os.path.join(caminho, ".git")):
+            return caminho
 
-    if not encontrou:
-        linhas.append("Não encontrei parciais de leitura disponíveis para consultar.")
-    return "\n".join(linhas)
+    # fallback: usa o primeiro caminho tradicional, mesmo que ainda não exista .git,
+    # para o erro ficar claro no log.
+    return os.path.abspath(os.path.expanduser(candidatos[0]))
 
-def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver_express=True, modo_leitura=False):
-    """Responde perguntas operacionais usando os CSVs já carregados no painel."""
-    if modo_leitura:
-        return responder_chatbot_leitura(pergunta)
 
-    if notas.empty:
-        return "Ainda não encontrei dados carregados para consultar."
+def _rodar_git(args, cwd):
+    """Executa git e mostra stdout/stderr no log da interface."""
+    cmd = ["git"] + list(args)
+    print("$ " + " ".join(cmd))
+    proc = subprocess.run(
+        cmd,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+    )
+    if proc.stdout.strip():
+        print(proc.stdout.strip())
+    if proc.stderr.strip():
+        print(proc.stderr.strip())
+    return proc
 
-    base = preparar_parcial_do_dia(notas, incluir_recusas=True)
-    if base.empty:
-        return "Ainda não encontrei dados suficientes para responder. Confira se o `notas_dashboard.csv` foi carregado."
 
-    pergunta_norm = _normalizar_chat(pergunta)
-    meses = _meses_chat_disponiveis(base)
-    contratos_disp = sorted(base["CONTRATO"].dropna().unique().tolist()) if "CONTRATO" in base.columns else []
-    recursos_disp = sorted(base["RECURSO"].dropna().unique().tolist()) if "RECURSO" in base.columns else []
+def _git_abortar_operacoes_pendentes(repo_path):
+    """Remove estado de merge/rebase em andamento, quando existir."""
+    _rodar_git(["rebase", "--abort"], cwd=repo_path)
+    _rodar_git(["merge", "--abort"], cwd=repo_path)
 
-    contexto_anterior = st.session_state.get("chatbot_painel_contexto", {}) if hasattr(st, "session_state") else {}
-    complemento = _pergunta_eh_complemento_chat(pergunta_norm)
 
-    mes = _extrair_mes_chat(pergunta, meses, contexto_anterior)
-    contrato = _identificar_contrato_chat(pergunta, contratos_disp)
-    recurso = _identificar_recurso_chat(pergunta, recursos_disp)
+def _git_sincronizar_branch(repo_path, branch="main"):
+    """
+    Deixa o repositório local exatamente na branch remota escolhida.
 
-    # Continuação de conversa: mantém escopo anterior quando a frase é curta ou complementar.
-    if complemento:
-        if not recurso:
-            recurso = contexto_anterior.get("recurso")
-        if not contrato and not recurso:
-            contrato = contexto_anterior.get("contrato")
-        if not mes:
-            mes = contexto_anterior.get("mes")
+    Isso resolve os problemas vistos no log:
+    - detached HEAD
+    - branches divergentes
+    - merge/rebase em conflito
 
-    if not mes and meses:
-        mes = meses[0]
+    Observação: por segurança operacional do robô, alterações locais não commitadas
+    no repositório do painel são descartadas antes de copiar os novos XLSX.
+    """
+    branch = (branch or "main").strip()
 
-    # Se achou equipe, o contrato vem naturalmente da própria base.
-    if recurso and not contrato:
-        contratos_recurso = base.loc[base["RECURSO"] == recurso, "CONTRATO"].dropna().unique().tolist()
-        if len(contratos_recurso) == 1:
-            contrato = contratos_recurso[0]
+    _git_abortar_operacoes_pendentes(repo_path)
 
-    tipo = _tipo_consulta_chat(pergunta_norm)
-    quer_somar_express = "EXPRESS" in pergunta_norm and any(t in pergunta_norm for t in ["CONTAR", "CONTA", "INCLUI", "INCLUIR", "COM", "SOMAR", "TOTAL"])
-    quer_express = "EXPRESS" in pergunta_norm or quer_somar_express
+    fetch = _rodar_git(["fetch", "origin", branch], cwd=repo_path)
+    if fetch.returncode != 0:
+        print(f"⚠️ Não consegui executar git fetch origin {branch}.")
+        return False
 
-    if quer_express and not pode_ver_express:
-        return "Essa informação não está disponível para seu perfil."
+    # Cria/atualiza a branch local apontando exatamente para origin/main.
+    checkout = _rodar_git(["checkout", "-B", branch, f"origin/{branch}"], cwd=repo_path)
+    if checkout.returncode != 0:
+        print(f"⚠️ Não consegui posicionar o repositório na branch {branch}.")
+        return False
 
-    if hasattr(st, "session_state"):
-        st.session_state["chatbot_painel_contexto"] = {
-            "mes": mes,
-            "contrato": contrato,
-            "recurso": recurso,
-            "tipo": tipo,
-        }
+    reset = _rodar_git(["reset", "--hard", f"origin/{branch}"], cwd=repo_path)
+    if reset.returncode != 0:
+        print(f"⚠️ Não consegui sincronizar a branch {branch} com origin/{branch}.")
+        return False
 
-    escopo_txt = _escopo_texto_chat(contrato, recurso)
-    periodo_txt = _nome_mes_chat(mes) if mes else "todo o histórico"
+    return True
 
-    # Histórico mês a mês.
-    if _pergunta_ultimos_meses_chat(pergunta_norm):
-        df_meses = base.copy()
-        if contrato:
-            df_meses = df_meses[df_meses["CONTRATO"] == contrato].copy()
-        if recurso:
-            df_meses = df_meses[df_meses["RECURSO"] == recurso].copy()
 
-        eh_recusa_m = pd.to_numeric(df_meses.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
-        pagaveis_m = df_meses[eh_recusa_m == 0].copy()
+def enviar_para_github(caminho_arquivo):
+    """
+    Copia o arquivo gerado para dashboard/leitura do repositório do painel
+    e envia para o GitHub.
 
-        if pagaveis_m.empty:
-            return f"Não encontrei notas pagáveis para {escopo_txt} nos últimos meses."
+    Esta versão é blindada contra:
+    - detached HEAD
+    - branch main divergente
+    - pull/rebase em conflito
+    - merge pendente
 
-        pagaveis_m["MES"] = pagaveis_m["DATA_DT"].dt.strftime("%m/%Y")
-        pagaveis_m["PERIODO"] = pagaveis_m["DATA_DT"].dt.to_period("M")
-        mensal = (
-            pagaveis_m.groupby(["MES", "PERIODO"], dropna=False)
-            .agg(
-                NOTAS=("ORDEM_DE_SERVICO", "nunique"),
-                CORTES=("EH_CORTE", "sum"),
-                RELIGUES=("EH_RELIGIE", "sum") if "EH_RELIGIE" in pagaveis_m.columns else ("EH_RELIGUE", "sum"),
-                FATURAMENTO=("FATURAMENTO", "sum"),
+    O painel no Streamlit Cloud só enxerga arquivos que foram enviados ao GitHub.
+    """
+    try:
+        if not caminho_arquivo or not os.path.exists(caminho_arquivo):
+            print(f"⚠️ Arquivo não encontrado para enviar ao GitHub: {caminho_arquivo}")
+            return None
+
+        repo_path = localizar_repo_painel()
+        if not os.path.isdir(repo_path):
+            print(f"⚠️ Repositório do painel não encontrado: {repo_path}")
+            return None
+        if not os.path.isdir(os.path.join(repo_path, ".git")):
+            print(f"⚠️ Pasta encontrada, mas não parece ser um repositório Git: {repo_path}")
+            return None
+
+        branch = os.getenv("PAINEL_GIT_BRANCH") or os.getenv("GITHUB_BRANCH") or "main"
+        print(f"Sincronizando repositório do painel na branch {branch}...")
+
+        if not _git_sincronizar_branch(repo_path, branch=branch):
+            print("⚠️ Não foi possível sincronizar o repositório. O arquivo será salvo localmente, mas talvez não suba ao GitHub.")
+
+        destino_pasta = os.path.join(repo_path, "dashboard", "leitura")
+        os.makedirs(destino_pasta, exist_ok=True)
+
+        nome_base = os.path.splitext(os.path.basename(caminho_arquivo))[0]
+        agora = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nome_destino = f"{nome_base}_{agora}.xlsx"
+        destino = os.path.join(destino_pasta, nome_destino)
+
+        shutil.copy2(caminho_arquivo, destino)
+        print(f"✅ Copiado para o painel: {destino}")
+
+        add = _rodar_git(["add", "dashboard/leitura"], cwd=repo_path)
+        if add.returncode != 0:
+            print("⚠️ git add falhou. Arquivo copiado localmente, mas não commitado.")
+            return destino
+
+        status = _rodar_git(["status", "--porcelain", "dashboard/leitura"], cwd=repo_path)
+        if status.returncode == 0 and not status.stdout.strip():
+            print("ℹ️ Nenhuma alteração nova em dashboard/leitura para commitar.")
+            return destino
+
+        commit = _rodar_git(["commit", "-m", f"Auto leitura {nome_destino}"], cwd=repo_path)
+        if commit.returncode != 0:
+            saida = ((commit.stdout or "") + "\n" + (commit.stderr or "")).lower()
+            if "nothing to commit" in saida or "nada a declarar" in saida or "nothing added to commit" in saida:
+                print("ℹ️ Nada novo para commitar.")
+                return destino
+            print("⚠️ git commit falhou. Verifique o log acima.")
+            return destino
+
+        push = _rodar_git(["push", "origin", branch], cwd=repo_path)
+        if push.returncode == 0:
+            print(f"🚀 Enviado para GitHub: dashboard/leitura/{nome_destino}")
+        else:
+            print("⚠️ git push origin main falhou. Tentando fallback: git push origin HEAD:main")
+            push2 = _rodar_git(["push", "origin", f"HEAD:{branch}"], cwd=repo_path)
+            if push2.returncode == 0:
+                print(f"🚀 Enviado para GitHub via fallback: dashboard/leitura/{nome_destino}")
+            else:
+                print("⚠️ git push falhou. Verifique autenticação/permissão do GitHub.")
+
+        return destino
+
+    except Exception as e:
+        print(f"Erro ao enviar para GitHub: {e}")
+        return None
+
+def main(app=None, base_selecionada="AMBAS", data_inicio_txt=None, data_fim_txt=None):
+    load_dotenv()
+
+    url = os.getenv("CPFL_URL")
+    usuario = os.getenv("CPFL_USUARIO")
+    senha = os.getenv("CPFL_SENHA")
+
+    if not url or not usuario or not senha:
+        raise Exception("Verifique se CPFL_URL, CPFL_USUARIO e CPFL_SENHA estão no arquivo .env")
+
+    hoje = datetime.now().strftime("%d/%m/%Y")
+    data_inicio_txt = data_inicio_txt or hoje
+    data_fim_txt = data_fim_txt or data_inicio_txt
+    periodos = gerar_periodos_diarios(data_inicio_txt, data_fim_txt)
+
+    if base_selecionada == "AMERICANA":
+        bases = ["AMERICANA [B]"]
+    elif base_selecionada == "PIRACICABA":
+        bases = ["PIRACICABA [B]"]
+    else:
+        bases = ["AMERICANA [B]", "PIRACICABA [B]"]
+
+    print("Períodos gerados para exportação diária:")
+    for ini, fim in periodos:
+        classe_d = classificar_dia_operacional_v7(parse_data_br(ini))
+        print(f"- {ini} até {fim} => {classe_d}")
+
+    resultados = []
+    total_execucoes = len(bases) * len(periodos)
+    contador = 0
+
+    for periodo_inicio, periodo_fim in periodos:
+        for base in bases:
+            contador += 1
+            try:
+                classe_d = classificar_dia_operacional_v7(parse_data_br(periodo_inicio))
+                if app:
+                    app.set_status(f"Processando {contador}/{total_execucoes}")
+                    app.set_substatus(f"{base} | {periodo_inicio} | {classe_d}")
+
+                resultado = executar_fluxo_base(
+                    url, usuario, senha, base,
+                    periodo_inicio=periodo_inicio,
+                    periodo_fim=periodo_fim,
+                    app=app
+                )
+                resultado["d_operacional"] = classe_d
+                resultados.append(resultado)
+
+            except TimeoutException as e:
+                print(f"\nTempo de espera excedido na base {base} no período {periodo_inicio} até {periodo_fim}.")
+                print(f"Detalhes: {e}")
+            except Exception as e:
+                print(f"\nOcorreu um erro durante a automação da base {base} no período {periodo_inicio} até {periodo_fim}.")
+                print(f"Detalhes: {e}")
+
+    print("\n" + "=" * 80)
+    print("RESUMO FINAL")
+    print("=" * 80)
+
+    arquivos = []
+    if resultados:
+        for r in resultados:
+            caminho_abs = os.path.abspath(r["xlsx"])
+            arquivos.append(caminho_abs)
+            print(f"Base: {r['base']}")
+            print(f"Período: {r.get('periodo_inicio')} até {r.get('periodo_fim')} | {r.get('d_operacional')}")
+            print(f"Linhas extraídas antes do tratamento: {r['linhas']}")
+            print(f"Excel tratado: {caminho_abs}")
+            print("-" * 80)
+
+        consolidado = gerar_resumo_d_consolidado_v7(resultados)
+        if consolidado:
+            arquivos.append(os.path.abspath(consolidado))
+            enviar_para_github(consolidado)
+    else:
+        print("Nenhuma base foi processada com sucesso.")
+
+    if app:
+        app.atualizar_arquivos(arquivos)
+        app.set_status("Execução encerrada")
+        app.set_substatus("Resumo final disponível no log")
+
+    return {"resultados": resultados, "arquivos": arquivos}
+
+
+
+# ================= RESUMO CONSOLIDADO POR BASE + MUNICÍPIO (V9) =================
+def montar_resumo_base_municipio_v9(df_base):
+    """Monta uma aba com TOTAL da base por D e, abaixo, o detalhamento por município e D."""
+    if df_base is None or df_base.empty:
+        return pd.DataFrame()
+
+    df = df_base.copy()
+    for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+        # estes nomes são situações, não colunas do df original; ficam no pivot abaixo
+        pass
+
+    def _agrupar(idx):
+        pivot = (
+            df.pivot_table(
+                index=idx,
+                columns="SITUAÇÃO LEITURA",
+                values="TAREFA",
+                aggfunc="count",
+                fill_value=0
             )
             .reset_index()
-            .sort_values("PERIODO", ascending=False)
-            .head(6)
-            .sort_values("PERIODO", ascending=True)
         )
+        for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+            if col not in pivot.columns:
+                pivot[col] = 0
 
-        linhas = [f"📈 **{NOME_ASSISTENTE} — evolução de {escopo_txt}**", ""]
-        for row in mensal.itertuples(index=False):
-            express_info = _express_chat_periodo(notas, row.MES, contrato=contrato, recurso=recurso) if pode_ver_express else {"express": 0, "faturamento_express": 0.0}
-            express_qtd = int(express_info.get("express", 0) or 0)
-            fat_total = float(row.FATURAMENTO) + float(express_info.get("faturamento_express", 0.0) or 0.0)
-            linha_mes = f"- **{_nome_mes_chat(row.MES)}:** {numero(row.NOTAS)} notas"
-            if pode_ver_express and express_qtd:
-                linha_mes += f" (+{numero(express_qtd)} express)"
-            if pode_ver_financeiro:
-                linha_mes += f" • {dinheiro(fat_total)}"
-            linhas.append(linha_mes)
-        return "\n".join(linhas)
+        soma = df.groupby(idx, as_index=False).agg({
+            "TAREFA": "count",
+            "T. INSTALA": "sum",
+            "T. VISITADA": "sum",
+            "FALTAM": "sum",
+        }).rename(columns={"TAREFA": "TOTAL TAREFAS"})
 
-    df = _filtrar_base_chat(base, mes=mes, contrato=contrato, recurso=recurso)
-    express_info = _express_chat_periodo(notas, mes, contrato=contrato, recurso=recurso) if (mes and pode_ver_express) else {"express": 0, "faturamento_express": 0.0, "tem_base": False}
+        out = pivot.merge(soma, on=idx, how="left")
+        out["_D_ORDEM"] = out["D OPERACIONAL"].apply(indice_d_v7)
+        return out.sort_values(idx[:-1] + ["_D_ORDEM"]).drop(columns=["_D_ORDEM"])
 
-    # Ranking.
-    if tipo == "ranking":
-        if df.empty:
-            return f"Não encontrei dados para montar ranking de {escopo_txt} em **{periodo_txt}**."
+    total_d = _agrupar(["BASE", "D OPERACIONAL"])
+    total_d.insert(1, "NÍVEL", "TOTAL BASE")
+    total_d.insert(2, "MUNICÍPIO", "TOTAL")
+    total_d.insert(3, "MUNICÍPIO NOME", "TOTAL DA BASE")
 
-        eh_recusa = pd.to_numeric(df.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
-        pagaveis = df[eh_recusa == 0].copy()
-        if pagaveis.empty:
-            return f"Não há notas pagáveis para montar ranking em **{periodo_txt}**."
+    mun_d = _agrupar(["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"])
+    mun_d.insert(1, "NÍVEL", "MUNICÍPIO")
 
-        ranking = (
-            pagaveis.groupby("RECURSO", dropna=False)
-            .agg(NOTAS=("ORDEM_DE_SERVICO", "nunique"), FATURAMENTO=("FATURAMENTO", "sum"))
+    colunas = [
+        "BASE", "NÍVEL", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL",
+        "TOTAL TAREFAS", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL",
+        "T. INSTALA", "T. VISITADA", "FALTAM"
+    ]
+    for c in colunas:
+        if c not in total_d.columns:
+            total_d[c] = ""
+        if c not in mun_d.columns:
+            mun_d[c] = ""
+
+    total_d = total_d[colunas]
+    mun_d = mun_d[colunas]
+
+    # Linha em branco para facilitar leitura no Excel.
+    branco = pd.DataFrame([{c: "" for c in colunas}])
+    return pd.concat([total_d, branco, mun_d], ignore_index=True)
+
+
+def gerar_resumo_d_consolidado_v7(resultados):
+    """V9: gera consolidado com RESUMO_GERAL, DETALHE_MUNICIPIO e uma aba por base."""
+    if not resultados:
+        return None
+
+    linhas_todas = []
+    for r in resultados:
+        caminho = r.get("xlsx")
+        if not caminho or not os.path.exists(caminho):
+            continue
+        try:
+            df = pd.read_excel(caminho, sheet_name="TAREFAS")
+        except Exception as e:
+            print(f"Aviso: não consegui ler '{caminho}' para consolidar D: {e}")
+            continue
+        df["BASE"] = slug_base(r.get("base", ""))
+        df["PERÍODO"] = r.get("periodo_inicio", "")
+        linhas_todas.append(df)
+
+    if not linhas_todas:
+        return None
+
+    df_all = pd.concat(linhas_todas, ignore_index=True)
+    if "D OPERACIONAL" not in df_all.columns:
+        return None
+
+    # Resumo geral por base e D, igual ao que já funcionou no teste.
+    resumo_d = (
+        df_all.pivot_table(
+            index=["BASE", "D OPERACIONAL"],
+            columns="SITUAÇÃO LEITURA",
+            values="TAREFA",
+            aggfunc="count",
+            fill_value=0
+        )
+        .reset_index()
+    )
+    for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+        if col not in resumo_d.columns:
+            resumo_d[col] = 0
+    resumo_d["TOTAL TAREFAS"] = resumo_d[["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]].sum(axis=1)
+    resumo_d["_D_ORDEM"] = resumo_d["D OPERACIONAL"].apply(indice_d_v7)
+    resumo_d = resumo_d.sort_values(["BASE", "_D_ORDEM"]).drop(columns=["_D_ORDEM"])
+    resumo_d = resumo_d[["BASE", "D OPERACIONAL", "TOTAL TAREFAS", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]]
+
+    # Detalhe por município e D, com instalações/visitadas/faltam.
+    detalhe_municipio = pd.DataFrame()
+    if all(c in df_all.columns for c in ["MUNICÍPIO", "MUNICÍPIO NOME"]):
+        detalhe_municipio = (
+            df_all.pivot_table(
+                index=["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"],
+                columns="SITUAÇÃO LEITURA",
+                values="TAREFA",
+                aggfunc="count",
+                fill_value=0
+            )
             .reset_index()
-            .sort_values(["NOTAS", "FATURAMENTO"], ascending=[False, False])
-            .head(5)
         )
-        linhas = [f"🏆 **{NOME_ASSISTENTE} — Top 5 em {periodo_txt}**", ""]
-        for i, row in enumerate(ranking.itertuples(index=False), start=1):
-            linhas.append(f"{i}. **{row.RECURSO}** — {numero(row.NOTAS)} notas • {dinheiro(row.FATURAMENTO)}")
-        return "\n".join(linhas)
-
-    # Recusas por tipo.
-    if tipo == "recusas":
-        resumo_recusas = _resumo_recusas_tipo(df)
-        if resumo_recusas.empty:
-            return f"Não encontrei recusas para {escopo_txt} em **{periodo_txt}**."
-
-        total = int(resumo_recusas["QTD"].sum())
-        linhas = [f"🚧 **{NOME_ASSISTENTE} — recusas de {escopo_txt} em {periodo_txt}**", ""]
-        linhas.append(f"Total de recusas: **{numero(total)}**")
-        linhas.append("")
-        linhas.append("**Por tipo:**")
-        for row in resumo_recusas.itertuples(index=False):
-            linhas.append(f"- {row.RECUSA}: **{numero(row.QTD)}**")
-        return "\n".join(linhas)
-
-    resumo = _resumo_numerico_chat(df)
-    express_qtd = int(express_info.get("express", 0) or 0)
-    faturamento_express = float(express_info.get("faturamento_express", 0.0) or 0.0)
-    resumo_recusas = _resumo_recusas_tipo(df)
-
-    if df.empty and express_qtd == 0:
-        return f"Não encontrei dados para {escopo_txt} em **{periodo_txt}**."
-
-    # Pergunta direta sobre express.
-    if tipo == "express" and not quer_somar_express:
-        linhas = [f"⚡ **{NOME_ASSISTENTE} — pagamento express de {escopo_txt} em {periodo_txt}**", ""]
-        linhas.append(f"• Express: **{numero(express_qtd)}**")
-        if faturamento_express and pode_ver_financeiro:
-            linhas.append(f"• Faturamento express: **{dinheiro(faturamento_express)}**")
-        if not express_info.get("tem_base"):
-            linhas.append("")
-            linhas.append("Obs.: não encontrei a planilha de Pagamento Express no local configurado.")
-        return "\n".join(linhas)
-
-    faturamento_base = float(resumo["faturamento"])
-    faturamento_total = faturamento_base + faturamento_express
-    total_atendimentos = int(resumo["notas"] + express_qtd)
-    volume_com_recusas = total_atendimentos + int(resumo["recusas"])
-    taxa_recusa = (resumo["recusas"] / volume_com_recusas * 100) if volume_com_recusas else 0
-    media_dia = (resumo["notas"] / resumo["dias_ativos"]) if resumo["dias_ativos"] else 0
-
-    titulo_alvo = recurso or contrato or "Geral"
-    linhas = [f"📊 **{titulo_alvo} — {periodo_txt}**", ""]
-    linhas.append(f"• **Produção:** {numero(resumo['notas'])} notas" + (f" (+{numero(express_qtd)} express)" if (pode_ver_express and express_qtd) else ""))
-    linhas.append(f"• **Total de atendimentos:** {numero(total_atendimentos)}")
-    if pode_ver_financeiro:
-        linhas.append(f"• **Faturamento:** {dinheiro(faturamento_total)}")
-        if faturamento_express and pode_ver_express:
-            linhas.append(f"  - Sem express: {dinheiro(faturamento_base)}")
-            linhas.append(f"  - Express: {dinheiro(faturamento_express)}")
-    linhas.append(f"• **Cortes / religues:** {numero(resumo['cortes'])} / {numero(resumo['religues'])}")
-    linhas.append(f"• **Recusas:** {numero(resumo['recusas'])} ({taxa_recusa:.1f}%)".replace(".", ","))
-    if resumo["dias_ativos"]:
-        linhas.append(f"• **Média/dia:** {media_dia:.1f} notas".replace(".", ","))
-    if not recurso:
-        linhas.append(f"• **Recursos ativos:** {numero(resumo['recursos'])}")
-
-    linhas.append("")
-    for destaque in _destaques_executivos_chat(resumo, express_qtd if pode_ver_express else 0, resumo_recusas):
-        linhas.append(destaque)
-
-    if quer_express and not express_info.get("tem_base"):
-        linhas.append("")
-        linhas.append("Obs.: não encontrei a planilha de Pagamento Express no local configurado.")
-
-    return "\n".join(linhas)
-
-
-def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True, modo_leitura=False):
-    """Mostra o G.Z.U.S. em formato de popup fixo no canto inferior direito, respeitando o perfil logado."""
-    st.markdown(
-        """
-        <style>
-        .gzus-brand-card {
-            background: linear-gradient(135deg, rgba(15,23,42,0.98), rgba(29,78,216,0.92));
-            color: white;
-            border-radius: 18px;
-            padding: 12px 14px;
-            margin-bottom: 10px;
-            border: 1px solid rgba(147,197,253,0.25);
-        }
-        .gzus-brand-card .gzus-title {
-            font-weight: 950;
-            letter-spacing: 0.08em;
-            font-size: 1rem;
-        }
-        .gzus-brand-card .gzus-subtitle {
-            color: #bfdbfe;
-            font-size: 0.78rem;
-            margin-top: 2px;
-        }
-        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) {
-            position: fixed !important;
-            right: 22px !important;
-            bottom: 22px !important;
-            width: min(440px, calc(100vw - 44px)) !important;
-            max-height: min(660px, calc(100vh - 44px));
-            overflow: auto;
-            z-index: 9999 !important;
-            background: rgba(15, 23, 42, 0.96);
-            border: 1px solid rgba(147, 197, 253, 0.28);
-            border-radius: 24px;
-            padding: 10px 12px 12px 12px;
-            box-shadow: 0 22px 65px rgba(0,0,0,0.38);
-        }
-        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) details {
-            border: 0 !important;
-        }
-        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) summary {
-            font-weight: 900;
-        }
-        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) [data-testid="stMarkdownContainer"] p,
-        div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) [data-testid="stMarkdownContainer"] li {
-            font-size: 0.92rem;
-        }
-        @media (max-width: 768px) {
-            div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) {
-                left: 10px !important;
-                right: 10px !important;
-                bottom: 10px !important;
-                width: auto !important;
-                max-height: 48vh !important;
-                padding: 8px 10px 10px 10px !important;
-                border-radius: 20px !important;
-                overflow-y: auto !important;
-                background: rgba(15, 23, 42, 0.98) !important;
-                box-shadow: 0 12px 38px rgba(0,0,0,0.48) !important;
-            }
-            div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) summary {
-                font-size: 0.92rem !important;
-                color: #f8fafc !important;
-            }
-            div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) .gzus-brand-card {
-                padding: 10px 12px !important;
-                margin-bottom: 8px !important;
-            }
-            div[data-testid="stVerticalBlock"]:has(.chatbot-popup-anchor):not(:has(div[data-testid="stVerticalBlock"] .chatbot-popup-anchor)) input {
-                font-size: 16px !important;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    with st.container():
-        st.markdown('<span class="chatbot-popup-anchor"></span>', unsafe_allow_html=True)
-        with st.expander("🤖 G.Z.U.S. Assistente", expanded=False):
-            st.markdown(
-                f"""
-                <div class="gzus-brand-card">
-                    <div class="gzus-title">G.Z.U.S.</div>
-                    <div class="gzus-subtitle">Gestão Inteligente de Serviços</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.caption("Pergunte de forma natural: “5981 fez quanto?”, “carro faturou quanto?”, “como foi abril?”")
-
-            if "chatbot_painel_historico" not in st.session_state:
-                st.session_state.chatbot_painel_historico = []
-
-            for item in st.session_state.chatbot_painel_historico[-4:]:
-                st.markdown(f"**Você:** {item['pergunta']}")
-                st.markdown(item["resposta"])
-                st.markdown("---")
-
-            pergunta = st.text_input(
-                "Pergunta",
-                placeholder="Ex: 5981 fez quanto em abril?",
-                key="chatbot_painel_pergunta",
-                label_visibility="collapsed",
-            )
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                enviar = st.button("Perguntar", use_container_width=True, key="chatbot_painel_enviar")
-            with col2:
-                limpar = st.button("Limpar", use_container_width=True, key="chatbot_painel_limpar")
-
-            if limpar:
-                st.session_state.chatbot_painel_historico = []
-                st.session_state["chatbot_painel_contexto"] = {}
-                st.rerun()
-
-            if enviar and pergunta.strip():
-                resposta = responder_chatbot_painel(
-                    pergunta,
-                    notas,
-                    pode_ver_financeiro=pode_ver_financeiro,
-                    pode_ver_express=pode_ver_express,
-                    modo_leitura=modo_leitura,
-                )
-                st.session_state.chatbot_painel_historico.append({"pergunta": pergunta, "resposta": resposta})
-                st.rerun()
-
-
-
-bases, faltando = carregar_bases()
-
-if PERFIL_ACESSO == "supervisor_stc":
-    bases = filtrar_bases_para_supervisor_stc(bases)
-
-if not bases:
-    st.error("Nenhum CSV foi encontrado. Verifique se os arquivos estão na pasta dashboard.")
-    st.stop()
-
-contratos_original = bases.get("contratos", pd.DataFrame())
-carro_original = bases.get("carro", pd.DataFrame())
-dias_original = bases.get("dias", pd.DataFrame())
-carro_dias_original = bases.get("carro_dias", pd.DataFrame())
-notas = bases.get("notas", pd.DataFrame())
-
-# Perfis restritos têm telas próprias para evitar exposição acidental de dados financeiros.
-if PERFIL_ACESSO == "supervisor_leitura":
-    mostrar_painel_supervisor_leitura()
-    mostrar_chatbot_popup(pd.DataFrame(), pode_ver_financeiro=False, pode_ver_express=False, modo_leitura=True)
-    st.stop()
-
-if PERFIL_ACESSO == "supervisor_stc":
-    mostrar_painel_supervisor_stc(bases)
-    if not notas.empty:
-        mostrar_chatbot_popup(notas, pode_ver_financeiro=False, pode_ver_express=False)
-    st.stop()
-
-st.title("🤖 G.Z.U.S. — Gestão Inteligente de Serviços")
-st.caption("Painel operacional com assistente inteligente. Atualização automática a cada 15 minutos.")
-st.sidebar.caption(f"Perfil: {NOME_ACESSO}")
-
-if faltando:
-    st.warning("Arquivos não encontrados: " + ", ".join(faltando))
-
-# Popup do assistente: usa os mesmos dados do painel, sem depender de API externa.
-if PERFIL_ACESSO == "gerente" and not notas.empty:
-    mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True)
-
-# ==============================
-# FILTROS EM BOTÕES
-# ==============================
-
-st.sidebar.header("Filtros")
-
-if st.sidebar.button("🔄 Atualizar dados", use_container_width=True):
-    st.cache_data.clear()
-    st.rerun()
-
-
-contratos_lista = []
-
-for base in [contratos_original, dias_original, carro_original, carro_dias_original]:
-    if not base.empty and "CONTRATO" in base.columns:
-        contratos_lista += base["CONTRATO"].dropna().unique().tolist()
-
-contratos_lista = sorted(set(contratos_lista))
-
-if "contrato_escolhido" not in st.session_state:
-    st.session_state.contrato_escolhido = "Todos"
-
-if "modo_painel" not in st.session_state:
-    st.session_state.modo_painel = "corte"
-
-st.sidebar.markdown("### Contratos - Corte")
-
-if st.sidebar.button("📊 Todos", use_container_width=True):
-    st.session_state.modo_painel = "corte"
-    st.session_state.contrato_escolhido = "Todos"
-
-for contrato_nome in contratos_lista:
-    if st.sidebar.button(f"🔹 {contrato_nome}", use_container_width=True):
-        st.session_state.modo_painel = "corte"
-        st.session_state.contrato_escolhido = contrato_nome
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Contratos - Leitura (em testes)")
-
-if st.sidebar.button("📖 Americana e Piracicaba", use_container_width=True):
-    st.session_state.modo_painel = "leitura"
-
-modo_painel = st.session_state.modo_painel
-contrato_escolhido = st.session_state.contrato_escolhido
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Tela selecionada:**")
-if modo_painel == "leitura":
-    st.sidebar.info("Leitura (em testes)")
-else:
-    st.sidebar.info(contrato_escolhido)
-
-if modo_painel == "corte" and not notas.empty:
-    mostrar_status_atualizacao(notas, contrato_escolhido)
-
-# Este período vale para a tela inicial "Resumo".
-# Por padrão, fica só no mês mais recente da base, para não somar março + abril sem querer.
-meses_base = meses_disponiveis_da_base(notas)
-meses_escolhidos_resumo = []
-
-if not meses_base.empty:
-    opcoes_meses_resumo = meses_base["MES"].tolist()
-    mes_mais_recente = opcoes_meses_resumo[0]
-
-    if "meses_resumo" not in st.session_state:
-        st.session_state.meses_resumo = [mes_mais_recente]
-
-    st.sidebar.markdown("### Período do resumo")
-
-    if st.sidebar.button("📅 Usar mês mais recente", use_container_width=True):
-        st.session_state.meses_resumo = [mes_mais_recente]
-
-    if st.sidebar.button("🧮 Somar todos os meses", use_container_width=True):
-        st.session_state.meses_resumo = opcoes_meses_resumo.copy()
-
-    meses_escolhidos_resumo = st.sidebar.multiselect(
-        "Meses que entram na tela inicial",
-        opcoes_meses_resumo,
-        default=st.session_state.meses_resumo,
-    )
-
-    if not meses_escolhidos_resumo:
-        meses_escolhidos_resumo = [mes_mais_recente]
-
-    st.session_state.meses_resumo = meses_escolhidos_resumo
-
-contratos = contratos_original.copy()
-carro = carro_original.copy()
-dias = dias_original.copy()
-carro_dias = carro_dias_original.copy()
-
-if modo_painel == "leitura":
-    mostrar_painel_leitura()
-    st.stop()
-
-if contrato_escolhido != "Todos":
-    if not contratos.empty and "CONTRATO" in contratos.columns:
-        contratos = contratos[contratos["CONTRATO"] == contrato_escolhido]
-
-    if not dias.empty and "CONTRATO" in dias.columns:
-        dias = dias[dias["CONTRATO"] == contrato_escolhido]
-
-    if not carro.empty and "CONTRATO" in carro.columns:
-        carro = carro[carro["CONTRATO"] == contrato_escolhido]
-
-    if not carro_dias.empty and "CONTRATO" in carro_dias.columns:
-        carro_dias = carro_dias[carro_dias["CONTRATO"] == contrato_escolhido]
-
-mostrar_carro = not carro.empty
-
-mostrar_aba_carro = contrato_escolhido in ["Todos", "STC Jundiai"]
-
-nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana"]
-if mostrar_aba_carro:
-    nomes_abas.append("Carro estimado")
-nomes_abas += ["Notas", "Downloads"]
-
-abas = st.tabs(nomes_abas)
-aba_resumo = abas[0]
-aba_parcial = abas[1]
-aba_ranking = abas[2]
-aba_comparativo = abas[3]
-aba_dias = abas[4]
-
-if mostrar_aba_carro:
-    aba_carro = abas[5]
-    aba_notas = abas[6]
-    aba_download = abas[7]
-else:
-    aba_notas = abas[5]
-    aba_download = abas[6]
-
-# ==============================
-# ABA RESUMO
-# ==============================
-
-with aba_resumo:
-    resumo_contrato_periodo, resumo_grupo_periodo = resumo_por_periodo(
-        notas,
-        meses_escolhidos_resumo,
-        contrato_escolhido,
-    )
-
-    periodo_texto = ", ".join(meses_escolhidos_resumo) if meses_escolhidos_resumo else "mês mais recente"
-    st.caption(f"Resumo considerando: {periodo_texto}")
-
-    if resumo_contrato_periodo.empty:
-        st.info("Não há dados para o período selecionado.")
-    else:
-        total_contratos = resumo_contrato_periodo["FATURAMENTO"].sum()
-        qtd_notas = int(resumo_contrato_periodo["TOTAL_NOTAS"].sum())
-
-        carro_periodo = resumo_contrato_periodo[
-            resumo_contrato_periodo["CONTRATO"] == "STC Jundiai"
-        ].copy()
-
-        mostrar_carro_periodo = not carro_periodo.empty
-
-        if mostrar_carro_periodo:
-            total_carro_min = carro_periodo["FATURAMENTO_MIN"].sum()
-            total_carro_max = carro_periodo["FATURAMENTO_MAX"].sum()
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Faturamento contratos", dinheiro(total_contratos))
-            c2.metric("Carro estimado mínimo", dinheiro(total_carro_min))
-            c3.metric("Carro estimado máximo", dinheiro(total_carro_max))
-            c4.metric("Notas únicas", numero(qtd_notas))
-        else:
-            c1, c2 = st.columns(2)
-            c1.metric("Faturamento contratos", dinheiro(total_contratos))
-            c2.metric("Notas únicas", numero(qtd_notas))
-
-        st.subheader("Faturamento por contrato")
-
-        grafico_resumo = resumo_contrato_periodo.copy()
-        st.bar_chart(grafico_resumo, x="CONTRATO", y="FATURAMENTO")
-
-        st.markdown("**Resumo com corte + religue**")
-
-        if not resumo_grupo_periodo.empty:
-            tabela_resumo = resumo_grupo_periodo.pivot_table(
-                index="CONTRATO",
-                columns="GRUPO_NOTA",
-                values="FATURAMENTO",
-                aggfunc="sum",
-                fill_value=0,
-            ).reset_index()
-
-            for col in ["CORTE", "RELIGUE"]:
-                if col not in tabela_resumo.columns:
-                    tabela_resumo[col] = 0
-
-            tabela_resumo["TOTAL"] = tabela_resumo[["CORTE", "RELIGUE"]].sum(axis=1)
-            tabela_resumo = tabela_resumo[["CONTRATO", "CORTE", "RELIGUE", "TOTAL"]]
-
-            st.dataframe(formatar_tabela(tabela_resumo), use_container_width=True, hide_index=True)
-
-        st.markdown("**Detalhamento por contrato no período**")
-        colunas_detalhe_resumo = [
-            "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "EXPRESS",
-            "FATURAMENTO", "FATURAMENTO_EXPRESS", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
-        ]
-        colunas_detalhe_resumo = [c for c in colunas_detalhe_resumo if c in resumo_contrato_periodo.columns]
-        st.dataframe(
-            formatar_tabela(resumo_contrato_periodo[colunas_detalhe_resumo]),
-            use_container_width=True,
-            hide_index=True,
+        for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+            if col not in detalhe_municipio.columns:
+                detalhe_municipio[col] = 0
+        soma = df_all.groupby(["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"], as_index=False).agg({
+            "TAREFA": "count",
+            "T. INSTALA": "sum",
+            "T. VISITADA": "sum",
+            "FALTAM": "sum",
+        }).rename(columns={"TAREFA": "TOTAL TAREFAS"})
+        detalhe_municipio = detalhe_municipio.merge(
+            soma,
+            on=["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"],
+            how="left"
         )
-
-# ==============================
-# ABA PARCIAL DO DIA
-# ==============================
-
-with aba_parcial:
-    st.subheader("Parcial do dia por recurso")
-
-    # Base com recusas para mostrar na parcial.
-    parcial_com_recusas = preparar_parcial_do_dia(notas, incluir_recusas=True)
-
-    if parcial_com_recusas.empty:
-        st.info("Ainda não há dados suficientes para montar a parcial do dia.")
-    else:
-        if contrato_escolhido != "Todos" and "CONTRATO" in parcial_com_recusas.columns:
-            parcial_com_recusas = parcial_com_recusas[parcial_com_recusas["CONTRATO"] == contrato_escolhido]
-
-        datas_disponiveis = (
-            parcial_com_recusas[["DATA", "DATA_DT"]]
-            .drop_duplicates()
-            .sort_values("DATA_DT", ascending=False)
-        )
-
-        if datas_disponiveis.empty:
-            st.info("Nenhuma data encontrada na base de notas.")
-        else:
-            opcoes_datas = datas_disponiveis["DATA"].tolist()
-            data_escolhida = st.selectbox("Escolha o dia", opcoes_datas, index=0)
-
-            parcial_dia_tudo = parcial_com_recusas[parcial_com_recusas["DATA"] == data_escolhida].copy()
-            parcial_dia = parcial_dia_tudo[parcial_dia_tudo["EH_RECUSA"] == 0].copy()
-            recusas_dia = parcial_dia_tudo[parcial_dia_tudo["EH_RECUSA"] == 1].copy()
-
-            if parcial_dia_tudo.empty:
-                st.info("Nenhuma nota encontrada para esse dia.")
-            else:
-                total_notas = parcial_dia["ORDEM_DE_SERVICO"].nunique() if not parcial_dia.empty else 0
-                total_recursos_ativos = parcial_dia["RECURSO"].nunique() if not parcial_dia.empty else 0
-                total_cortes = int(parcial_dia["EH_CORTE"].sum()) if not parcial_dia.empty else 0
-                total_religues = int(parcial_dia["EH_RELIGUE"].sum()) if not parcial_dia.empty else 0
-                total_recusas = recusas_dia["ORDEM_DE_SERVICO"].nunique() if not recusas_dia.empty else 0
-                total_faturamento = parcial_dia["FATURAMENTO"].sum() if not parcial_dia.empty else 0
-                total_faturamento_min = parcial_dia["FATURAMENTO_MIN"].sum() if not parcial_dia.empty else 0
-                total_faturamento_max = parcial_dia["FATURAMENTO_MAX"].sum() if not parcial_dia.empty else 0
-
-                c1, c2, c3, c4, c5 = st.columns(5)
-                c1.metric("Recursos ativos", numero(total_recursos_ativos))
-                c2.metric("Notas feitas", numero(total_notas))
-                c3.metric("Cortes", numero(total_cortes))
-                c4.metric("Religues", numero(total_religues))
-                c5.metric("Recusas", numero(total_recusas))
-
-                tem_carro_no_dia = "CONTRATO" in parcial_dia.columns and (
-                    parcial_dia["CONTRATO"] == "STC Jundiai"
-                ).any()
-
-                if tem_carro_no_dia:
-                    st.metric("Faturamento estimado", f"{dinheiro(total_faturamento_min)} a {dinheiro(total_faturamento_max)}")
-                else:
-                    st.metric("Faturamento", dinheiro(total_faturamento))
-
-                st.markdown('<div class="section-title">Ranking do dia por produção</div>', unsafe_allow_html=True)
-
-                resumo_producao = (
-                    parcial_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
-                    .agg(
-                        TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
-                        CORTES=("EH_CORTE", "sum"),
-                        RELIGUES=("EH_RELIGUE", "sum"),
-                        FATURAMENTO=("FATURAMENTO", "sum"),
-                        FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
-                        FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
-                    )
-                    .reset_index()
-                    if not parcial_dia.empty
-                    else pd.DataFrame(columns=[
-                        "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES",
-                        "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
-                    ])
-                )
-
-                resumo_recusas_por_recurso = (
-                    recusas_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
-                    .agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
-                    .reset_index()
-                    if not recusas_dia.empty
-                    else pd.DataFrame(columns=["RECURSO", "CONTRATO", "RECUSAS"])
-                )
-
-                resumo_equipe = resumo_producao.merge(
-                    resumo_recusas_por_recurso,
-                    on=["RECURSO", "CONTRATO"],
-                    how="outer",
-                ).fillna({
-                    "TOTAL_NOTAS": 0,
-                    "CORTES": 0,
-                    "RELIGUES": 0,
-                    "FATURAMENTO": 0,
-                    "FATURAMENTO_MIN": 0,
-                    "FATURAMENTO_MAX": 0,
-                    "RECUSAS": 0,
-                })
-
-                for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS"]:
-                    if col in resumo_equipe.columns:
-                        resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0).astype(int)
-
-                for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
-                    if col in resumo_equipe.columns:
-                        resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0)
-
-                resumo_equipe = (
-                    resumo_equipe
-                    .sort_values(["TOTAL_NOTAS", "FATURAMENTO", "RECUSAS"], ascending=[False, False, False])
-                    .reset_index(drop=True)
-                )
-
-                if resumo_equipe.empty:
-                    st.info("Nenhuma nota ou recusa encontrada para esse dia.")
-                else:
-                    resumo_equipe.insert(0, "POSIÇÃO", range(1, len(resumo_equipe) + 1))
-
-                    recursos_zero = resumo_equipe[
-                        (resumo_equipe["TOTAL_NOTAS"] == 0) & (resumo_equipe["RECUSAS"] > 0)
-                    ].copy()
-
-                    if not recursos_zero.empty:
-                        lista_zero = ", ".join(recursos_zero["RECURSO"].astype(str).head(12).tolist())
-                        if len(recursos_zero) > 12:
-                            lista_zero += f" e mais {len(recursos_zero) - 12}"
-                        st.markdown(
-                            f"""
-                            <div class="zero-card">
-                                ⚠️ <b>Recursos com zero produção no dia:</b> {numero(len(recursos_zero))}<br>
-                                {lista_zero}
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-
-                    top10_dia = resumo_equipe.head(10).copy()
-
-                    grafico_parcial = (
-                        alt.Chart(top10_dia)
-                        .mark_bar(
-                            cornerRadiusTopLeft=8,
-                            cornerRadiusTopRight=8,
-                        )
-                        .encode(
-                            x=alt.X(
-                                "RECURSO:N",
-                                sort=alt.SortField(field="TOTAL_NOTAS", order="descending"),
-                                title="Recurso",
-                                axis=alt.Axis(labelAngle=-90),
-                            ),
-                            y=alt.Y("TOTAL_NOTAS:Q", title="Notas feitas"),
-                            tooltip=[
-                                alt.Tooltip("POSIÇÃO:Q", title="Posição"),
-                                alt.Tooltip("RECURSO:N", title="Recurso"),
-                                alt.Tooltip("TOTAL_NOTAS:Q", title="Notas feitas"),
-                                alt.Tooltip("CORTES:Q", title="Cortes"),
-                                alt.Tooltip("RELIGUES:Q", title="Religues"),
-                                alt.Tooltip("RECUSAS:Q", title="Recusas"),
-                                alt.Tooltip("FATURAMENTO:Q", title="Faturamento", format=",.2f"),
-                            ],
-                        )
-                        .properties(height=330)
-                    )
-
-                    st.altair_chart(grafico_parcial, use_container_width=True)
-
-                    def faturamento_linha_equipe(row):
-                        if row.get("CONTRATO") == "STC Jundiai":
-                            return f"{dinheiro(row.get('FATURAMENTO_MIN', 0))} a {dinheiro(row.get('FATURAMENTO_MAX', 0))}"
-                        return dinheiro(row.get("FATURAMENTO", 0))
-
-                    tabela_equipe = resumo_equipe.copy()
-                    tabela_equipe["FATURAMENTO"] = tabela_equipe.apply(faturamento_linha_equipe, axis=1)
-                    tabela_equipe = tabela_equipe[[
-                        "POSIÇÃO", "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS", "FATURAMENTO"
-                    ]]
-
-                    st.dataframe(formatar_tabela(tabela_equipe), use_container_width=True, hide_index=True)
-
-                st.markdown('<div class="section-title">Recusas do dia</div>', unsafe_allow_html=True)
-
-                if recusas_dia.empty:
-                    st.success("Nenhuma recusa encontrada para esse dia.")
-                else:
-                    with st.expander("Ver detalhes das recusas", expanded=True):
-                        colunas_recusa = [
-                            "ORDEM_DE_SERVICO", "RECURSO", "CONTRATO", "GRUPO_NOTA",
-                            "RECUSA", "DATA", "ELETRICISTA1", "ELETRICISTA2"
-                        ]
-                        colunas_recusa = [c for c in colunas_recusa if c in recusas_dia.columns]
-                        st.dataframe(
-                            recusas_dia[colunas_recusa].sort_values(["RECURSO", "ORDEM_DE_SERVICO"]),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-
-                st.markdown('<div class="section-title">Detalhamento das notas feitas no dia</div>', unsafe_allow_html=True)
-                colunas_detalhe = [
-                    "ORDEM_DE_SERVICO", "RECURSO", "CONTRATO", "GRUPO_NOTA", "DATA", "ELETRICISTA1", "ELETRICISTA2"
-                ]
-                colunas_detalhe = [c for c in colunas_detalhe if c in parcial_dia.columns]
-                if parcial_dia.empty:
-                    st.info("Nenhuma nota feita para detalhar.")
-                else:
-                    st.dataframe(
-                        parcial_dia[colunas_detalhe].sort_values(["RECURSO", "ORDEM_DE_SERVICO"]),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-
-# ==============================
-# ABA RANKING DE RECURSOS
-# ==============================
-
-with aba_ranking:
-    st.subheader("🏆 Ranking de recursos")
-    st.caption("Ranking por RECURSO/equipe, usando o código operacional da equipe, como SAL5539-EMP.")
-    st.markdown(
-        '<div class="soft-note">⚡ Otimizado com cache: dias anteriores ficam reaproveitados, então alternar filtros tende a ficar mais rápido após o primeiro carregamento.</div>',
-        unsafe_allow_html=True,
-    )
-
-    base_exec = montar_base_executores(notas)
-
-    if base_exec.empty:
-        st.info("Ainda não há dados suficientes de eletricistas/executores para montar o ranking.")
-    else:
-        col_f1, col_f2, col_f3, col_f4 = st.columns([1.2, 1.1, 1.2, 1.1])
-
-        dias_ranking, semanas_ranking, meses_ranking = opcoes_periodo_ranking(base_exec)
-        contratos_exec = ["Todos"] + sorted(base_exec["CONTRATO"].dropna().unique().tolist())
-        contrato_ranking = col_f1.selectbox(
-            "Contrato",
-            contratos_exec,
-            index=contratos_exec.index(contrato_escolhido) if contrato_escolhido in contratos_exec else 0,
-            key="ranking_contrato",
-        )
-
-        tipo_periodo = col_f2.selectbox(
-            "Período",
-            ["Total", "Dia", "Semana", "Mês"],
-            index=3,
-            key="ranking_tipo_periodo",
-        )
-
-        valor_periodo = None
-        if tipo_periodo == "Dia":
-            valor_periodo = col_f3.selectbox("Dia", dias_ranking, key="ranking_dia")
-        elif tipo_periodo == "Semana":
-            valor_periodo = col_f3.selectbox("Semana iniciada em", semanas_ranking, key="ranking_semana")
-        elif tipo_periodo == "Mês":
-            valor_periodo = col_f3.selectbox("Mês", meses_ranking, key="ranking_mes")
-        else:
-            col_f3.info("Considerando toda a base")
-
-        criterio = col_f4.selectbox("Ordenar por", ["Notas", "Faturamento"], key="ranking_criterio")
-
-        base_filtrada_exec, ranking_exec = ranking_recursos_cacheado(
-            base_exec, contrato_ranking, tipo_periodo, valor_periodo, criterio
-        )
-
-        express_data_max = ""
-        express_resumo_recurso = pd.DataFrame()
-        express_sem_vinculo = pd.DataFrame()
-        express_caminho = ""
-        total_express_mensal = 0
-        fat_express_mensal = 0.0
-
-        if tipo_periodo == "Mês" and valor_periodo:
-            (
-                ranking_exec,
-                express_resumo_recurso,
-                express_data_max,
-                express_sem_vinculo,
-                express_caminho,
-                total_express_mensal,
-                fat_express_mensal,
-            ) = aplicar_express_no_ranking_mensal(
-                ranking_exec,
-                notas,
-                valor_periodo,
-                contrato_ranking,
-            )
-
-        if ranking_exec.empty:
-            st.info("Nenhum recurso encontrado para os filtros selecionados.")
-        else:
-            total_notas_exec = int(ranking_exec["NOTAS"].sum()) if "NOTAS" in ranking_exec.columns else int(base_filtrada_exec["ORDEM_DE_SERVICO"].nunique())
-            total_executores = int(ranking_exec["RECURSO"].nunique())
-            total_fat_atribuido = float(ranking_exec["FATURAMENTO_ATRIBUÍDO"].sum())
-
-            if tipo_periodo == "Mês" and valor_periodo:
-                if express_caminho:
-                    if express_data_max:
-                        st.info(f"Pagamento Express conciliado por DE/PARA Nome → Recurso até {express_data_max}.")
-                    else:
-                        st.info("Pagamento Express conciliado por DE/PARA Nome → Recurso. A planilha não trouxe data válida para exibir o limite.")
-                else:
-                    st.caption("Pagamento Express: arquivo não localizado.")
-
-                if not express_sem_vinculo.empty:
-                    st.warning(f"Pagamento Express: {numero(len(express_sem_vinculo))} linha(s) não encontraram nome no DE/PARA Nome → Recurso.")
-
-                # Auditoria sempre visível no período mensal: se zerar, a tela mostra exatamente o motivo.
-                with st.expander("Auditoria do Pagamento Express", expanded=(total_express_mensal == 0)):
-                    if express_caminho:
-                        st.caption(f"Arquivo lido: {express_caminho}")
-                    if not express_resumo_recurso.empty:
-                        st.success(f"Express conciliado: {numero(total_express_mensal)} nota(s) no mês {valor_periodo}.")
-                        st.dataframe(
-                            formatar_tabela(express_resumo_recurso.sort_values(["EXPRESS", "RECURSO"], ascending=[False, True])),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-                    else:
-                        st.info("Nenhum Express entrou no ranking para este filtro. Verifique abaixo se o arquivo foi lido, se a data bate com o mês e se os nomes estão no DE/PARA.")
-                        caminho_debug = caminho_pagamento_express()
-                        if caminho_debug:
-                            express_debug = ler_pagamento_express(str(caminho_debug))
-                            if express_debug.empty:
-                                st.warning("O arquivo foi encontrado, mas ficou vazio após o filtro de VALIDAÇÃO = PAGAMENTO EXPRESS ou sem nome de executor.")
-                            else:
-                                total_linhas_debug = len(express_debug)
-                                datas_validas_debug = int(express_debug.get("DATA_EXPRESS_DT", pd.Series(dtype=object)).notna().sum()) if "DATA_EXPRESS_DT" in express_debug.columns else 0
-                                st.write({
-                                    "linhas_lidas": total_linhas_debug,
-                                    "datas_validas": datas_validas_debug,
-                                    "meses_no_excel": express_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y").value_counts(dropna=False).to_dict() if "DATA_EXPRESS_DT" in express_debug.columns and express_debug["DATA_EXPRESS_DT"].notna().any() else {},
-                                    "nomes_mapeados": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
-                                })
-                                cols_debug = [
-                                    "NOME_EXPRESS", "NOME_EXPRESS_NORM", "DATA_EXPRESS_DT", "NOTA_NORM", "VALIDAÇÃO", "VALIDACAO"
-                                ]
-                                cols_debug = [c for c in cols_debug if c in express_debug.columns]
-                                amostra_debug = express_debug.copy()
-                                if "DATA_EXPRESS_DT" in amostra_debug.columns and amostra_debug["DATA_EXPRESS_DT"].notna().any():
-                                    amostra_debug = amostra_debug[amostra_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y") == valor_periodo].copy()
-                                amostra_debug["RECURSO_DEPARA"] = amostra_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("") if "NOME_EXPRESS_NORM" in amostra_debug.columns else ""
-                                cols_debug = cols_debug + ["RECURSO_DEPARA"]
-                                st.dataframe(amostra_debug[cols_debug].head(80), use_container_width=True, hide_index=True)
-                        else:
-                            st.error("Arquivo pagamento_express.xlsx não localizado na pasta dashboard nem na raiz do app.")
-
-            media_notas_executor = total_notas_exec / total_executores if total_executores else 0
-
-            lider = ranking_exec.iloc[0]
-
-            st.markdown(
-                f"""
-                <div class="executive-card">
-                    <h3>Resumo executivo do ranking</h3>
-                    <div>🥇 Líder: <b>{lider['RECURSO']}</b> • {numero(lider['NOTAS'])} notas • {dinheiro(lider['FATURAMENTO_ATRIBUÍDO'])} em faturamento atribuído</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Recursos ativos", numero(total_executores))
-            m2.metric("Notas únicas", numero(total_notas_exec))
-            m3.metric("Faturamento atribuído", dinheiro(total_fat_atribuido))
-            if tipo_periodo == "Mês" and valor_periodo:
-                m4.metric("Express", numero(total_express_mensal))
-            else:
-                m4.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
-
-            if tipo_periodo == "Mês" and valor_periodo and not express_sem_vinculo.empty:
-                with st.expander("Ver Express sem vínculo de Ordem de Serviço"):
-                    cols_sem_vinculo = [
-                        "NOTA", "NOTA_NORM", "DATA_EXPRESS_DT", "VALIDAÇÃO", "VALIDACAO",
-                        "NOME_EXECUTOR_01", "NOME_EXECUTOR_02", "NOME_EXECUTOR", "EXECUTOR"
-                    ]
-                    cols_sem_vinculo = [c for c in cols_sem_vinculo if c in express_sem_vinculo.columns]
-                    st.dataframe(
-                        express_sem_vinculo[cols_sem_vinculo],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-            st.markdown('<div class="section-title">Top 10 recursos</div>', unsafe_allow_html=True)
-            top10 = ranking_exec.head(10).copy()
-            coluna_grafico = "NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO"
-            titulo_eixo_y = "Notas" if criterio == "Notas" else "Faturamento atribuído"
-
-            grafico_top10 = (
-                alt.Chart(top10)
-                .mark_bar(
-                    cornerRadiusTopLeft=8,
-                    cornerRadiusTopRight=8,
-                )
-                .encode(
-                    x=alt.X(
-                        "RECURSO:N",
-                        sort=alt.SortField(field=coluna_grafico, order="descending"),
-                        title="Recurso",
-                        axis=alt.Axis(labelAngle=-90),
-                    ),
-                    y=alt.Y(
-                        f"{coluna_grafico}:Q",
-                        title=titulo_eixo_y,
-                    ),
-                    tooltip=[
-                        alt.Tooltip("POSIÇÃO:Q", title="Posição"),
-                        alt.Tooltip("RECURSO:N", title="Recurso"),
-                        alt.Tooltip("NOTAS:Q", title="Notas"),
-                        alt.Tooltip("FATURAMENTO_ATRIBUÍDO:Q", title="Faturamento atribuído", format=",.2f"),
-                    ],
-                )
-                .properties(height=360)
-            )
-
-            st.altair_chart(grafico_top10, use_container_width=True)
-
-            st.markdown('<div class="section-title">Pódio</div>', unsafe_allow_html=True)
-            mostrar_podio_ranking(ranking_exec, nome_coluna="RECURSO")
-
-            st.markdown('<div class="section-title">Ranking detalhado</div>', unsafe_allow_html=True)
-            colunas_ranking = [
-                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "EXPRESS", "RECUSAS", "DIAS_ATIVOS",
-                "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
-                "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE", "QTD_EQUIPES"
-            ]
-            colunas_ranking = [c for c in colunas_ranking if c in ranking_exec.columns]
-            st.dataframe(
-                preparar_tabela_ranking(ranking_exec[colunas_ranking]),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            with st.expander("Ver notas consideradas no ranking"):
-                detalhe_cols = [
-                    "DATA", "RECURSO", "CONTRATO", "ORDEM_DE_SERVICO",
-                    "GRUPO_NOTA", "FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"
-                ]
-                detalhe_cols = [c for c in detalhe_cols if c in base_filtrada_exec.columns]
-                detalhe_base = base_filtrada_exec.copy()
-                if "EH_RECUSA" in detalhe_base.columns:
-                    detalhe_base = detalhe_base[pd.to_numeric(detalhe_base["EH_RECUSA"], errors="coerce").fillna(0).astype(int) == 0].copy()
-                detalhe = detalhe_base[detalhe_cols].sort_values(["DATA", "RECURSO"], ascending=[False, True])
-                st.dataframe(
-                    preparar_tabela_ranking(detalhe, colunas_moeda=["FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            if tipo_periodo == "Mês" and valor_periodo and not express_resumo_recurso.empty:
-                st.markdown('<div class="section-title">Pagamento Express conciliado por recurso</div>', unsafe_allow_html=True)
-                tabela_express_recurso = express_resumo_recurso.copy().sort_values(
-                    ["EXPRESS", "FATURAMENTO_EXPRESS"], ascending=False
-                )
-                st.dataframe(
-                    formatar_tabela(tabela_express_recurso[["RECURSO", "CONTRATO", "EXPRESS", "FATURAMENTO_EXPRESS"]]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            st.markdown('<div class="section-title">Resumo de recusas</div>', unsafe_allow_html=True)
-            recusas_tipo = calcular_recusas_por_tipo(base_filtrada_exec)
-            if recusas_tipo.empty:
-                st.success("Nenhuma recusa encontrada para os filtros selecionados.")
-            else:
-                total_recusas_periodo = int(recusas_tipo["QTD_RECUSAS"].sum())
-                st.caption(f"Total de recusas no período filtrado: {numero(total_recusas_periodo)}")
-
-                st.markdown("**Total por tipo de recusa**")
-                total_por_tipo = (
-                    recusas_tipo.groupby("RECUSA", dropna=False)
-                    .agg(QTD_RECUSAS=("QTD_RECUSAS", "sum"))
-                    .reset_index()
-                    .sort_values(["QTD_RECUSAS", "RECUSA"], ascending=[False, True])
-                )
-                st.dataframe(
-                    preparar_tabela_ranking(total_por_tipo),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                st.markdown("**Total por contrato e tipo de recusa**")
-                total_por_contrato = (
-                    recusas_tipo.groupby(["CONTRATO", "RECUSA"], dropna=False)
-                    .agg(QTD_RECUSAS=("QTD_RECUSAS", "sum"))
-                    .reset_index()
-                    .sort_values(["CONTRATO", "QTD_RECUSAS", "RECUSA"], ascending=[True, False, True])
-                )
-                st.dataframe(
-                    preparar_tabela_ranking(total_por_contrato),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                st.markdown("**Detalhamento por equipe, contrato e tipo de recusa**")
-                recusas_tipo = recusas_tipo.sort_values(
-                    ["RECURSO", "CONTRATO", "QTD_RECUSAS", "RECUSA"],
-                    ascending=[True, True, False, True],
-                )
-                st.dataframe(
-                    preparar_tabela_ranking(recusas_tipo),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            csv_ranking = ranking_exec.to_csv(index=False, sep=";", encoding="utf-8-sig")
-            st.download_button(
-                "Baixar ranking de recursos em CSV",
-                csv_ranking,
-                file_name="ranking_recursos.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-
-# ==============================
-# ABA COMPARATIVO MENSAL
-# ==============================
-
-with aba_comparativo:
-    st.subheader("Comparativo mensal")
-    st.caption("Compara o mês escolhido com o mês anterior, somando Pagamento Express pelo mês de referência.")
-
-    meses_base_comp = meses_disponiveis_da_base(notas)
-
-    if meses_base_comp.empty:
-        st.info("Ainda não encontrei meses disponíveis na base de notas.")
-    else:
-        opcoes_meses = meses_base_comp["MES"].tolist()
-        mes_escolhido = st.selectbox("Escolha o mês para comparar", opcoes_meses, index=0)
-
-        periodo_escolhido = meses_base_comp.loc[meses_base_comp["MES"] == mes_escolhido, "PERIODO"].iloc[0]
-        periodo_anterior = periodo_escolhido - 1
-        mes_anterior = periodo_anterior.strftime("%m/%Y")
-
-        atual = calcular_resumo_mensal(notas, mes_escolhido, contrato_escolhido)
-        anterior = calcular_resumo_mensal(notas, mes_anterior, contrato_escolhido)
-
-        st.markdown(f"**Comparando: {mes_escolhido} x {mes_anterior}**")
-
-        data_max_comp = data_maxima_do_mes(notas, mes_escolhido)
-        if data_max_comp is not None:
-            ultimo_dia_comp = data_max_comp.to_period("M").end_time.normalize()
-            if data_max_comp.normalize() < ultimo_dia_comp:
-                st.info(
-                    f"Atenção: {mes_escolhido} ainda é parcial. "
-                    f"Os dados vão até {data_max_comp.strftime('%d/%m/%Y')}."
-                )
-
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Faturamento", dinheiro(atual["FATURAMENTO"]), variacao_percentual(atual["FATURAMENTO"], anterior["FATURAMENTO"]))
-        c2.metric("Notas", numero(atual["TOTAL_NOTAS"]), variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"]))
-        c3.metric("Cortes", numero(atual["CORTES"]), variacao_percentual(atual["CORTES"], anterior["CORTES"]))
-        c4.metric("Religues", numero(atual["RELIGUES"]), variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"]))
-        c5.metric("Express", numero(atual.get("EXPRESS", 0)), variacao_percentual(atual.get("EXPRESS", 0), anterior.get("EXPRESS", 0)))
-
-        tabela_comparativo = pd.DataFrame([
-            {"Indicador": "Faturamento", mes_escolhido: dinheiro(atual["FATURAMENTO"]), mes_anterior: dinheiro(anterior["FATURAMENTO"]), "Variação": variacao_percentual(atual["FATURAMENTO"], anterior["FATURAMENTO"])},
-            {"Indicador": "Notas", mes_escolhido: numero(atual["TOTAL_NOTAS"]), mes_anterior: numero(anterior["TOTAL_NOTAS"]), "Variação": variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"])},
-            {"Indicador": "Cortes", mes_escolhido: numero(atual["CORTES"]), mes_anterior: numero(anterior["CORTES"]), "Variação": variacao_percentual(atual["CORTES"], anterior["CORTES"])},
-            {"Indicador": "Religues", mes_escolhido: numero(atual["RELIGUES"]), mes_anterior: numero(anterior["RELIGUES"]), "Variação": variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"])},
-            {"Indicador": "Express", mes_escolhido: numero(atual.get("EXPRESS", 0)), mes_anterior: numero(anterior.get("EXPRESS", 0)), "Variação": variacao_percentual(atual.get("EXPRESS", 0), anterior.get("EXPRESS", 0))},
-            {"Indicador": "Faturamento Express", mes_escolhido: dinheiro(atual.get("FATURAMENTO_EXPRESS", 0)), mes_anterior: dinheiro(anterior.get("FATURAMENTO_EXPRESS", 0)), "Variação": variacao_percentual(atual.get("FATURAMENTO_EXPRESS", 0), anterior.get("FATURAMENTO_EXPRESS", 0))},
-        ])
-        st.dataframe(tabela_comparativo, use_container_width=True, hide_index=True)
-
-        st.markdown("**Evolução mês a mês**")
-        linhas_evolucao = []
-        for mes in reversed(opcoes_meses):
-            r = calcular_resumo_mensal(notas, mes, contrato_escolhido)
-            linhas_evolucao.append({
-                "MES": mes,
-                "FATURAMENTO": r["FATURAMENTO"],
-                "NOTAS": r["TOTAL_NOTAS"],
-                "CORTES": r["CORTES"],
-                "RELIGUES": r["RELIGUES"],
-                "EXPRESS": r.get("EXPRESS", 0),
-                "FATURAMENTO_EXPRESS": r.get("FATURAMENTO_EXPRESS", 0),
-            })
-        evolucao = pd.DataFrame(linhas_evolucao)
-
-        if not evolucao.empty:
-            st.bar_chart(evolucao, x="MES", y="FATURAMENTO")
-            st.dataframe(formatar_tabela(evolucao), use_container_width=True, hide_index=True)
-
-        st.markdown("**Resumo por contrato no mês escolhido**")
-        resumo_mes, _ = resumo_por_periodo(notas, [mes_escolhido], contrato_escolhido)
-        if resumo_mes.empty:
-            st.info("Nenhum dado encontrado para esse mês.")
-        else:
-            colunas = ["CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "EXPRESS", "FATURAMENTO", "FATURAMENTO_EXPRESS", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]
-            colunas = [c for c in colunas if c in resumo_mes.columns]
-            st.dataframe(formatar_tabela(resumo_mes[colunas]), use_container_width=True, hide_index=True)
-
-# ==============================
-# ABA DIAS
-# ==============================
-
-with aba_dias:
-    st.subheader("Faturamento por dia da semana")
-
-    if not dias.empty:
-        tabela = dias.pivot_table(
-            index=["CONTRATO", "SEMANA_INICIO"],
-            columns="DIA_SEMANA",
-            values="FATURAMENTO",
-            aggfunc="sum",
-            fill_value=0,
-        ).reset_index()
-
-        colunas_dias = [c for c in ORDEM_DIAS if c in tabela.columns]
-
-        tabela["Total semana"] = tabela[colunas_dias].sum(axis=1)
-
-        # Ordena a tabela pela data real do início da semana.
-        # Sem isso, datas como 06/04 podem aparecer antes de 09/03,
-        # porque o Streamlit/Pandas pode tratar o campo como texto.
-        tabela["SEMANA_INICIO_DT"] = pd.to_datetime(
-            tabela["SEMANA_INICIO"],
-            dayfirst=True,
-            errors="coerce",
-        )
-        tabela = tabela.sort_values(["SEMANA_INICIO_DT", "CONTRATO"])
-
-        tabela = tabela[["CONTRATO", "SEMANA_INICIO"] + colunas_dias + ["Total semana"]]
-
-        st.dataframe(formatar_tabela(tabela), use_container_width=True, hide_index=True)
-
-        por_dia = dias.groupby("DIA_SEMANA", as_index=False)["FATURAMENTO"].sum()
-        por_dia["ordem"] = por_dia["DIA_SEMANA"].map({d: i for i, d in enumerate(ORDEM_DIAS)})
-        por_dia = por_dia.sort_values("ordem")
-
-        st.bar_chart(por_dia, x="DIA_SEMANA", y="FATURAMENTO")
-    else:
-        st.info("Nenhum dado para o contrato selecionado.")
-
-# ==============================
-# ABA CARRO
-# ==============================
-
-if mostrar_aba_carro:
-    with aba_carro:
-        st.subheader("Contrato do carro — estimativa")
-
-        if not carro.empty:
-            c1, c2 = st.columns(2)
-            c1.metric("Mínimo estimado", dinheiro(carro["FATURAMENTO_MIN"].sum()))
-            c2.metric("Máximo estimado", dinheiro(carro["FATURAMENTO_MAX"].sum()))
-
-            st.dataframe(formatar_tabela(carro), use_container_width=True, hide_index=True)
-        else:
-            st.info("Selecione o contrato do carro no menu lateral para visualizar.")
-
-        st.subheader("Carro estimado por dia")
-
-        if not carro_dias.empty:
-            tabela_carro = carro_dias.pivot_table(
-                index=["CONTRATO", "SEMANA_INICIO"],
-                columns="DIA_SEMANA",
-                values=["FATURAMENTO_MIN", "FATURAMENTO_MAX"],
-                aggfunc="sum",
-                fill_value=0,
-            )
-
-            st.dataframe(tabela_carro.style.format(dinheiro), use_container_width=True)
-        else:
-            st.info("Nenhum dado diário do carro para o contrato selecionado.")
-
-# ==============================
-# ABA NOTAS
-# ==============================
-
-with aba_notas:
-    st.subheader("Consulta de notas")
-
-    if not notas.empty:
-        df_notas = notas.copy()
-
-        # A base de notas acumulada não tem contrato salvo. Por isso, para filtrar por contrato,
-        # reaproveitamos a classificação feita na parcial.
-        parcial_para_filtro = preparar_parcial_do_dia(notas)
-        if contrato_escolhido != "Todos" and not parcial_para_filtro.empty:
-            ordens_do_contrato = parcial_para_filtro.loc[
-                parcial_para_filtro["CONTRATO"] == contrato_escolhido,
-                "ORDEM_DE_SERVICO"
-            ].astype(str).unique().tolist()
-            if "ORDEM_DE_SERVICO" in df_notas.columns:
-                df_notas["ORDEM_DE_SERVICO"] = df_notas["ORDEM_DE_SERVICO"].astype(str)
-                df_notas = df_notas[df_notas["ORDEM_DE_SERVICO"].isin(ordens_do_contrato)]
-
-        grupo = st.selectbox(
-            "Grupo de nota",
-            ["Todos"] + sorted(df_notas.get("GRUPO_NOTA", pd.Series(dtype=str)).dropna().unique().tolist())
-        )
-
-        qtd_exec = st.selectbox("Quantidade de executores", ["Todos", 1, 2])
-
-        if grupo != "Todos" and "GRUPO_NOTA" in df_notas.columns:
-            df_notas = df_notas[df_notas["GRUPO_NOTA"] == grupo]
-
-        if qtd_exec != "Todos" and "QTD_EXECUTORES" in df_notas.columns:
-            df_notas = df_notas[df_notas["QTD_EXECUTORES"] == qtd_exec]
-
-        total_filtrado = len(df_notas)
-        st.info(f"{numero(total_filtrado)} notas encontradas com os filtros atuais.")
-
-        if st.button("Carregar notas", use_container_width=True):
-            st.dataframe(df_notas.head(2000), use_container_width=True, hide_index=True)
-            st.caption("Mostrando até 2000 linhas para não deixar o painel pesado.")
-        else:
-            st.caption("As notas não são carregadas automaticamente para deixar o painel mais rápido.")
-    else:
-        st.info("Base de notas não encontrada.")
-
-# ==============================
-# ABA DOWNLOAD
-# ==============================
-
-with aba_download:
-    st.subheader("Arquivos carregados")
-
-    for chave, nome in ARQUIVOS.items():
-        caminho = caminho_arquivo(nome)
-
-        if caminho:
-            with open(caminho, "rb") as f:
-                st.download_button(f"Baixar {caminho.name}", f, file_name=caminho.name)
+        detalhe_municipio["_D_ORDEM"] = detalhe_municipio["D OPERACIONAL"].apply(indice_d_v7)
+        detalhe_municipio = detalhe_municipio.sort_values(["BASE", "MUNICÍPIO", "_D_ORDEM"]).drop(columns=["_D_ORDEM"])
+        detalhe_municipio = detalhe_municipio[[
+            "BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFAS",
+            "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "T. INSTALA", "T. VISITADA", "FALTAM"
+        ]]
+
+    detalhe = timestamp_str()
+    caminho = os.path.join(PASTA_SAIDA, f"Resumo_D_por_base_municipio_{detalhe}.xlsx")
+    usados = set()
+    with pd.ExcelWriter(caminho, engine="openpyxl") as writer:
+        resumo_d.to_excel(writer, index=False, sheet_name=nome_aba_excel("RESUMO_GERAL", usados))
+        if not detalhe_municipio.empty:
+            detalhe_municipio.to_excel(writer, index=False, sheet_name=nome_aba_excel("DETALHE_MUNICIPIO", usados))
+
+        # Uma aba para cada base: primeiro o TOTAL da base por D, depois cada município por D.
+        for base_nome, df_base in df_all.groupby("BASE", dropna=False):
+            aba_base = montar_resumo_base_municipio_v9(df_base)
+            aba_base.to_excel(writer, index=False, sheet_name=nome_aba_excel(str(base_nome), usados))
+
+        df_all.to_excel(writer, index=False, sheet_name=nome_aba_excel("TAREFAS_CONSOLIDADAS", usados))
+
+    try:
+        formatar_excel_tarefas(caminho)
+    except Exception as e:
+        print(f"Aviso: não foi possível formatar o resumo consolidado '{caminho}': {e}")
+
+    print("\nResumo consolidado por base e município gerado:")
+    print(os.path.abspath(caminho))
+    try:
+        print(resumo_d.to_string(index=False))
+        if not detalhe_municipio.empty:
+            print("\nDetalhe por município:")
+            print(detalhe_municipio.to_string(index=False))
+    except Exception:
+        pass
+    return caminho
+
+if __name__ == "__main__":
+    iniciar_interface()
