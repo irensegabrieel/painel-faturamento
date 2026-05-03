@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+from collections.abc import Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import json
@@ -9,7 +11,69 @@ import altair as alt
 
 st.set_page_config(page_title="G.Z.U.S. | Gestão Inteligente de Serviços", page_icon="🤖", layout="wide")
 
-SENHA_CORRETA = "SCS@2026"
+# ==============================
+# SEGREDOS / CONFIGURAÇÕES PRIVADAS
+# ==============================
+# Mantém o repositório público sem expor senhas, caminhos locais, tarifas
+# e mapas manuais. Configure estes valores em .streamlit/secrets.toml
+# no ambiente local ou em App settings > Secrets no Streamlit Cloud.
+
+def secret_value(nome, padrao=None):
+    try:
+        if nome in st.secrets:
+            return st.secrets[nome]
+    except Exception:
+        pass
+    return os.getenv(nome, padrao)
+
+
+def secret_list(nome, padrao=None):
+    valor = secret_value(nome, padrao if padrao is not None else [])
+    if valor is None:
+        return []
+    if isinstance(valor, (list, tuple)):
+        return list(valor)
+    if isinstance(valor, str):
+        texto = valor.strip()
+        if not texto:
+            return []
+        try:
+            parsed = json.loads(texto)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception:
+            pass
+        return [v.strip() for v in texto.split(',') if v.strip()]
+    return list(valor) if hasattr(valor, '__iter__') else []
+
+
+def secret_dict(nome, padrao=None):
+    valor = secret_value(nome, padrao if padrao is not None else {})
+    if valor is None:
+        return {}
+    if isinstance(valor, Mapping):
+        return dict(valor)
+    if isinstance(valor, str):
+        texto = valor.strip()
+        if not texto:
+            return {}
+        try:
+            parsed = json.loads(texto)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def secret_float(nome, padrao=0.0):
+    valor = secret_value(nome, padrao)
+    try:
+        return float(valor)
+    except Exception:
+        return float(padrao)
+
+
+SENHA_CORRETA = secret_value("SENHA_GERENTE", "")
 
 # ==============================
 # IDENTIDADE VISUAL / CORES
@@ -228,23 +292,23 @@ st.markdown(
 
 USUARIOS_ACESSO = {
     "gerente": {
-        "senha": SENHA_CORRETA,
+        "senha": secret_value("SENHA_GERENTE", ""),
         "perfil": "gerente",
-        "nome": "Gerente",
+        "nome": secret_value("NOME_GERENTE", "Gerente"),
     },
     "supervisor_stc": {
-        "senha": "STC@2026",
+        "senha": secret_value("SENHA_SUPERVISOR_STC", ""),
         "perfil": "supervisor_stc",
-        "nome": "Supervisor STC",
+        "nome": secret_value("NOME_SUPERVISOR_STC", "Supervisor STC"),
     },
     "supervisor_leitura": {
-        "senha": "LEITURA@2026",
+        "senha": secret_value("SENHA_SUPERVISOR_LEITURA", ""),
         "perfil": "supervisor_leitura",
-        "nome": "Supervisor Leitura",
+        "nome": secret_value("NOME_SUPERVISOR_LEITURA", "Supervisor Leitura"),
     },
 }
 
-CONTRATOS_SUPERVISOR_STC = ["STC Jundiai", "Disjuntor Santa Cruz"]
+CONTRATOS_SUPERVISOR_STC = secret_list("CONTRATOS_SUPERVISOR_STC", ["STC Jundiai", "Disjuntor Santa Cruz"])
 
 
 # ==============================
@@ -364,8 +428,7 @@ ARQUIVOS = {
 # No PC da operação, o extrator de leitura grava aqui.
 # No Streamlit Cloud, o app só consegue ler se os arquivos forem enviados ao GitHub,
 # preferencialmente em dashboard/leitura/.
-PASTAS_LEITURA = [
-    Path(r"C:\Users\user\Desktop\LEITURA\saida"),
+PASTAS_LEITURA = [Path(p) for p in secret_list("PASTAS_LEITURA_PRIVADAS", [])] + [
     PASTA_DASHBOARD / "leitura",
     PASTA_DASHBOARD,
     PASTA_ATUAL / "leitura",
@@ -1783,22 +1846,22 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
         if eh_disjuntor_jundiai(recurso):
             contrato = "Disjuntor Jundiaí"
             if not eh_recusa:
-                faturamento = {"CORTE": 13.72, "RELIGUE": 27.43}.get(grupo, 0.0)
+                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_CORTE", 0.0), "RELIGUE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_RELIGUE", 0.0)}.get(grupo, 0.0)
                 faturamento_min = faturamento
                 faturamento_max = faturamento
 
         elif eh_disjuntor_santa_cruz(recurso):
             contrato = "Disjuntor Santa Cruz"
             if not eh_recusa:
-                faturamento = {"CORTE": 11.98, "RELIGUE": 23.97}.get(grupo, 0.0)
+                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE", 0.0), "RELIGUE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE", 0.0)}.get(grupo, 0.0)
                 faturamento_min = faturamento
                 faturamento_max = faturamento
 
         elif str(recurso).startswith("JUN58") and qtd_exec >= 2:
             contrato = "STC Jundiai"
             if not eh_recusa:
-                faturamento_min = {"CORTE": 38.18, "RELIGUE": 36.36}.get(grupo, 0.0)
-                faturamento_max = {"CORTE": 45.45, "RELIGUE": 50.91}.get(grupo, 0.0)
+                faturamento_min = {"CORTE": secret_float("TARIFA_STC_JUNDIAI_CORTE_MIN", 0.0), "RELIGUE": secret_float("TARIFA_STC_JUNDIAI_RELIGUE_MIN", 0.0)}.get(grupo, 0.0)
+                faturamento_max = {"CORTE": secret_float("TARIFA_STC_JUNDIAI_CORTE_MAX", 0.0), "RELIGUE": secret_float("TARIFA_STC_JUNDIAI_RELIGUE_MAX", 0.0)}.get(grupo, 0.0)
                 faturamento = faturamento_min
 
         if contrato:
@@ -2065,91 +2128,18 @@ def normalizar_nome_pessoa(valor):
 
 
 DEPARA_NOME_RECURSO_EXPRESS = {
-    normalizar_nome_pessoa("FERNANDO LOPES TEIXEIRA"): "JUN5537-EMP",
-    normalizar_nome_pessoa("MATHEUS RIBEIRO SILVA"): "JUN5994-EMP",
-    normalizar_nome_pessoa("IVANILSON ANTONIO DA SILVA"): "SAL5507-EMP",
-    normalizar_nome_pessoa("JESSICA TAYANE DE SOUZA PEREIRA"): "JUN5983-EMP",
-    normalizar_nome_pessoa("NATAN GONCALVES GARCIA"): "JUN5539-EMP",
-    normalizar_nome_pessoa("WESLEY BRUNO MESSIAS PEREIRA"): "SAL5505-EMP",
-    normalizar_nome_pessoa("RENATO DE LIMA"): "JUN5972-EMP",
-    normalizar_nome_pessoa("GUILHERME VINICIUS DOS SANTOS"): "JUN5973-EMP",
-    normalizar_nome_pessoa("JEANDERSON LUIZ NEVES DE JESUS"): "JUN5974-EMP",
-    normalizar_nome_pessoa("JOSE DANILO SANTOS DA SILVA"): "JUN5975-EMP",
-    normalizar_nome_pessoa("FRANCISCO JOSE DE SOUSA FILHO"): "JUN5976-EMP",
-    normalizar_nome_pessoa("FRANCISCO JOSE DE SOUZA FILHO"): "JUN5976-EMP",
-    normalizar_nome_pessoa("MISAEL DE SOUZA ESTRELA"): "JUN5977-EMP",
-    normalizar_nome_pessoa("JENIFFER RODRIGUES"): "JUN5981-EMP",
-    normalizar_nome_pessoa("KEMERSON JAQUES DA CRUZ"): "JUN5982-EMP",
-    normalizar_nome_pessoa("CHARMONE DIONATAS PINHEIRO RODRIGUES"): "JUN5993-EMP",
-    normalizar_nome_pessoa("JEFERSON DE SOUZA DA SILVA"): "JUN5990-EMP",
-    normalizar_nome_pessoa("THAINA MORAIS DIAS"): "JUN5991-EMP",
-    normalizar_nome_pessoa("THAINA DE MORAIS DIAS"): "JUN5991-EMP",
-    normalizar_nome_pessoa("IVANA LAIS DE PAULA OLIVEIRA"): "JUN5992-EMP",
-    normalizar_nome_pessoa("SIDNEI DE MORAIS SOARES"): "SAL5500-EMP",
-    normalizar_nome_pessoa("RAFAEL DELFINO DA SILVA"): "SAL5504-EMP",
-    normalizar_nome_pessoa("ELIO CALDEIRA RIBEIRO JUNIOR"): "JUN5929",
-    normalizar_nome_pessoa("EVANDRO GOMES ANASTACIO"): "SAL5506-EMP",
-    normalizar_nome_pessoa("RONALDO CESAR JACINTO FRANCISCO"): "JUN5995-EMP",
-    normalizar_nome_pessoa("ANDERSON ALEXANDRE NORONHA CAMARGO"): "SAL5508-EMP",
-    normalizar_nome_pessoa("HENRIQUE SOTTO MARTINS"): "SAL5509-EMP",
-    normalizar_nome_pessoa("BRUNO LEONARDO CAETANO DE OLIVEIRA"): "JUN5925",
-    normalizar_nome_pessoa("JOSE DANILO DA SILVA SANTOS"): "JUN5927",
-    normalizar_nome_pessoa("ELSON ALESSANDRO RODRIGUES"): "SAL5515-EMP",
-    normalizar_nome_pessoa("RENE DA SILVA PEREIRA"): "SAL5520-EMP",
-    normalizar_nome_pessoa("CLEITON MEDRADO SILVA"): "SAL5521-EMP",
-    normalizar_nome_pessoa("LUCAS CHAGAS"): "JUN5970-EMP",
-    normalizar_nome_pessoa("JARBAS PEREIRA DOS SANTOS"): "JUN5978-EMP",
-    normalizar_nome_pessoa("LEANDRO DOS SANTOS"): "JUN5980-EMP",
-    normalizar_nome_pessoa("ADRIANO ROSA DA SILVA"): "JUN5971-EMP",
-    normalizar_nome_pessoa("TIAGO CALANDRINI DE OLIVEIRA"): "JUN5979-EMP",
-
-
-    # Santa Cruz - DE/PARA por número da equipe. O app resolve automaticamente
-    # o prefixo correto da base (ex.: 8913 -> MOC8913-EMP).
-    normalizar_nome_pessoa("ELDER FABIANO DOS SANTOS"): "8901",
-    normalizar_nome_pessoa("REGINALDO APARECIDO RODRIGUES"): "8903",
-    normalizar_nome_pessoa("JORGE HUGO DE SOUZA"): "8904",
-    normalizar_nome_pessoa("ITN8905"): "8905",
-    normalizar_nome_pessoa("LUCAS ALVES CARRIEL"): "8906",
-    normalizar_nome_pessoa("LEANDRO APARECIDO"): "8907",
-    normalizar_nome_pessoa("PAMELA SALLES AFONSO"): "8933",
-    normalizar_nome_pessoa("RAUL VINICIUS BUZZO BARBOSA"): "8902",
-    normalizar_nome_pessoa("RAUL VINICIUS BUZZO BARBOSA."): "8902",
-    normalizar_nome_pessoa("FERNANDO HERNANDES JESUINO"): "8913",
-    normalizar_nome_pessoa("CRISTIAN KAUAN SILVA DE ALMEIDA"): "8909",
-    normalizar_nome_pessoa("YURI DA COSTA PAULA"): "2002",
-    normalizar_nome_pessoa("ANTONIO CESAR"): "8910",
-    normalizar_nome_pessoa("LUIS GUSTAVO SALES ALVES"): "8911",
-    normalizar_nome_pessoa("WAGNER BALDUINO DA ROCHA"): "8914",
-    normalizar_nome_pessoa("PAULO HENRIQUE DA SILVA"): "8999",
-    normalizar_nome_pessoa("JOAO VINICIUS DA SILVA"): "8916",
-    normalizar_nome_pessoa("THIAGO CARLOS DA SILVA DE MELLO"): "8932",
-    normalizar_nome_pessoa("HENRY DE ALMEIDA"): "8922",
-    normalizar_nome_pessoa("HENRY ALESSANDRO ANTUNES DE ALMEIDA"): "ITN8922-EMP",
-    normalizar_nome_pessoa("JOAO VICTOR OLIVEIRA SABOROSA"): "ITN8905-EMP",
-    normalizar_nome_pessoa("JOÃO VICTOR OLIVEIRA SABOROSA"): "ITN8905-EMP",
-    normalizar_nome_pessoa("PAMELLA SALLES AFONSO"): "ITN8933-EMP",
-    normalizar_nome_pessoa("PAMELLA SALLES AFONSO ITN8933"): "ITN8933-EMP",
-    normalizar_nome_pessoa("JOAO VINICIUS DOMINGOS QUILICE DA SILVA"): "SJD8916-EMP",
-    normalizar_nome_pessoa("JOÃO VINICIUS DOMINGOS QUILICE DA SILVA"): "SJD8916-EMP",
-    normalizar_nome_pessoa("LUCAS CAMARGO"): "8921",
+    normalizar_nome_pessoa(nome): str(recurso).strip()
+    for nome, recurso in secret_dict("DEPARA_NOME_RECURSO_EXPRESS", {}).items()
+    if str(nome).strip() and str(recurso).strip()
 }
 
 
 # Carro STC estimado - só conta quando a dupla completa bate.
 # O valor mapeado é só o número; o app transforma em JUN58xx-EMP.
 DEPARA_DUPLA_CARRO_EXPRESS = {
-    frozenset([normalizar_nome_pessoa("ANDERSON GOMES DA SILVA"), normalizar_nome_pessoa("IGOR TORRES BEZERRA")]): "5808",
-    frozenset([normalizar_nome_pessoa("EDUARDO DOS SANTOS"), normalizar_nome_pessoa("CARLOS LEANDRO LOPES DE SOUZA")]): "5812",
-    frozenset([normalizar_nome_pessoa("JULIANO CESAR DOS SANTOS"), normalizar_nome_pessoa("JOAO PAULO ROMANHA DOS SANTOS")]): "5803",
-    frozenset([normalizar_nome_pessoa("ALEXANDRE LUIZ SANTANA PRAJELAS"), normalizar_nome_pessoa("FELIPE HENRIQUE DE SOUZA FERREIRA")]): "5802",
-    frozenset([normalizar_nome_pessoa("LUIS FELIPE SA DOS SANTOS"), normalizar_nome_pessoa("WESLEY APARECIDO DE SA SOUZA")]): "5817",
-    frozenset([normalizar_nome_pessoa("LUCIANO HENRIQUE DE SOUZA"), normalizar_nome_pessoa("ORLANDO MANOEL DE SOUZA JANSEN")]): "5814",
-    frozenset([normalizar_nome_pessoa("ANDERSON PEREIRA SANTOS"), normalizar_nome_pessoa("DIOLENO CONCEICAO NOGUEIRA")]): "5801",
-    frozenset([normalizar_nome_pessoa("ANDERSON SILVA LEONARDO"), normalizar_nome_pessoa("JEFERSON E SILVA GOMES")]): "5820",
-    frozenset([normalizar_nome_pessoa("LUCAS EDUARDO LOPES DE SOUZA"), normalizar_nome_pessoa("JHONATAN MATHEUS LOPES DE SOUZA")]): "5810",
-    frozenset([normalizar_nome_pessoa("ADILSON APARECIDO VASCO"), normalizar_nome_pessoa("RILDO AUGUSTO DOS SANTOS")]): "5806",
-    frozenset([normalizar_nome_pessoa("MARISTON OLIVEIRA NASCIMENTO"), normalizar_nome_pessoa("VALDECI SARDELA")]): "5807",
+    frozenset([normalizar_nome_pessoa(parte) for parte in str(dupla).split("|") if str(parte).strip()]): str(recurso).strip()
+    for dupla, recurso in secret_dict("DEPARA_DUPLA_CARRO_EXPRESS", {}).items()
+    if "|" in str(dupla) and str(recurso).strip()
 }
 
 
@@ -2439,16 +2429,16 @@ def mapa_executor_recurso(notas):
 
 def valor_express_por_contrato(contrato):
     """
-    Express faturado como religue para equipes de disjuntor.
+    Express faturado conforme tarifas configuradas em Secrets.
     Carro é diferente; por enquanto fica zerado no faturamento express.
     """
     contrato = str(contrato)
     if contrato == "Disjuntor Jundiaí":
-        return 27.43
+        return secret_float("TARIFA_EXPRESS_DISJUNTOR_JUNDIAI", 0.0)
     if contrato == "Disjuntor Santa Cruz":
-        return 23.97
+        return secret_float("TARIFA_EXPRESS_DISJUNTOR_SANTA_CRUZ", 0.0)
     if contrato == "STC Jundiai":
-        return 38.18
+        return secret_float("TARIFA_EXPRESS_STC_JUNDIAI", 0.0)
     return 0.0
 
 
