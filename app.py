@@ -660,7 +660,12 @@ def _padronizar_colunas_leitura(df):
 
 def _classificar_status_operacional(row):
     status = str(row.get("STATUS OPERACIONAL", "") or "").strip().upper()
-    if status in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+    # No contrato de leitura, toda tarefa deve ter leitura prevista.
+    # Se vier SEM TOTAL do arquivo antigo/grade, tratamos como PENDENTE
+    # para não criar uma categoria operacional separada.
+    if status == "SEM TOTAL":
+        return "PENDENTE"
+    if status in ["FEITA", "PARCIAL", "PENDENTE"]:
         return status
 
     status_tela = str(row.get("STATUS", "") or "").strip().upper()
@@ -670,7 +675,7 @@ def _classificar_status_operacional(row):
     visitada = 0 if pd.isna(visitada) else int(visitada)
 
     if instala <= 0:
-        return "SEM TOTAL"
+        return "PENDENTE"
     if visitada >= instala or "FINAL" in status_tela:
         return "FEITA"
     if visitada > 0:
@@ -1083,21 +1088,23 @@ def mostrar_painel_leitura():
             total_tarefas = int(resumo["TOTAL TAREFA"].sum())
             feitas = int(resumo["FEITA"].sum())
             parciais = int(resumo["PARCIAL"].sum())
-            pendentes = int(resumo["PENDENTE"].sum())
-            sem_total = int(resumo["SEM TOTAL"].sum())
-            faltam = int(resumo["FALTAM"].sum())
-            perc = (feitas / total_tarefas * 100) if total_tarefas else 0
+            pendentes = int(resumo["PENDENTE"].sum()) + int(resumo["SEM TOTAL"].sum())
+            leituras_total = int(resumo["T. INSTALA"].sum())
+            leituras_feitas = int(resumo["T. VISITADA"].sum())
+            faltam = max(0, leituras_total - leituras_feitas)
+            perc_leitura = (leituras_feitas / leituras_total * 100) if leituras_total else 0
+            perc_faltante = (faltam / leituras_total * 100) if leituras_total else 0
 
             c1, c2, c3, c4, c5, c6 = st.columns(6)
             c1.metric("Tarefas", numero(total_tarefas))
             c2.metric("Feitas", numero(feitas))
             c3.metric("Parciais", numero(parciais))
             c4.metric("Pendentes", numero(pendentes))
-            c5.metric("Sem total", numero(sem_total))
-            c6.metric("Execução", f"{perc:.1f}%".replace(".", ","))
+            c5.metric("Leituras faltantes", numero(faltam), f"{perc_faltante:.1f}%".replace(".", ","))
+            c6.metric("Execução leitura", f"{perc_leitura:.1f}%".replace(".", ","))
 
             if faltam:
-                st.markdown(f"<div class='zero-card'><b>Instalações faltantes:</b> {numero(faltam)}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='zero-card'><b>Leituras faltantes:</b> {numero(faltam)} ({perc_faltante:.1f}%)</div>".replace(".", ","), unsafe_allow_html=True)
 
             st.markdown("#### Resumo por base e D")
             resumo_base_d = (
@@ -1108,15 +1115,17 @@ def mostrar_painel_leitura():
             if not resumo_base_d.empty:
                 resumo_base_d["ORDEM_D"] = resumo_base_d["D OPERACIONAL"].apply(_ordenar_d)
                 resumo_base_d = resumo_base_d.sort_values(["BASE", "ORDEM_D"]).drop(columns=["ORDEM_D"])
-            st.dataframe(resumo_base_d, use_container_width=True, hide_index=True)
+            tabela_base_d = resumo_base_d.rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
+            st.dataframe(tabela_base_d, use_container_width=True, hide_index=True)
 
             st.markdown("#### Detalhe por município")
             detalhe = resumo.copy()
             if "ORDEM_D" not in detalhe.columns:
                 detalhe["ORDEM_D"] = detalhe["D OPERACIONAL"].apply(_ordenar_d)
             detalhe = detalhe.sort_values([c for c in ["BASE", "MUNICÍPIO NOME", "ORDEM_D"] if c in detalhe.columns]).drop(columns=["ORDEM_D"], errors="ignore")
-            colunas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in detalhe.columns]
-            st.dataframe(detalhe[colunas], use_container_width=True, hide_index=True)
+            colunas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in detalhe.columns]
+            tabela_detalhe = detalhe[colunas].rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
+            st.dataframe(tabela_detalhe, use_container_width=True, hide_index=True)
 
             if not resumo_base_d.empty:
                 chart_df = resumo_base_d.melt(
@@ -1171,6 +1180,9 @@ def mostrar_painel_leitura():
                 data_escolhida_dt = pd.to_datetime(data_escolhida, dayfirst=True, errors="coerce")
                 parcial_filtrada = parcial_dia[parcial_dia["DT_PREVISTA_DT"] == data_escolhida_dt].copy()
 
+            if "STATUS OPERACIONAL" in parcial_filtrada.columns:
+                parcial_filtrada["STATUS OPERACIONAL"] = parcial_filtrada["STATUS OPERACIONAL"].fillna("").astype(str).str.upper().replace({"SEM TOTAL": "PENDENTE"})
+
             fbase, fmun, fstatus = st.columns([1.1, 1.7, 1.3])
             bases_disp_p = sorted(parcial_filtrada.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
             municipios_disp_p = sorted(parcial_filtrada.get("MUNICÍPIO NOME", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
@@ -1210,23 +1222,64 @@ def mostrar_painel_leitura():
 
             total_tarefas = int(parcial_filtrada["TAREFA"].nunique()) if "TAREFA" in parcial_filtrada.columns else len(parcial_filtrada)
             status_series = parcial_filtrada.get("STATUS OPERACIONAL", pd.Series(dtype=str)).fillna("").astype(str).str.upper() if not parcial_filtrada.empty else pd.Series(dtype=str)
+            status_series = status_series.replace({"SEM TOTAL": "PENDENTE"})
             feitas = int((status_series == "FEITA").sum())
             parciais = int((status_series == "PARCIAL").sum())
             pendentes = int((status_series == "PENDENTE").sum())
-            sem_total = int((status_series == "SEM TOTAL").sum())
-            faltam = int(parcial_filtrada["FALTAM"].sum()) if not parcial_filtrada.empty else 0
-            perc = (feitas / total_tarefas * 100) if total_tarefas else 0
+
+            leituras_total = int(parcial_filtrada["T. INSTALA"].sum()) if not parcial_filtrada.empty else 0
+            leituras_feitas = int(parcial_filtrada["T. VISITADA"].sum()) if not parcial_filtrada.empty else 0
+            leituras_faltantes = max(0, leituras_total - leituras_feitas)
+            perc_leituras = (leituras_feitas / leituras_total * 100) if leituras_total else 0
+            perc_faltantes = (leituras_faltantes / leituras_total * 100) if leituras_total else 0
 
             m1, m2, m3, m4, m5, m6 = st.columns(6)
             m1.metric("Tarefas", numero(total_tarefas))
             m2.metric("Feitas", numero(feitas))
             m3.metric("Parciais", numero(parciais))
             m4.metric("Pendentes", numero(pendentes))
-            m5.metric("Sem total", numero(sem_total))
-            m6.metric("Execução", f"{perc:.1f}%".replace(".", ","))
+            m5.metric("Leituras faltantes", numero(leituras_faltantes), f"{perc_faltantes:.1f}%".replace(".", ","))
+            m6.metric("Execução leitura", f"{perc_leituras:.1f}%".replace(".", ","))
 
-            if faltam:
-                st.markdown(f"<div class='zero-card'><b>Instalações faltantes no dia:</b> {numero(faltam)}</div>", unsafe_allow_html=True)
+            l1, l2, l3 = st.columns(3)
+            l1.metric("Leituras totais", numero(leituras_total))
+            l2.metric("Leituras feitas", numero(leituras_feitas))
+            l3.metric("Leituras faltantes", numero(leituras_faltantes), f"{perc_faltantes:.1f}%".replace(".", ","))
+
+            if leituras_faltantes:
+                texto_faltantes = f"{perc_faltantes:.1f}%".replace(".", ",")
+                st.markdown(f"<div class='zero-card'><b>Leituras faltantes no dia:</b> {numero(leituras_faltantes)} ({texto_faltantes})</div>", unsafe_allow_html=True)
+
+            # Alertas operacionais do dia
+            alerta_base = parcial_filtrada.copy()
+            if "AGENTE COMERCIAL" not in alerta_base.columns:
+                alerta_base["AGENTE COMERCIAL"] = ""
+            alerta_base["AGENTE COMERCIAL"] = alerta_base["AGENTE COMERCIAL"].fillna("").astype(str).str.strip()
+
+            sem_agente_df = alerta_base[alerta_base["AGENTE COMERCIAL"] == ""].copy()
+            if not sem_agente_df.empty:
+                qtd_sem_agente = int(sem_agente_df["TAREFA"].nunique()) if "TAREFA" in sem_agente_df.columns else len(sem_agente_df)
+                exemplos_sem_agente = sem_agente_df.get("TAREFA", pd.Series(dtype=str)).astype(str).drop_duplicates().head(12).tolist()
+                texto_exemplos = ", ".join(exemplos_sem_agente) if exemplos_sem_agente else "ver tabela de tarefas"
+                st.markdown(
+                    f"<div class='zero-card'><b>⚠️ Tarefas sem agente atribuído:</b> {numero(qtd_sem_agente)}<br>{texto_exemplos}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            agentes_inicio = alerta_base[alerta_base["AGENTE COMERCIAL"] != ""].copy()
+            if not agentes_inicio.empty:
+                resumo_inicio = (
+                    agentes_inicio.groupby(["BASE", "AGENTE COMERCIAL"], dropna=False)
+                    .agg({"T. INSTALA": "sum", "T. VISITADA": "sum"})
+                    .reset_index()
+                )
+                sem_inicio = resumo_inicio[(resumo_inicio["T. INSTALA"] > 0) & (resumo_inicio["T. VISITADA"] <= 0)].copy()
+                if not sem_inicio.empty:
+                    nomes_sem_inicio = sem_inicio["AGENTE COMERCIAL"].astype(str).tolist()
+                    st.markdown(
+                        f"<div class='zero-card'><b>⚠️ Agentes sem iniciar leitura no dia:</b> {numero(len(nomes_sem_inicio))}<br>{', '.join(nomes_sem_inicio[:20])}</div>",
+                        unsafe_allow_html=True,
+                    )
 
             st.markdown("#### Produção por agente comercial")
             agentes = parcial_filtrada.copy()
@@ -1235,7 +1288,8 @@ def mostrar_painel_leitura():
             agentes["AGENTE COMERCIAL"] = agentes["AGENTE COMERCIAL"].fillna("").astype(str).str.strip()
             agentes.loc[agentes["AGENTE COMERCIAL"] == "", "AGENTE COMERCIAL"] = "SEM AGENTE"
 
-            for status_nome in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+            agentes["STATUS OPERACIONAL"] = agentes.get("STATUS OPERACIONAL", "").replace({"SEM TOTAL": "PENDENTE"})
+            for status_nome in ["FEITA", "PARCIAL", "PENDENTE"]:
                 agentes[status_nome] = (agentes.get("STATUS OPERACIONAL", "") == status_nome).astype(int)
 
             if agentes.empty:
@@ -1248,21 +1302,23 @@ def mostrar_painel_leitura():
                         FEITAS=("FEITA", "sum"),
                         PARCIAIS=("PARCIAL", "sum"),
                         PENDENTES=("PENDENTE", "sum"),
-                        SEM_TOTAL=("SEM TOTAL", "sum"),
                         **{
-                            "T. INSTALA": ("T. INSTALA", "sum"),
-                            "T. VISITADA": ("T. VISITADA", "sum"),
-                            "FALTAM": ("FALTAM", "sum"),
+                            "LEITURAS TOTAL": ("T. INSTALA", "sum"),
+                            "LEITURAS FEITAS": ("T. VISITADA", "sum"),
+                            "LEITURAS FALTANTES": ("FALTAM", "sum"),
                         },
                     )
                     .reset_index()
                 )
-                resumo_agente["% EXECUTADO"] = 0.0
-                mask = resumo_agente["T. INSTALA"] > 0
-                resumo_agente.loc[mask, "% EXECUTADO"] = ((resumo_agente.loc[mask, "T. VISITADA"] / resumo_agente.loc[mask, "T. INSTALA"]) * 100).round(1)
-                resumo_agente = resumo_agente.sort_values(["FALTAM", "PENDENTES", "PARCIAIS", "TAREFAS"], ascending=[False, False, False, False])
+                resumo_agente["% LEITURA EXECUTADA"] = 0.0
+                mask = resumo_agente["LEITURAS TOTAL"] > 0
+                resumo_agente.loc[mask, "% LEITURA EXECUTADA"] = ((resumo_agente.loc[mask, "LEITURAS FEITAS"] / resumo_agente.loc[mask, "LEITURAS TOTAL"]) * 100).round(1)
+                resumo_agente["% LEITURA FALTANTE"] = 0.0
+                resumo_agente.loc[mask, "% LEITURA FALTANTE"] = ((resumo_agente.loc[mask, "LEITURAS FALTANTES"] / resumo_agente.loc[mask, "LEITURAS TOTAL"]) * 100).round(1)
+                resumo_agente = resumo_agente.sort_values(["LEITURAS FALTANTES", "PENDENTES", "PARCIAIS", "TAREFAS"], ascending=[False, False, False, False])
                 tabela_agente = resumo_agente.copy()
-                tabela_agente["% EXECUTADO"] = tabela_agente["% EXECUTADO"].apply(lambda v: f"{float(v):.1f}%".replace(".", ","))
+                tabela_agente["% LEITURA EXECUTADA"] = tabela_agente["% LEITURA EXECUTADA"].apply(lambda v: f"{float(v):.1f}%".replace(".", ","))
+                tabela_agente["% LEITURA FALTANTE"] = tabela_agente["% LEITURA FALTANTE"].apply(lambda v: f"{float(v):.1f}%".replace(".", ","))
                 st.dataframe(tabela_agente, use_container_width=True, hide_index=True)
 
             st.markdown("#### Serviços que não estão prontos")
@@ -1279,7 +1335,8 @@ def mostrar_painel_leitura():
                         nao_prontos[col] = pd.to_datetime(nao_prontos[col], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
                 cols_pend = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in nao_prontos.columns]
                 nao_prontos = nao_prontos.sort_values([c for c in ["BASE", "MUNICÍPIO NOME", "FALTAM", "TAREFA"] if c in nao_prontos.columns], ascending=[True, True, False, True][:len([c for c in ["BASE", "MUNICÍPIO NOME", "FALTAM", "TAREFA"] if c in nao_prontos.columns])])
-                st.dataframe(nao_prontos[cols_pend], use_container_width=True, hide_index=True)
+                tabela_nao_prontos = nao_prontos[cols_pend].rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
+                st.dataframe(tabela_nao_prontos, use_container_width=True, hide_index=True)
 
             with st.expander("Ver todas as tarefas do dia", expanded=False):
                 todas = parcial_filtrada.copy()
@@ -1287,7 +1344,8 @@ def mostrar_painel_leitura():
                     if col in todas.columns:
                         todas[col] = pd.to_datetime(todas[col], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
                 cols_todas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in todas.columns]
-                st.dataframe(todas[cols_todas], use_container_width=True, hide_index=True)
+                tabela_todas = todas[cols_todas].rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
+                st.dataframe(tabela_todas, use_container_width=True, hide_index=True)
 
         elif not df_parcial.empty:
             st.warning("Só encontrei o formato antigo por agente, sem data da tarefa. Para escolher o dia, rode o extrator novo Tarefas_*.xlsx.")
@@ -1303,10 +1361,10 @@ def mostrar_painel_leitura():
             percentual = (total_visitada / total_instala * 100) if total_instala else 0
 
             p1, p2, p3, p4 = st.columns(4)
-            p1.metric("T. Instala", numero(total_instala))
-            p2.metric("T. Visitada", numero(total_visitada))
-            p3.metric("Faltam", numero(total_faltam))
-            p4.metric("% Executado", f"{percentual:.1f}%".replace(".", ","))
+            p1.metric("Leituras totais", numero(total_instala))
+            p2.metric("Leituras feitas", numero(total_visitada))
+            p3.metric("Leituras faltantes", numero(total_faltam))
+            p4.metric("% Leitura executada", f"{percentual:.1f}%".replace(".", ","))
 
             resumo_agente = _resumo_parcial_agente(parcial_filtrada)
             tabela = resumo_agente.copy()
@@ -3547,9 +3605,9 @@ def responder_chatbot_leitura(pergunta):
         total_faltam = int(df["FALTAM"].sum())
         percentual = (total_visitada / total_instala * 100) if total_instala else 0
         linhas.append(f"### {base_nome}")
-        linhas.append(f"• **T. Instala:** {numero(total_instala)}")
-        linhas.append(f"• **T. Visitada:** {numero(total_visitada)}")
-        linhas.append(f"• **Faltam:** {numero(total_faltam)}")
+        linhas.append(f"• **Leituras totais:** {numero(total_instala)}")
+        linhas.append(f"• **Leituras feitas:** {numero(total_visitada)}")
+        linhas.append(f"• **Leituras faltantes:** {numero(total_faltam)}")
         linhas.append(f"• **Executado:** {percentual:.1f}%".replace(".", ","))
         atrasados = df.sort_values(["FALTAM", "% EXECUTADO"], ascending=[False, True]).head(3)
         if not atrasados.empty:
