@@ -2092,6 +2092,97 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
 
 
 
+def calcular_recursos_sem_movimento_no_dia(parcial_com_recusas, data_escolhida):
+    """Identifica equipes esperadas que não tiveram movimento algum no dia.
+
+    Regra para contratos de corte:
+    - A base esperada vem das equipes que aparecem no mesmo mês e contrato
+      até a data escolhida.
+    - Movimento do dia considera qualquer ocorrência: nota feita OU recusa.
+    - Portanto, equipe com somente recusa NÃO entra no alerta de zero movimento.
+    """
+    colunas_saida = ["RECURSO", "CONTRATO"]
+    if parcial_com_recusas is None or parcial_com_recusas.empty:
+        return pd.DataFrame(columns=colunas_saida)
+
+    base = parcial_com_recusas.copy()
+    for col in ["RECURSO", "CONTRATO", "DATA", "DATA_DT"]:
+        if col not in base.columns:
+            return pd.DataFrame(columns=colunas_saida)
+
+    base["RECURSO"] = base["RECURSO"].fillna("").astype(str).str.strip().str.upper()
+    base["CONTRATO"] = base["CONTRATO"].fillna("").astype(str).str.strip()
+    base["DATA_DT"] = pd.to_datetime(base["DATA_DT"], dayfirst=True, errors="coerce")
+    data_ref = pd.to_datetime(data_escolhida, dayfirst=True, errors="coerce")
+
+    if pd.isna(data_ref):
+        return pd.DataFrame(columns=colunas_saida)
+
+    base = base[(base["RECURSO"] != "") & (base["CONTRATO"] != "") & base["DATA_DT"].notna()].copy()
+    if base.empty:
+        return pd.DataFrame(columns=colunas_saida)
+
+    mesmo_mes_ate_dia = (
+        (base["DATA_DT"].dt.year == data_ref.year)
+        & (base["DATA_DT"].dt.month == data_ref.month)
+        & (base["DATA_DT"] <= data_ref)
+    )
+
+    recursos_esperados = (
+        base.loc[mesmo_mes_ate_dia, colunas_saida]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+
+    if recursos_esperados.empty:
+        return pd.DataFrame(columns=colunas_saida)
+
+    movimento_dia = (
+        base.loc[base["DATA_DT"] == data_ref, colunas_saida]
+        .drop_duplicates()
+        .assign(_MOVIMENTOU=1)
+    )
+
+    sem_movimento = recursos_esperados.merge(
+        movimento_dia,
+        on=colunas_saida,
+        how="left",
+    )
+    sem_movimento = sem_movimento[sem_movimento["_MOVIMENTOU"].isna()].drop(columns=["_MOVIMENTOU"], errors="ignore")
+    return sem_movimento.sort_values(["CONTRATO", "RECURSO"]).reset_index(drop=True)
+
+
+def render_alerta_recursos_sem_movimento(recursos_sem_movimento, contrato_unico=False):
+    """Mostra o alerta de equipes sem nenhuma nota ou recusa no dia."""
+    if recursos_sem_movimento is None or recursos_sem_movimento.empty:
+        return
+
+    base = recursos_sem_movimento.copy()
+    base["RECURSO"] = base["RECURSO"].fillna("").astype(str).str.strip()
+    base["CONTRATO"] = base["CONTRATO"].fillna("").astype(str).str.strip()
+
+    if contrato_unico:
+        itens = base["RECURSO"].drop_duplicates().astype(str).head(12).tolist()
+    else:
+        itens = (base["RECURSO"] + " (" + base["CONTRATO"] + ")").drop_duplicates().astype(str).head(12).tolist()
+
+    lista = ", ".join(itens)
+    total = len(base.drop_duplicates(subset=["RECURSO", "CONTRATO"]))
+    if total > 12:
+        lista += f" e mais {total - 12}"
+
+    st.markdown(
+        f"""
+        <div class="zero-card">
+            ⚠️ <b>Recursos sem nenhum movimento no dia:</b> {numero(total)}<br>
+            <span>Sem nota feita e sem recusa registrada. Equipe com somente recusa não entra neste alerta.</span><br>
+            {lista}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def meses_disponiveis_da_base(notas):
     """Retorna os meses disponíveis na base acumulada, do mais recente para o mais antigo."""
     if notas.empty:
@@ -3299,6 +3390,12 @@ def mostrar_painel_supervisor_stc(bases):
                     .sort_values(["QTD_RECUSAS", "RECURSO"], ascending=[False, True])
                 )
                 st.dataframe(rec, use_container_width=True, hide_index=True)
+
+            recursos_sem_movimento = calcular_recursos_sem_movimento_no_dia(parcial_com_recusas, data_escolhida)
+            render_alerta_recursos_sem_movimento(
+                recursos_sem_movimento,
+                contrato_unico=(contrato_escolhido != "Todos"),
+            )
 
     with abas[2]:
         st.subheader("Ranking de recursos")
@@ -4847,23 +4944,11 @@ with aba_parcial:
                 else:
                     resumo_equipe.insert(0, "POSIÇÃO", range(1, len(resumo_equipe) + 1))
 
-                    recursos_zero = resumo_equipe[
-                        (resumo_equipe["TOTAL_NOTAS"] == 0) & (resumo_equipe["RECUSAS"] > 0)
-                    ].copy()
-
-                    if not recursos_zero.empty:
-                        lista_zero = ", ".join(recursos_zero["RECURSO"].astype(str).head(12).tolist())
-                        if len(recursos_zero) > 12:
-                            lista_zero += f" e mais {len(recursos_zero) - 12}"
-                        st.markdown(
-                            f"""
-                            <div class="zero-card">
-                                ⚠️ <b>Recursos com zero produção no dia:</b> {numero(len(recursos_zero))}<br>
-                                {lista_zero}
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
+                    recursos_sem_movimento = calcular_recursos_sem_movimento_no_dia(parcial_com_recusas, data_escolhida)
+                    render_alerta_recursos_sem_movimento(
+                        recursos_sem_movimento,
+                        contrato_unico=(contrato_escolhido != "Todos"),
+                    )
 
                     top10_dia = resumo_equipe.head(10).copy()
 
