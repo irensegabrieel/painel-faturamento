@@ -1185,33 +1185,88 @@ def _deduplicar_tarefas_leitura(df):
 
 
 def _resumo_leitura_from_tarefas(base):
+    """Resumo mensal/lote consolidado por TAREFA.
+
+    Regra operacional definida:
+    - Tarefa conta 1 vez dentro do recorte mensal/lote/município.
+    - A mesma tarefa pode reaparecer em outro dia porque sobrou leitura,
+      mas isso não pode inflar FEITA/PARCIAL/PENDENTE.
+    - O status final da tarefa é consolidado assim:
+        FEITA vence PARCIAL, e PARCIAL vence PENDENTE.
+    - Leituras são consolidadas por tarefa para não deixar VISITADA maior
+      que INSTALA no agregado mensal/lote.
+    """
     if base.empty:
         return pd.DataFrame()
+
     df = _garantir_mes_operacional(base.copy())
     df = _garantir_lote_operacional(df)
     df = _deduplicar_tarefas_leitura(df)
 
-    df["STATUS OPERACIONAL"] = df.get("STATUS OPERACIONAL", "").fillna("").astype(str).str.upper().replace({"SEM TOTAL": "PENDENTE"})
+    if "TAREFA" not in df.columns:
+        return pd.DataFrame()
+
+    df["TAREFA"] = df["TAREFA"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    df = df[df["TAREFA"] != ""].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    df["STATUS OPERACIONAL"] = (
+        df.get("STATUS OPERACIONAL", "")
+        .fillna("")
+        .astype(str)
+        .str.upper()
+        .replace({"SEM TOTAL": "PENDENTE"})
+    )
+
     for col in ["T. INSTALA", "T. VISITADA", "FALTAM"]:
         if col not in df.columns:
             df[col] = 0
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
-    df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0).astype(int)
-
-    for col in ["FEITA", "PARCIAL", "PENDENTE"]:
-        df[col] = (df["STATUS OPERACIONAL"] == col).astype(int)
-    df["SEM TOTAL"] = 0
 
     agrupadores = ["BASE", "MÊS OPERACIONAL", "LOTE OPERACIONAL", "MUNICÍPIO", "MUNICÍPIO NOME"]
     for col in agrupadores:
         if col not in df.columns:
             df[col] = ""
+        df[col] = df[col].fillna("").astype(str).str.strip()
+
+    # Consolidação do status por tarefa.
+    # Isso é o ponto que impede FEITA > TOTAL TAREFA.
+    prioridade_status = {"PENDENTE": 0, "PARCIAL": 1, "FEITA": 2}
+    status_por_prioridade = {0: "PENDENTE", 1: "PARCIAL", 2: "FEITA"}
+    df["_STATUS_PRIORIDADE"] = df["STATUS OPERACIONAL"].map(prioridade_status).fillna(0).astype(int)
+
+    tarefa_grupo = agrupadores + ["TAREFA"]
+    tarefas_consolidadas = (
+        df.groupby(tarefa_grupo, dropna=False)
+        .agg(
+            _STATUS_PRIORIDADE=("_STATUS_PRIORIDADE", "max"),
+            **{
+                "T. INSTALA": ("T. INSTALA", "max"),
+                "T. VISITADA": ("T. VISITADA", "max"),
+            },
+        )
+        .reset_index()
+    )
+
+    tarefas_consolidadas["STATUS OPERACIONAL"] = tarefas_consolidadas["_STATUS_PRIORIDADE"].map(status_por_prioridade).fillna("PENDENTE")
+
+    # Se o status consolidado é FEITA, a leitura final considerada é o total previsto.
+    # Caso contrário, usa o maior progresso visto, limitado ao total previsto.
+    tarefas_consolidadas["T. VISITADA"] = tarefas_consolidadas[["T. VISITADA", "T. INSTALA"]].min(axis=1).astype(int)
+    mask_feita = tarefas_consolidadas["STATUS OPERACIONAL"] == "FEITA"
+    tarefas_consolidadas.loc[mask_feita, "T. VISITADA"] = tarefas_consolidadas.loc[mask_feita, "T. INSTALA"]
+    tarefas_consolidadas["FALTAM"] = (tarefas_consolidadas["T. INSTALA"] - tarefas_consolidadas["T. VISITADA"]).clip(lower=0).astype(int)
+
+    for col in ["FEITA", "PARCIAL", "PENDENTE"]:
+        tarefas_consolidadas[col] = (tarefas_consolidadas["STATUS OPERACIONAL"] == col).astype(int)
+    tarefas_consolidadas["SEM TOTAL"] = 0
 
     resumo = (
-        df.groupby(agrupadores, dropna=False)
+        tarefas_consolidadas.groupby(agrupadores, dropna=False)
         .agg(
             **{
-                "TOTAL TAREFA": ("TAREFA", "nunique"),
+                "TOTAL TAREFA": ("TAREFA", "count"),
                 "FEITA": ("FEITA", "sum"),
                 "PARCIAL": ("PARCIAL", "sum"),
                 "PENDENTE": ("PENDENTE", "sum"),
@@ -1223,6 +1278,7 @@ def _resumo_leitura_from_tarefas(base):
         )
         .reset_index()
     )
+
     resumo["ORDEM_LOTE"] = resumo["LOTE OPERACIONAL"].apply(_ordenar_lote)
     return resumo.sort_values(["BASE", "MÊS OPERACIONAL", "ORDEM_LOTE", "MUNICÍPIO NOME"]).drop(columns=["ORDEM_LOTE"])
 
