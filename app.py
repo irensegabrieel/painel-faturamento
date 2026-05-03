@@ -897,9 +897,20 @@ def _preparar_tarefas_leitura(df, caminho=None):
     df["STATUS OPERACIONAL"] = df.apply(_classificar_status_operacional, axis=1)
     df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0).astype(int)
 
-    # Garante tarefa única dentro do arquivo/base.
+    # Garante tarefa única apenas dentro do mesmo arquivo/dia.
+    # A mesma tarefa pode aparecer em mais de uma DT PREVISTA e, nesse caso,
+    # deve contar como ocorrência do dia/lote para bater com a Parcial do Dia.
     df["_completude"] = df.notna().sum(axis=1) + (df["T. INSTALA"] > 0).astype(int) + (df["T. VISITADA"] > 0).astype(int)
-    df = df.sort_values("_completude", ascending=False).drop_duplicates(subset=["BASE", "TAREFA"], keep="first").drop(columns=["_completude"])
+    if "DT PREVISTA" in df.columns:
+        df["_DT_PREVISTA_DEDUP"] = pd.to_datetime(df["DT PREVISTA"], dayfirst=True, errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
+    else:
+        df["_DT_PREVISTA_DEDUP"] = ""
+    chaves_dedup_arquivo = ["BASE", "TAREFA", "_DT_PREVISTA_DEDUP"]
+    df = (
+        df.sort_values("_completude", ascending=False)
+        .drop_duplicates(subset=chaves_dedup_arquivo, keep="first")
+        .drop(columns=["_completude", "_DT_PREVISTA_DEDUP"], errors="ignore")
+    )
     df["FORMATO_ORIGEM"] = "TAREFAS"
     return df.reset_index(drop=True)
 
@@ -1082,10 +1093,14 @@ def _ler_excel_leitura_robusto(caminho):
         df_tarefas["_ord"] = df_tarefas["D OPERACIONAL"].apply(_ordenar_d)
         # dedup final entre abas/arquivos, mantendo a primeira linha mais completa.
         df_tarefas["_completude"] = df_tarefas.notna().sum(axis=1) + (df_tarefas.get("T. INSTALA", 0) > 0).astype(int)
+        if "DT PREVISTA" in df_tarefas.columns:
+            df_tarefas["_DT_PREVISTA_DEDUP"] = pd.to_datetime(df_tarefas["DT PREVISTA"], dayfirst=True, errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
+        else:
+            df_tarefas["_DT_PREVISTA_DEDUP"] = ""
         df_tarefas = (
             df_tarefas.sort_values(["_completude", "_ord"], ascending=[False, True])
-            .drop_duplicates(subset=["BASE", "TAREFA"], keep="first")
-            .drop(columns=["_ord", "_completude"], errors="ignore")
+            .drop_duplicates(subset=["BASE", "TAREFA", "_DT_PREVISTA_DEDUP"], keep="first")
+            .drop(columns=["_ord", "_completude", "_DT_PREVISTA_DEDUP"], errors="ignore")
             .reset_index(drop=True)
         )
 
@@ -1155,11 +1170,11 @@ def _deduplicar_tarefas_leitura(df):
     if ordenacao:
         base = base.sort_values(ordenacao)
 
-    # Na visão mensal/lote, a tarefa precisa ser única dentro do mês/lote.
-    # Antes a chave usava também a DT PREVISTA; quando o mesmo serviço aparecia
-    # em mais de um arquivo/data do mês, TOTAL TAREFA vinha por nunique, mas
-    # FEITA/PARCIAL/PENDENTE somavam repetições. Isso gerava FEITA > TAREFA.
-    chaves = ["BASE", "TAREFA", "MÊS OPERACIONAL", "LOTE OPERACIONAL"]
+    # Na visão mensal/lote, usamos a MESMA unidade da Parcial do Dia:
+    # tarefa por DT PREVISTA. Assim, a soma dos dias bate com a visão mensal/lote.
+    # Se a mesma tarefa aparece em dias diferentes, ela conta uma vez em cada dia.
+    # Se aparece várias vezes no mesmo dia por múltiplas execuções, mantém só a última.
+    chaves = ["BASE", "TAREFA", "_DT_PREVISTA_DEDUP"]
     for col in chaves:
         if col not in base.columns:
             base[col] = ""
