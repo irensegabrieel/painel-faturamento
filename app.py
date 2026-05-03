@@ -3401,10 +3401,28 @@ def _pergunta_ultimos_meses_chat(pergunta_norm):
 
 
 def _tipo_consulta_chat(pergunta_norm):
+    """Classifica a intenção principal da pergunta do assistente local.
+
+    v2.1: reforça perguntas do tipo "melhor equipe", "melhor contrato",
+    "maior produção" e "somando todos os contratos" para não caírem no
+    resumo geral por engano.
+    """
     if any(t in pergunta_norm for t in ["COMPARE", "COMPARA", "VS", "VERSUS", "MELHOR QUE", "PIOR QUE", "CRESCEU", "CAIU"]):
         return "comparacao"
-    if any(t in pergunta_norm for t in ["QUEM MAIS", "QUEM FOI", "TOP", "RANKING", "LIDER", "LÍDER", "MAIOR PRODU", "MAIS FEZ", "MAIS NOTAS", "CAMPEAO", "CAMPEÃO"]):
+
+    termos_ranking = [
+        "QUEM MAIS", "QUEM FOI", "TOP", "RANKING", "LIDER", "LÍDER",
+        "MAIOR PRODU", "MAIOR PRODUCAO", "MAIOR PRODUÇÃO", "MAIS FEZ",
+        "MAIS NOTAS", "CAMPEAO", "CAMPEÃO", "MELHOR EQUIPE",
+        "MELHORES EQUIPES", "MELHOR RECURSO", "MELHORES RECURSOS",
+        "MELHOR CONTRATO", "MELHORES CONTRATOS", "O MELHOR", "A MELHOR",
+        "QUAL FOI A MELHOR", "QUAL FOI O MELHOR", "QUAL A MELHOR",
+        "QUAL O MELHOR", "QUAIS CONTRATOS", "QUAIS EQUIPES",
+        "SOMANDO TODOS OS CONTRATOS", "TODOS OS CONTRATOS"
+    ]
+    if any(t in pergunta_norm for t in termos_ranking):
         return "ranking"
+
     if any(t in pergunta_norm for t in ["RECUSA", "RECUSAS", "CONTA PAGA", "SEM ACESSO", "CASA FECHADA", "CLIENTE"]):
         return "recusas"
     if "EXPRESS" in pergunta_norm:
@@ -3420,14 +3438,22 @@ def _top_n_chat(pergunta_norm, padrao=5):
     import re
     m = re.search(r"\bTOP\s*(\d{1,2})\b", pergunta_norm)
     if not m:
-        m = re.search(r"\b(\d{1,2})\s*(?:PRIMEIR|MELHOR|MAIOR|EQUIPE)", pergunta_norm)
+        m = re.search(r"\b(\d{1,2})\s*(?:PRIMEIR|MELHOR|MAIOR|EQUIPE|CONTRATO|RECURSO)", pergunta_norm)
     if m:
         try:
             return max(1, min(int(m.group(1)), 15))
         except Exception:
             return padrao
-    if any(t in pergunta_norm for t in ["QUEM", "CAMPEAO", "CAMPEÃO", "LIDER", "LÍDER"]):
-        return 1
+
+    # Perguntas no singular devem devolver o campeão, não Top 5.
+    if any(t in pergunta_norm for t in [
+        "QUEM", "CAMPEAO", "CAMPEÃO", "LIDER", "LÍDER",
+        "O MELHOR", "A MELHOR", "QUAL FOI O MELHOR", "QUAL FOI A MELHOR",
+        "QUAL O MELHOR", "QUAL A MELHOR", "MELHOR EQUIPE",
+        "MELHOR RECURSO", "MELHOR CONTRATO"
+    ]):
+        if not any(t in pergunta_norm for t in ["TOP", "MELHORES", "QUAIS", "LISTA", "RANKING"]):
+            return 1
     return padrao
 
 
@@ -3444,20 +3470,22 @@ def _ranking_metrica_chat(pergunta_norm):
 def _ranking_dimensao_chat(pergunta_norm):
     """Decide se o ranking pedido é por contrato ou por equipe/recurso.
 
-    Ex.:
-    - "quais contratos fizeram mais notas" => contrato
-    - "top equipes" / "quem mais fez" => recurso
+    v2.1: palavras de equipe têm prioridade sobre "contratos" quando a
+    pergunta diz algo como "melhor equipe somando todos os contratos".
     """
+    termos_recurso = [
+        "EQUIPE", "EQUIPES", "RECURSO", "RECURSOS", "CARRO", "CARROS",
+        "FUNCIONARIO", "FUNCIONÁRI", "AGENTE", "AGENTES",
+        "ELETRICISTA", "EXECUTOR", "EXECUTORES"
+    ]
+    if any(t in pergunta_norm for t in termos_recurso):
+        return "recurso"
+
     if any(t in pergunta_norm for t in [
         "CONTRATO", "CONTRATOS", "POR CONTRATO", "ENTRE CONTRATOS",
         "QUAL CONTRATO", "QUAIS CONTRATOS"
     ]):
         return "contrato"
-    if any(t in pergunta_norm for t in [
-        "EQUIPE", "EQUIPES", "RECURSO", "RECURSOS", "CARRO", "CARROS",
-        "FUNCIONARIO", "FUNCIONÁRI", "AGENTE", "AGENTES"
-    ]):
-        return "recurso"
     return "recurso"
 
 
@@ -3829,13 +3857,25 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
         "MAIS FEZ", "MAIS NOTAS", "CAMPEAO", "CAMPEÃO", "RECUSA",
         "RECUSAS", "FATUR", "EXPRESS", "COMO FOI", "RESUMO", "QUANTO",
         "QUANTAS", "QUANTOS", "PRODU", "NOTAS", "COMPARE", "COMPARA",
-        "VS", "VERSUS", "CRESCEU", "CAIU"
+        "VS", "VERSUS", "CRESCEU", "CAIU", "MELHOR", "MELHORES",
+        "EQUIPE", "EQUIPES", "RECURSO", "RECURSOS", "TODOS OS CONTRATOS",
+        "SOMANDO"
     ])
 
     tipo = tipo_detectado
     metrica_ranking = metrica_detectada
     top_n = top_n_detectado
     dimensao_ranking = dimensao_detectada
+
+    # Escopo geral explícito: evita herdar contrato/equipe anterior quando o usuário
+    # pede "todas as equipes" ou "somando todos os contratos".
+    escopo_geral_explicito = any(t in pergunta_norm for t in [
+        "TODOS OS CONTRATOS", "TODOS CONTRATOS", "SOMANDO TODOS",
+        "SOMANDO TUDO", "GERAL", "NO GERAL", "TODAS AS EQUIPES",
+        "TODAS EQUIPES", "TODOS OS RECURSOS", "TODOS RECURSOS"
+    ])
+    if escopo_geral_explicito and not recurso:
+        contrato = None
 
     if complemento and contexto_anterior:
         # Perguntas curtas de sequência normalmente só trocam mês/contrato/equipe.
@@ -3846,13 +3886,16 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
             top_n = int(contexto_anterior.get("top_n", top_n) or top_n)
             dimensao_ranking = contexto_anterior.get("dimensao_ranking", dimensao_ranking) or dimensao_ranking
 
-        # Se a continuação só citou mês, mantém o alvo anterior.
-        if not recurso and not contrato:
+        # Se a continuação só citou mês, mantém o alvo anterior, exceto quando
+        # o usuário pedir explicitamente visão geral/todos os contratos.
+        if not escopo_geral_explicito and not recurso and not contrato:
             recurso = contexto_anterior.get("recurso")
             contrato = contexto_anterior.get("contrato")
 
         # Se a continuação citou uma equipe, a equipe tem prioridade sobre contrato.
         if recurso:
+            contrato = None
+        if escopo_geral_explicito and not recurso:
             contrato = None
 
     quer_somar_express = "EXPRESS" in pergunta_norm and any(t in pergunta_norm for t in ["CONTAR", "CONTA", "INCLUI", "INCLUIR", "COM", "SOMAR", "TOTAL"])
@@ -4010,7 +4053,7 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
         ranking = _montar_ranking_chat(df, metrica=metrica_ranking, pode_ver_financeiro=pode_ver_financeiro)
         if ranking.empty:
             return f"Não há dados suficientes para montar ranking em **{periodo_txt}**."
-        contexto_titulo = contrato or "Geral"
+        contexto_titulo = contrato or ("Todos os contratos" if dimensao_ranking == "recurso" and escopo_geral_explicito else "Geral")
         if top_n == 1:
             row = ranking.iloc[0]
             linhas = [f"🏆 **Equipe com {titulo_metrica} — {contexto_titulo} — {periodo_txt}**", ""]
