@@ -2589,6 +2589,84 @@ def mapa_codigo_para_recurso_real(notas):
     return dict(zip(contagem["CODIGO_RECURSO"], contagem["RECURSO"]))
 
 
+
+@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
+def mapa_nota_para_recurso_real(notas):
+    """Monta mapa OS/nota -> recurso/contrato usando a própria base de notas.
+
+    Este é o fallback mais seguro para o Pagamento Express quando o arquivo
+    Express não traz RECURSO e o DE/PARA de nome não está configurado.
+    """
+    parcial = preparar_parcial_do_dia(notas, incluir_recusas=True)
+    colunas = ["ORDEM_DE_SERVICO", "RECURSO", "CONTRATO"]
+    if parcial.empty or not set(colunas).issubset(set(parcial.columns)):
+        return {}
+
+    tmp = parcial[colunas].copy()
+    tmp["NOTA_NORM"] = tmp["ORDEM_DE_SERVICO"].apply(normalizar_ordem_servico)
+    tmp["RECURSO"] = tmp["RECURSO"].fillna("").astype(str).str.strip().str.upper()
+    tmp["CONTRATO"] = tmp["CONTRATO"].fillna("").astype(str).str.strip()
+    tmp = tmp[(tmp["NOTA_NORM"] != "") & (tmp["RECURSO"] != "")].copy()
+    if tmp.empty:
+        return {}
+
+    contagem = (
+        tmp.groupby(["NOTA_NORM", "RECURSO", "CONTRATO"], dropna=False)
+        .size()
+        .reset_index(name="QTD")
+        .sort_values(["NOTA_NORM", "QTD"], ascending=[True, False])
+        .drop_duplicates(subset=["NOTA_NORM"], keep="first")
+    )
+    return {
+        str(r["NOTA_NORM"]): (str(r["RECURSO"]).strip().upper(), str(r["CONTRATO"]).strip())
+        for _, r in contagem.iterrows()
+    }
+
+
+@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
+def mapa_nome_para_recurso_real(notas):
+    """Monta mapa Nome/Executor -> recurso/contrato usando a base de notas.
+
+    Se ELETRICISTA1/2 vierem como nome, este fallback resolve o Express sem
+    precisar de DE/PARA manual. Se vierem como código, não atrapalha.
+    """
+    parcial = preparar_parcial_do_dia(notas, incluir_recusas=True)
+    if parcial.empty or "RECURSO" not in parcial.columns:
+        return {}
+
+    linhas = []
+    for col in ["ELETRICISTA1", "ELETRICISTA2"]:
+        if col in parcial.columns:
+            cols = [col, "RECURSO"] + (["CONTRATO"] if "CONTRATO" in parcial.columns else [])
+            tmp = parcial[cols].copy()
+            tmp = tmp.rename(columns={col: "NOME_BASE"})
+            tmp["NOME_NORM"] = tmp["NOME_BASE"].apply(normalizar_nome_pessoa)
+            tmp["RECURSO"] = tmp["RECURSO"].fillna("").astype(str).str.strip().str.upper()
+            if "CONTRATO" not in tmp.columns:
+                tmp["CONTRATO"] = tmp["RECURSO"].apply(contrato_por_recurso_express)
+            else:
+                tmp["CONTRATO"] = tmp["CONTRATO"].fillna("").astype(str).str.strip()
+            tmp = tmp[(tmp["NOME_NORM"] != "") & (tmp["RECURSO"] != "")].copy()
+            if not tmp.empty:
+                linhas.append(tmp[["NOME_NORM", "RECURSO", "CONTRATO"]])
+
+    if not linhas:
+        return {}
+
+    base = pd.concat(linhas, ignore_index=True)
+    contagem = (
+        base.groupby(["NOME_NORM", "RECURSO", "CONTRATO"], dropna=False)
+        .size()
+        .reset_index(name="QTD")
+        .sort_values(["NOME_NORM", "QTD"], ascending=[True, False])
+        .drop_duplicates(subset=["NOME_NORM"], keep="first")
+    )
+    return {
+        str(r["NOME_NORM"]): (str(r["RECURSO"]).strip().upper(), str(r["CONTRATO"]).strip())
+        for _, r in contagem.iterrows()
+    }
+
+
 def resolver_recurso_depara(valor, mapa_codigo_recurso):
     """
     Resolve o valor do DE/PARA para o recurso real do ranking.
@@ -2871,17 +2949,36 @@ def calcular_express_mensal(notas, mes):
         return pd.DataFrame(), data_max_txt, pd.DataFrame(), str(caminho)
 
     mapa_codigo_recurso = mapa_codigo_para_recurso_real(notas)
+    mapa_nota_recurso = mapa_nota_para_recurso_real(notas)
+    mapa_nome_recurso = mapa_nome_para_recurso_real(notas)
 
-    # Jundiaí/Santa Cruz: mapeia por nome individual.
+    # Jundiaí/Santa Cruz: primeiro tenta o DE/PARA manual por nome.
     express["RECURSO_DEPARA"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS).fillna("")
 
-    # Fallback/prioridade: se a própria planilha Express trouxer RECURSO/EQUIPE/PARA,
-    # usa esse valor. Isso corrige o caso em que o DE/PARA não está nos Secrets
-    # e impede que Março/Abril fiquem zerados mesmo com linhas no arquivo.
+    # Fallback/prioridade 1: se a própria planilha Express trouxer RECURSO/EQUIPE/PARA,
+    # usa esse valor.
     if "RECURSO_EXPRESS_DIRETO" in express.columns:
         recurso_direto = express["RECURSO_EXPRESS_DIRETO"].fillna("").astype(str).str.strip().str.upper()
         mascara_recurso_direto = (recurso_direto != "") & (~recurso_direto.isin(["NAN", "NONE"]))
         express.loc[mascara_recurso_direto, "RECURSO_DEPARA"] = recurso_direto[mascara_recurso_direto]
+
+    # Fallback 2: cruza pela OS/NOTA com a base de notas.
+    # Este é o principal conserto para quando o DE/PARA saiu do código/secrets.
+    if "NOTA_NORM" in express.columns and mapa_nota_recurso:
+        mascara_sem_recurso = express["RECURSO_DEPARA"].fillna("").astype(str).str.strip().eq("")
+        recursos_por_nota = express.loc[mascara_sem_recurso, "NOTA_NORM"].map(
+            lambda n: mapa_nota_recurso.get(str(n), ("", ""))[0]
+        )
+        express.loc[mascara_sem_recurso, "RECURSO_DEPARA"] = recursos_por_nota.fillna("")
+
+    # Fallback 3: se ELETRICISTA1/2 da base tiverem os mesmos nomes do Express,
+    # resolve por nome sem precisar de DE/PARA manual.
+    if mapa_nome_recurso:
+        mascara_sem_recurso = express["RECURSO_DEPARA"].fillna("").astype(str).str.strip().eq("")
+        recursos_por_nome = express.loc[mascara_sem_recurso, "NOME_EXPRESS_NORM"].map(
+            lambda n: mapa_nome_recurso.get(str(n), ("", ""))[0]
+        )
+        express.loc[mascara_sem_recurso, "RECURSO_DEPARA"] = recursos_por_nome.fillna("")
 
     # Carro: regra adicional, sem interferir nos outros contratos.
     # Só conta se houver NOME_EXECUTOR_01 e NOME_EXECUTOR_02 e a dupla completa bater.
