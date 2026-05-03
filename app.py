@@ -2422,11 +2422,102 @@ def normalizar_nome_pessoa(valor):
     return texto.strip()
 
 
-DEPARA_NOME_RECURSO_EXPRESS = {
-    normalizar_nome_pessoa(nome): str(recurso).strip()
-    for nome, recurso in secret_dict("DEPARA_NOME_RECURSO_EXPRESS", {}).items()
-    if str(nome).strip() and str(recurso).strip()
-}
+def caminho_depara_express():
+    """Procura uma tabela opcional de DE/PARA do Pagamento Express.
+
+    Isso evita depender exclusivamente do st.secrets. Se o arquivo existir no
+    repositório, o painel consegue mapear Nome -> Recurso automaticamente.
+
+    Nomes aceitos:
+    - depara_nome_recurso_express.csv / .xlsx
+    - depara_pagamento_express.csv / .xlsx
+    - depara_express.csv / .xlsx
+
+    Colunas aceitas para nome: NOME, NOME_EXPRESS, NOME_EXECUTOR_01, DE.
+    Colunas aceitas para recurso: RECURSO, EQUIPE, PARA, CODIGO_RECURSO.
+    """
+    nomes = [
+        "depara_nome_recurso_express.csv",
+        "depara_nome_recurso_express.xlsx",
+        "depara_pagamento_express.csv",
+        "depara_pagamento_express.xlsx",
+        "depara_express.csv",
+        "depara_express.xlsx",
+    ]
+    for nome in nomes:
+        for pasta in [PASTA_DASHBOARD, PASTA_ATUAL]:
+            caminho = pasta / nome
+            if caminho.exists():
+                return caminho
+    return None
+
+
+def carregar_depara_nome_recurso_express():
+    """Carrega DE/PARA Nome -> Recurso via Secrets e/ou arquivo no dashboard.
+
+    A ordem é proposital:
+    1. Secrets continuam funcionando para quem já configurou.
+    2. Arquivo CSV/XLSX no dashboard complementa ou sobrescreve entradas.
+
+    Assim o Express não zera quando o código está público e o mapa deixou de
+    estar hardcoded no .py.
+    """
+    mapa = {
+        normalizar_nome_pessoa(nome): str(recurso).strip().upper()
+        for nome, recurso in secret_dict("DEPARA_NOME_RECURSO_EXPRESS", {}).items()
+        if str(nome).strip() and str(recurso).strip()
+    }
+
+    caminho = caminho_depara_express()
+    if not caminho:
+        return mapa
+
+    try:
+        if str(caminho).lower().endswith(".xlsx"):
+            df = pd.read_excel(caminho, engine="openpyxl")
+        else:
+            try:
+                df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
+            except Exception:
+                df = pd.read_csv(caminho, sep=",", encoding="utf-8-sig")
+    except Exception:
+        return mapa
+
+    if df.empty:
+        return mapa
+
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    colunas_norm = {normalizar_nome_pessoa(c): c for c in df.columns}
+
+    def achar_coluna(*nomes):
+        for nome in nomes:
+            chave = normalizar_nome_pessoa(nome)
+            if chave in colunas_norm:
+                return colunas_norm[chave]
+        return None
+
+    col_nome = achar_coluna(
+        "NOME", "NOME_EXPRESS", "NOME EXECUTOR", "NOME_EXECUTOR",
+        "NOME_EXECUTOR_01", "NOME EXECUTOR 01", "EXECUTOR", "DE"
+    )
+    col_recurso = achar_coluna(
+        "RECURSO", "EQUIPE", "PREFIXO", "PARA", "DEPARA", "DE/PARA",
+        "CODIGO_RECURSO", "COD RECURSO", "CÓDIGO RECURSO", "CODIGO", "CÓDIGO"
+    )
+
+    if not col_nome or not col_recurso:
+        return mapa
+
+    for _, row in df.iterrows():
+        nome_norm = normalizar_nome_pessoa(row.get(col_nome, ""))
+        recurso = str(row.get(col_recurso, "")).strip().upper()
+        if nome_norm and recurso and recurso not in ["NAN", "NONE"]:
+            mapa[nome_norm] = recurso
+
+    return mapa
+
+
+DEPARA_NOME_RECURSO_EXPRESS = carregar_depara_nome_recurso_express()
 
 
 # Carro STC estimado - só conta quando a dupla completa bate.
@@ -2629,6 +2720,18 @@ def ler_pagamento_express(caminho):
     col_nome_2 = achar_coluna("NOME_EXECUTOR_02", "NOME EXECUTOR 02")
     col_executor = achar_coluna("EXECUTOR")
 
+    # Algumas versões da planilha já trazem o recurso/equipe direto.
+    # Quando existir, usamos como fallback/prioridade e não dependemos do DE/PARA.
+    col_recurso_direto = achar_coluna(
+        "RECURSO", "EQUIPE", "PREFIXO", "RECURSO_EQUIPE", "RECURSO EQUIPE",
+        "CODIGO_RECURSO", "COD RECURSO", "CÓDIGO RECURSO",
+        "CODIGO", "CÓDIGO", "PARA", "DEPARA", "DE/PARA", "RECURSO_DEPARA"
+    )
+    if col_recurso_direto:
+        df["RECURSO_EXPRESS_DIRETO"] = df[col_recurso_direto].fillna("").astype(str).str.strip().str.upper()
+    else:
+        df["RECURSO_EXPRESS_DIRETO"] = ""
+
     if col_nome_1:
         df["NOME_EXPRESS"] = df[col_nome_1].fillna("").astype(str).str.strip()
     elif col_executor:
@@ -2686,6 +2789,7 @@ def ler_pagamento_express(caminho):
     df.attrs["EXPRESS_COL_VALIDACAO"] = col_validacao or ""
     df.attrs["EXPRESS_COL_DATA"] = col_data or ""
     df.attrs["EXPRESS_COL_NOME_1"] = col_nome_1 or ""
+    df.attrs["EXPRESS_COL_RECURSO_DIRETO"] = col_recurso_direto or ""
 
     return df
 
@@ -2768,8 +2872,16 @@ def calcular_express_mensal(notas, mes):
 
     mapa_codigo_recurso = mapa_codigo_para_recurso_real(notas)
 
-    # Jundiaí/Santa Cruz: mantêm exatamente a lógica que já funcionava, por nome individual.
+    # Jundiaí/Santa Cruz: mapeia por nome individual.
     express["RECURSO_DEPARA"] = express["NOME_EXPRESS_NORM"].map(DEPARA_NOME_RECURSO_EXPRESS).fillna("")
+
+    # Fallback/prioridade: se a própria planilha Express trouxer RECURSO/EQUIPE/PARA,
+    # usa esse valor. Isso corrige o caso em que o DE/PARA não está nos Secrets
+    # e impede que Março/Abril fiquem zerados mesmo com linhas no arquivo.
+    if "RECURSO_EXPRESS_DIRETO" in express.columns:
+        recurso_direto = express["RECURSO_EXPRESS_DIRETO"].fillna("").astype(str).str.strip().str.upper()
+        mascara_recurso_direto = (recurso_direto != "") & (~recurso_direto.isin(["NAN", "NONE"]))
+        express.loc[mascara_recurso_direto, "RECURSO_DEPARA"] = recurso_direto[mascara_recurso_direto]
 
     # Carro: regra adicional, sem interferir nos outros contratos.
     # Só conta se houver NOME_EXECUTOR_01 e NOME_EXECUTOR_02 e a dupla completa bater.
@@ -5144,7 +5256,9 @@ with aba_ranking:
                                     "linhas_lidas": total_linhas_debug,
                                     "datas_validas": datas_validas_debug,
                                     "meses_no_excel": express_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y").value_counts(dropna=False).to_dict() if "DATA_EXPRESS_DT" in express_debug.columns and express_debug["DATA_EXPRESS_DT"].notna().any() else {},
-                                    "nomes_mapeados": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
+                                    "nomes_mapeados_por_depara": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
+                                    "recursos_diretos_no_excel": int(express_debug.get("RECURSO_EXPRESS_DIRETO", pd.Series(dtype=object)).fillna("").astype(str).str.strip().replace({"nan":"", "NaN":"", "None":""}).ne("").sum()) if "RECURSO_EXPRESS_DIRETO" in express_debug.columns else 0,
+                                    "tamanho_depara_nome_recurso": len(DEPARA_NOME_RECURSO_EXPRESS),
                                 })
                                 cols_debug = [
                                     "NOME_EXPRESS", "NOME_EXPRESS_NORM", "DATA_EXPRESS_DT", "NOTA_NORM", "VALIDAÇÃO", "VALIDACAO"
