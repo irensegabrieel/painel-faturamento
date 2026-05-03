@@ -73,6 +73,21 @@ def secret_float(nome, padrao=0.0):
         return float(padrao)
 
 
+def secret_bool(nome, padrao=False):
+    valor = secret_value(nome, padrao)
+    if isinstance(valor, bool):
+        return valor
+    if valor is None:
+        return bool(padrao)
+    return str(valor).strip().lower() in ["1", "true", "sim", "yes", "on", "ativo", "ativado"]
+
+
+OPENAI_API_KEY = secret_value("OPENAI_API_KEY", "")
+OPENAI_MODEL = secret_value("OPENAI_MODEL", "gpt-5.2")
+OPENAI_BASE_URL = str(secret_value("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
+USAR_IA_GZUS = secret_bool("USAR_IA_GZUS", True)
+
+
 SENHA_CORRETA = secret_value("SENHA_GERENTE", "")
 
 # ==============================
@@ -3971,6 +3986,226 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
     return "\n".join(linhas)
 
 
+
+# ==============================
+# G.Z.U.S. — CAMADA DE IA VIA API
+# ==============================
+
+def _gzus_ia_configurada():
+    """Retorna True quando a API está pronta para uso no ambiente."""
+    return bool(USAR_IA_GZUS and str(OPENAI_API_KEY or "").strip())
+
+
+def _extrair_texto_resposta_openai(payload):
+    """Extrai texto da Responses API com tolerância a formatos diferentes."""
+    if not isinstance(payload, dict):
+        return ""
+
+    texto_direto = payload.get("output_text")
+    if texto_direto:
+        return str(texto_direto).strip()
+
+    partes = []
+    for item in payload.get("output", []) or []:
+        for conteudo in item.get("content", []) or []:
+            if isinstance(conteudo, dict):
+                if conteudo.get("type") in ["output_text", "text"] and conteudo.get("text"):
+                    partes.append(str(conteudo.get("text")))
+                elif conteudo.get("type") == "message" and conteudo.get("content"):
+                    partes.append(str(conteudo.get("content")))
+    return "\n".join(partes).strip()
+
+
+def _chamar_openai_gzus(pergunta, resposta_local, contexto_operacional, historico=None, pode_ver_financeiro=True):
+    """Chama a OpenAI Responses API. Se falhar, devolve string vazia para manter fallback local."""
+    if not _gzus_ia_configurada():
+        return ""
+
+    import urllib.request
+    import urllib.error
+
+    historico = historico or []
+    historico_txt = []
+    for item in historico[-4:]:
+        p = str(item.get("pergunta", "")).strip()
+        r = str(item.get("resposta", "")).strip()
+        if p or r:
+            historico_txt.append(f"Usuário: {p}\nG.Z.U.S.: {r[:1200]}")
+
+    regra_financeira = (
+        "O usuário pode ver dados financeiros. Pode comentar faturamento quando estiver no contexto."
+        if pode_ver_financeiro
+        else "O usuário NÃO pode ver dados financeiros. Não mencione valores, faturamento, receita, preço ou R$."
+    )
+
+    instrucoes = f"""
+Você é o G.Z.U.S., assistente operacional do painel Gestão Inteligente de Serviços.
+Responda em português do Brasil, de forma objetiva, prática e com tom de supervisor operacional.
+Use os dados do contexto e a resposta local calculada pelo painel como fonte principal da verdade.
+Não invente números, contratos, equipes, datas, valores ou causas que não estejam no contexto.
+Quando faltar dado, diga claramente que o painel não encontrou informação suficiente.
+{regra_financeira}
+Priorize: diagnóstico, risco, próximo passo e explicação simples.
+Evite texto longo. Use bullets curtos quando ajudar.
+""".strip()
+
+    entrada = f"""
+PERGUNTA DO USUÁRIO:
+{pergunta}
+
+RESPOSTA LOCAL DO PAINEL:
+{resposta_local}
+
+CONTEXTO OPERACIONAL RESUMIDO:
+{contexto_operacional}
+
+HISTÓRICO RECENTE:
+{chr(10).join(historico_txt) if historico_txt else 'Sem histórico recente.'}
+""".strip()
+
+    body = {
+        "model": str(OPENAI_MODEL or "gpt-5.2"),
+        "instructions": instrucoes,
+        "input": entrada,
+        "max_output_tokens": 700,
+    }
+
+    req = urllib.request.Request(
+        f"{OPENAI_BASE_URL}/responses",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        return _extrair_texto_resposta_openai(payload)
+    except urllib.error.HTTPError as e:
+        detalhe = ""
+        try:
+            detalhe = e.read().decode("utf-8")[:500]
+        except Exception:
+            detalhe = str(e)
+        if hasattr(st, "session_state"):
+            st.session_state["gzus_ia_ultimo_erro"] = f"HTTP {e.code}: {detalhe}"
+        return ""
+    except Exception as e:
+        if hasattr(st, "session_state"):
+            st.session_state["gzus_ia_ultimo_erro"] = str(e)
+        return ""
+
+
+def _contexto_operacional_ia(pergunta, notas, pode_ver_financeiro=True, pode_ver_express=True, modo_leitura=False):
+    """Monta contexto compacto do painel para a IA sem enviar planilhas inteiras."""
+    if modo_leitura:
+        try:
+            df_tarefas, df_resumo_arquivo, arquivos, _diag = carregar_leitura_completa()
+            linhas = ["Modo: Supervisor Leitura"]
+            if arquivos:
+                linhas.append("Arquivos de leitura carregados: " + ", ".join(f"{base}={len(cams)}" for base, cams in arquivos.items()))
+            if not df_tarefas.empty:
+                total_tarefas = int(df_tarefas["TAREFA"].nunique()) if "TAREFA" in df_tarefas.columns else len(df_tarefas)
+                linhas.append(f"Tarefas carregadas: {total_tarefas}")
+                if "STATUS OPERACIONAL" in df_tarefas.columns:
+                    status = df_tarefas["STATUS OPERACIONAL"].fillna("SEM STATUS").astype(str).value_counts().head(8)
+                    linhas.append("Status: " + "; ".join(f"{k}={int(v)}" for k, v in status.items()))
+                if "BASE" in df_tarefas.columns:
+                    base = df_tarefas["BASE"].fillna("SEM BASE").astype(str).value_counts().head(8)
+                    linhas.append("Bases: " + "; ".join(f"{k}={int(v)}" for k, v in base.items()))
+            if not df_resumo_arquivo.empty:
+                linhas.append(f"Linhas de resumo de leitura: {len(df_resumo_arquivo)}")
+            return "\n".join(linhas)
+        except Exception as e:
+            return f"Modo: Supervisor Leitura. Não foi possível montar contexto detalhado: {e}"
+
+    if notas is None or notas.empty:
+        return "Sem base de notas carregada no contexto atual."
+
+    try:
+        base = preparar_parcial_do_dia(notas, incluir_recusas=True)
+        if base.empty:
+            return "Base de notas vazia após preparação."
+
+        meses = _meses_chat_disponiveis(base)
+        contexto_anterior = st.session_state.get("chatbot_painel_contexto", {}) if hasattr(st, "session_state") else {}
+        mes = _extrair_mes_chat(pergunta, meses, contexto_anterior) or (meses[0] if meses else None)
+        contratos_disp = sorted(base.get("CONTRATO", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+        recursos_disp = sorted(base.get("RECURSO", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+        contrato = _identificar_contrato_chat(pergunta, contratos_disp) or contexto_anterior.get("contrato")
+        recurso = _identificar_recurso_chat(pergunta, recursos_disp) or contexto_anterior.get("recurso")
+
+        df = _filtrar_base_chat(base, mes=mes, contrato=contrato, recurso=recurso)
+        resumo = _resumo_numerico_chat(df)
+        ranking = _montar_ranking_chat(df, metrica="notas", pode_ver_financeiro=pode_ver_financeiro).head(5)
+        recusas = _resumo_recusas_tipo(df).head(5)
+
+        linhas = [
+            "Modo: Painel Operacional",
+            f"Período analisado: {_nome_mes_chat(mes) if mes else 'histórico completo'}",
+            f"Contrato filtrado: {contrato or 'Geral'}",
+            f"Recurso filtrado: {recurso or 'Todos'}",
+            f"Contratos disponíveis: {', '.join(contratos_disp[:12])}",
+            f"Notas: {numero(resumo['notas'])}",
+            f"Cortes: {numero(resumo['cortes'])}",
+            f"Religues: {numero(resumo['religues'])}",
+            f"Recusas: {numero(resumo['recusas'])}",
+            f"Recursos ativos: {numero(resumo['recursos'])}",
+            f"Dias ativos: {numero(resumo['dias_ativos'])}",
+        ]
+        if pode_ver_financeiro:
+            linhas.append(f"Faturamento: {dinheiro(resumo['faturamento'])}")
+        if pode_ver_express and mes:
+            express = _express_chat_periodo(notas, mes, contrato=contrato, recurso=recurso)
+            linhas.append(f"Pagamento express: {numero(int(express.get('express', 0) or 0))}")
+            if pode_ver_financeiro:
+                linhas.append(f"Faturamento express: {dinheiro(float(express.get('faturamento_express', 0.0) or 0.0))}")
+        if not ranking.empty:
+            linhas.append("Top produção: " + "; ".join(f"{r.RECURSO}={numero(int(r.NOTAS))}" for r in ranking.itertuples(index=False)))
+        if not recusas.empty:
+            linhas.append("Principais recusas: " + "; ".join(f"{r.RECUSA}={numero(int(r.QTD))}" for r in recusas.itertuples(index=False)))
+        return "\n".join(linhas)
+    except Exception as e:
+        return f"Não foi possível montar contexto operacional detalhado: {e}"
+
+
+def responder_chatbot_inteligente(pergunta, notas, pode_ver_financeiro=True, pode_ver_express=True, modo_leitura=False):
+    """Resposta híbrida: cálculo local confiável + IA para interpretar e melhorar a comunicação."""
+    resposta_local = responder_chatbot_painel(
+        pergunta,
+        notas,
+        pode_ver_financeiro=pode_ver_financeiro,
+        pode_ver_express=pode_ver_express,
+        modo_leitura=modo_leitura,
+    )
+
+    if not _gzus_ia_configurada():
+        return resposta_local
+
+    contexto = _contexto_operacional_ia(
+        pergunta,
+        notas,
+        pode_ver_financeiro=pode_ver_financeiro,
+        pode_ver_express=pode_ver_express,
+        modo_leitura=modo_leitura,
+    )
+    historico = st.session_state.get("chatbot_painel_historico", []) if hasattr(st, "session_state") else []
+    resposta_ia = _chamar_openai_gzus(
+        pergunta,
+        resposta_local,
+        contexto,
+        historico=historico,
+        pode_ver_financeiro=pode_ver_financeiro,
+    )
+
+    if resposta_ia:
+        return resposta_ia
+    return resposta_local + "\n\n_Obs.: a IA não respondeu agora; usei a análise local do painel._"
+
+
 def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True, modo_leitura=False):
     """Mostra o G.Z.U.S. em formato de popup fixo no canto inferior direito, respeitando o perfil logado."""
     st.markdown(
@@ -4060,7 +4295,8 @@ def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True
                 """,
                 unsafe_allow_html=True,
             )
-            st.caption("Pergunte de forma natural: “5981 fez quanto?”, “carro faturou quanto?”, “como foi abril?”")
+            modo_ia = "IA conectada" if _gzus_ia_configurada() else "modo local"
+            st.caption(f"Pergunte de forma natural: “5981 fez quanto?”, “carro faturou quanto?”, “como foi abril?” • {modo_ia}")
 
             if "chatbot_painel_historico" not in st.session_state:
                 st.session_state.chatbot_painel_historico = []
@@ -4088,7 +4324,7 @@ def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True
                 st.rerun()
 
             if enviar and pergunta.strip():
-                resposta = responder_chatbot_painel(
+                resposta = responder_chatbot_inteligente(
                     pergunta,
                     notas,
                     pode_ver_financeiro=pode_ver_financeiro,
@@ -4134,7 +4370,7 @@ st.sidebar.caption(f"Perfil: {NOME_ACESSO}")
 if faltando:
     st.warning("Arquivos não encontrados: " + ", ".join(faltando))
 
-# Popup do assistente: usa os mesmos dados do painel, sem depender de API externa.
+# Popup do assistente: usa os mesmos dados do painel e, se OPENAI_API_KEY estiver configurada, melhora as respostas com IA.
 if PERFIL_ACESSO == "gerente" and not notas.empty:
     mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True)
 
