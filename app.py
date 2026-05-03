@@ -552,6 +552,42 @@ def _ordenar_d(valor):
         return 9999
 
 
+def _mes_arquivo_leitura(caminho):
+    """Retorna competência MM/AAAA a partir do nome do arquivo, quando possível."""
+    try:
+        data_chave = _data_chave_arquivo_leitura(caminho)
+        dt = pd.to_datetime(data_chave, errors="coerce")
+        if pd.notna(dt):
+            return dt.strftime("%m/%Y")
+    except Exception:
+        pass
+    return ""
+
+
+def _garantir_mes_operacional(df, caminho=None):
+    """Garante coluna MÊS OPERACIONAL para separar viradas de mês.
+
+    A leitura zera na virada do mês, então D0/D1/D2 só deve ser analisado
+    dentro da competência correspondente à DT PREVISTA.
+    """
+    df = df.copy()
+    if "MÊS OPERACIONAL" in df.columns and not (df["MÊS OPERACIONAL"].fillna("").astype(str).str.strip() == "").all():
+        df["MÊS OPERACIONAL"] = df["MÊS OPERACIONAL"].fillna("").astype(str).str.strip()
+        return df
+
+    if "DT PREVISTA" in df.columns:
+        dt = pd.to_datetime(df["DT PREVISTA"], dayfirst=True, errors="coerce")
+        df["MÊS OPERACIONAL"] = dt.dt.strftime("%m/%Y").fillna("")
+    else:
+        df["MÊS OPERACIONAL"] = ""
+
+    mes_arquivo = _mes_arquivo_leitura(caminho) if caminho else ""
+    if mes_arquivo:
+        vazio = df["MÊS OPERACIONAL"].fillna("").astype(str).str.strip() == ""
+        df.loc[vazio, "MÊS OPERACIONAL"] = mes_arquivo
+    return df
+
+
 def _nome_base_por_arquivo(caminho):
     nome = Path(caminho).name.upper()
     if "PIRACICABA" in nome:
@@ -619,6 +655,9 @@ def _padronizar_colunas_leitura(df):
 
         elif n in ["DT PLANEJA", "DT PLANEJADA", "DATA PLANEJADA"]:
             mapa[col] = "DT PLANEJA"
+
+        elif n in ["MES", "COMPETENCIA", "MES OPERACIONAL", "MÊS OPERACIONAL"]:
+            mapa[col] = "MÊS OPERACIONAL"
 
         elif n in ["AGENTE COMERCIAL", "AGENTE"]:
             mapa[col] = "AGENTE COMERCIAL"
@@ -703,6 +742,8 @@ def _preparar_tarefas_leitura(df, caminho=None):
     for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+
+    df = _garantir_mes_operacional(df, caminho)
 
     df["TAREFA"] = df["TAREFA"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
     df = df[df["TAREFA"] != ""].copy()
@@ -800,7 +841,9 @@ def _preparar_resumo_leitura(df, caminho=None):
             df[col] = 0
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
-    saida = df[[c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in df.columns]].copy()
+    df = _garantir_mes_operacional(df, caminho)
+
+    saida = df[[c for c in ["BASE", "MÊS OPERACIONAL", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in df.columns]].copy()
     saida["FORMATO_ORIGEM"] = "RESUMO"
     return saida
 
@@ -956,12 +999,19 @@ def carregar_leitura_completa():
 def _resumo_leitura_from_tarefas(base):
     if base.empty:
         return pd.DataFrame()
-    df = base.copy()
-    for col in ["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"]:
+    df = _garantir_mes_operacional(base.copy())
+    df["STATUS OPERACIONAL"] = df.get("STATUS OPERACIONAL", "").fillna("").astype(str).str.upper().replace({"SEM TOTAL": "PENDENTE"})
+    for col in ["FEITA", "PARCIAL", "PENDENTE"]:
         df[col] = (df["STATUS OPERACIONAL"] == col).astype(int)
+    df["SEM TOTAL"] = 0
+
+    agrupadores = ["BASE", "MÊS OPERACIONAL", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"]
+    for col in agrupadores:
+        if col not in df.columns:
+            df[col] = ""
 
     resumo = (
-        df.groupby(["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"], dropna=False)
+        df.groupby(agrupadores, dropna=False)
         .agg(
             **{
                 "TOTAL TAREFA": ("TAREFA", "nunique"),
@@ -977,8 +1027,7 @@ def _resumo_leitura_from_tarefas(base):
         .reset_index()
     )
     resumo["ORDEM_D"] = resumo["D OPERACIONAL"].apply(_ordenar_d)
-    return resumo.sort_values(["BASE", "ORDEM_D", "MUNICÍPIO NOME"]).drop(columns=["ORDEM_D"])
-
+    return resumo.sort_values(["BASE", "MÊS OPERACIONAL", "ORDEM_D", "MUNICÍPIO NOME"]).drop(columns=["ORDEM_D"])
 
 def _formatar_df_parcial_agente(df):
     if df.empty:
@@ -1044,10 +1093,12 @@ def mostrar_painel_leitura():
         df_parcial = df_tarefas[origem == "PARCIAL_AGENTE"].copy()
         df_tarefas_reais = df_tarefas[origem != "PARCIAL_AGENTE"].copy()
 
-    if not df_resumo_arquivo.empty:
-        df_operacional = df_resumo_arquivo.copy()
-    elif not df_tarefas_reais.empty:
+    # Para respeitar a virada de mês, a visão operacional prioriza as tarefas reais,
+    # pois elas trazem DT PREVISTA e permitem separar por competência.
+    if not df_tarefas_reais.empty:
         df_operacional = _resumo_leitura_from_tarefas(df_tarefas_reais)
+    elif not df_resumo_arquivo.empty:
+        df_operacional = _garantir_mes_operacional(df_resumo_arquivo.copy())
     else:
         df_operacional = pd.DataFrame()
 
@@ -1062,17 +1113,32 @@ def mostrar_painel_leitura():
             st.warning("Não encontrei a aba/estrutura de resumo por D e município. Verifique se o extrator subiu o arquivo novo com RESUMO_MUNICIPIO ou DETALHE_MUNICIPIO.")
         else:
             st.markdown("#### Filtros")
-            f1, f2, f3 = st.columns([1.2, 1.2, 1.8])
+            f0, f1, f2, f3 = st.columns([1.0, 1.1, 1.1, 1.8])
+            if "MÊS OPERACIONAL" not in df_operacional.columns:
+                df_operacional = _garantir_mes_operacional(df_operacional)
+            meses_disp = df_operacional.get("MÊS OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist()
+            meses_disp = [m for m in meses_disp if m]
+            meses_disp = sorted(
+                meses_disp,
+                key=lambda m: pd.to_datetime("01/" + str(m), dayfirst=True, errors="coerce"),
+                reverse=True,
+            )
+            mes_atual = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%m/%Y")
+            meses_default = [mes_atual] if mes_atual in meses_disp else (meses_disp[:1] if meses_disp else [])
+
             bases_disp = sorted(df_operacional.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
             d_disp = sorted(df_operacional.get("D OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(), key=_ordenar_d)
             municipios_disp = sorted(df_operacional.get("MUNICÍPIO NOME", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
             municipios_disp = [m for m in municipios_disp if m and str(m).upper() not in ["TOTAL DA BASE", "TOTAL"]]
 
+            meses_sel = f0.multiselect("Mês", meses_disp, default=meses_default, key="leit_mes_op")
             bases_sel = f1.multiselect("Base", bases_disp, default=bases_disp, key="leit_base_op")
             d_sel = f2.multiselect("D", d_disp, default=d_disp, key="leit_d_op")
             municipios_sel = f3.multiselect("Município", municipios_disp, default=municipios_disp, key="leit_mun_op")
 
             resumo = df_operacional.copy()
+            if meses_sel and "MÊS OPERACIONAL" in resumo.columns:
+                resumo = resumo[resumo["MÊS OPERACIONAL"].isin(meses_sel)]
             if bases_sel and "BASE" in resumo.columns:
                 resumo = resumo[resumo["BASE"].isin(bases_sel)]
             if d_sel and "D OPERACIONAL" in resumo.columns:
@@ -1108,13 +1174,13 @@ def mostrar_painel_leitura():
 
             st.markdown("#### Resumo por base e D")
             resumo_base_d = (
-                resumo.groupby(["BASE", "D OPERACIONAL"], dropna=False)
+                resumo.groupby(["MÊS OPERACIONAL", "BASE", "D OPERACIONAL"], dropna=False)
                 .agg({"TOTAL TAREFA": "sum", "FEITA": "sum", "PARCIAL": "sum", "PENDENTE": "sum", "SEM TOTAL": "sum", "FALTAM": "sum", "T. INSTALA": "sum", "T. VISITADA": "sum"})
                 .reset_index()
             )
             if not resumo_base_d.empty:
                 resumo_base_d["ORDEM_D"] = resumo_base_d["D OPERACIONAL"].apply(_ordenar_d)
-                resumo_base_d = resumo_base_d.sort_values(["BASE", "ORDEM_D"]).drop(columns=["ORDEM_D"])
+                resumo_base_d = resumo_base_d.sort_values(["MÊS OPERACIONAL", "BASE", "ORDEM_D"]).drop(columns=["ORDEM_D"])
             tabela_base_d = resumo_base_d.rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
             st.dataframe(tabela_base_d, use_container_width=True, hide_index=True)
 
@@ -1123,7 +1189,7 @@ def mostrar_painel_leitura():
             if "ORDEM_D" not in detalhe.columns:
                 detalhe["ORDEM_D"] = detalhe["D OPERACIONAL"].apply(_ordenar_d)
             detalhe = detalhe.sort_values([c for c in ["BASE", "MUNICÍPIO NOME", "ORDEM_D"] if c in detalhe.columns]).drop(columns=["ORDEM_D"], errors="ignore")
-            colunas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in detalhe.columns]
+            colunas = [c for c in ["MÊS OPERACIONAL", "BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in detalhe.columns]
             tabela_detalhe = detalhe[colunas].rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
             st.dataframe(tabela_detalhe, use_container_width=True, hide_index=True)
 
@@ -1256,7 +1322,9 @@ def mostrar_painel_leitura():
                 alerta_base["AGENTE COMERCIAL"] = ""
             alerta_base["AGENTE COMERCIAL"] = alerta_base["AGENTE COMERCIAL"].fillna("").astype(str).str.strip()
 
-            sem_agente_df = alerta_base[alerta_base["AGENTE COMERCIAL"] == ""].copy()
+            status_alerta = alerta_base.get("STATUS OPERACIONAL", pd.Series([""] * len(alerta_base), index=alerta_base.index)).fillna("").astype(str).str.upper()
+            faltam_alerta = pd.to_numeric(alerta_base.get("FALTAM", 0), errors="coerce").fillna(0)
+            sem_agente_df = alerta_base[(alerta_base["AGENTE COMERCIAL"] == "") & (status_alerta != "FEITA") & (faltam_alerta > 0)].copy()
             if not sem_agente_df.empty:
                 qtd_sem_agente = int(sem_agente_df["TAREFA"].nunique()) if "TAREFA" in sem_agente_df.columns else len(sem_agente_df)
                 exemplos_sem_agente = sem_agente_df.get("TAREFA", pd.Series(dtype=str)).astype(str).drop_duplicates().head(12).tolist()
