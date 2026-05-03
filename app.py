@@ -297,12 +297,12 @@ USUARIOS_ACESSO = {
         "nome": secret_value("NOME_GERENTE", "Gerente"),
     },
     "supervisor_stc": {
-        "senha": secret_value("SENHA_SUPERVISOR_STC", ""),
+        "senha": secret_value("SENHA_STC", ""),
         "perfil": "supervisor_stc",
         "nome": secret_value("NOME_SUPERVISOR_STC", "Supervisor STC"),
     },
     "supervisor_leitura": {
-        "senha": secret_value("SENHA_SUPERVISOR_LEITURA", ""),
+        "senha": secret_value("SENHA_LEITURA", ""),
         "perfil": "supervisor_leitura",
         "nome": secret_value("NOME_SUPERVISOR_LEITURA", "Supervisor Leitura"),
     },
