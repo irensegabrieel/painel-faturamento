@@ -1125,12 +1125,55 @@ def carregar_leitura_completa():
     return df_tarefas, df_resumo, arquivos_por_base, diag
 
 
+def _deduplicar_tarefas_leitura(df):
+    """Remove duplicidades globais de tarefa antes dos agrupamentos.
+
+    O painel pode carregar várias execuções do mesmo dia/arquivo no GitHub/local.
+    Sem esta etapa, TOTAL TAREFA fica correto por usar nunique, mas FEITA/PARCIAL/
+    PENDENTE e leituras acabam somando a mesma tarefa várias vezes.
+    """
+    if df.empty or "TAREFA" not in df.columns:
+        return df
+
+    base = df.copy()
+    base["TAREFA"] = base["TAREFA"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    base = base[base["TAREFA"] != ""].copy()
+
+    if "DT PREVISTA" in base.columns:
+        base["_DT_PREVISTA_DEDUP"] = pd.to_datetime(base["DT PREVISTA"], dayfirst=True, errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
+    else:
+        base["_DT_PREVISTA_DEDUP"] = ""
+
+    for col in ["BASE", "MÊS OPERACIONAL", "LOTE OPERACIONAL"]:
+        if col not in base.columns:
+            base[col] = ""
+        base[col] = base[col].fillna("").astype(str).str.strip()
+
+    # Preferimos a última versão carregada. ARQUIVO normalmente contém timestamp
+    # da execução; quando não contém, a ordenação ainda é estável e segura.
+    ordenacao = [c for c in ["ARQUIVO", "ABA"] if c in base.columns]
+    if ordenacao:
+        base = base.sort_values(ordenacao)
+
+    chaves = ["BASE", "TAREFA", "_DT_PREVISTA_DEDUP"]
+    base = base.drop_duplicates(subset=chaves, keep="last").drop(columns=["_DT_PREVISTA_DEDUP"], errors="ignore")
+    return base.reset_index(drop=True)
+
+
 def _resumo_leitura_from_tarefas(base):
     if base.empty:
         return pd.DataFrame()
     df = _garantir_mes_operacional(base.copy())
     df = _garantir_lote_operacional(df)
+    df = _deduplicar_tarefas_leitura(df)
+
     df["STATUS OPERACIONAL"] = df.get("STATUS OPERACIONAL", "").fillna("").astype(str).str.upper().replace({"SEM TOTAL": "PENDENTE"})
+    for col in ["T. INSTALA", "T. VISITADA", "FALTAM"]:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+    df["FALTAM"] = (df["T. INSTALA"] - df["T. VISITADA"]).clip(lower=0).astype(int)
+
     for col in ["FEITA", "PARCIAL", "PENDENTE"]:
         df[col] = (df["STATUS OPERACIONAL"] == col).astype(int)
     df["SEM TOTAL"] = 0
