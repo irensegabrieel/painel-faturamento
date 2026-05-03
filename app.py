@@ -651,165 +651,6 @@ def _garantir_mes_operacional(df, caminho=None):
     return df
 
 
-
-
-def _feriados_nacionais_br(ano):
-    """Feriados nacionais usados para cálculo operacional de D.
-
-    A leitura usa dias úteis: pula sábados, domingos e feriados nacionais.
-    Feriados municipais não entram aqui porque dependem da cidade/base.
-    """
-    from datetime import date, timedelta
-
-    def pascoa(y):
-        a = y % 19
-        b = y // 100
-        c = y % 100
-        d = b // 4
-        e = b % 4
-        f = (b + 8) // 25
-        g = (b - f + 1) // 3
-        h = (19 * a + b - d - g + 15) % 30
-        i = c // 4
-        k = c % 4
-        l = (32 + 2 * e + 2 * i - h - k) % 7
-        m = (a + 11 * h + 22 * l) // 451
-        mes = (h + l - 7 * m + 114) // 31
-        dia = ((h + l - 7 * m + 114) % 31) + 1
-        return date(y, mes, dia)
-
-    p = pascoa(ano)
-    fixos = {
-        date(ano, 1, 1),   # Confraternização Universal
-        date(ano, 4, 21),  # Tiradentes
-        date(ano, 5, 1),   # Dia do Trabalho
-        date(ano, 9, 7),   # Independência
-        date(ano, 10, 12), # Nossa Senhora Aparecida
-        date(ano, 11, 2),  # Finados
-        date(ano, 11, 15), # Proclamação da República
-        date(ano, 11, 20), # Consciência Negra
-        date(ano, 12, 25), # Natal
-    }
-    moveis = {
-        p - timedelta(days=48), # Carnaval segunda
-        p - timedelta(days=47), # Carnaval terça
-        p - timedelta(days=2),  # Sexta-feira Santa
-        p + timedelta(days=60), # Corpus Christi
-    }
-    return fixos | moveis
-
-
-def _eh_dia_util_leitura(dt):
-    """True se a data conta como dia útil operacional para leitura."""
-    if pd.isna(dt):
-        return False
-    if hasattr(dt, 'date'):
-        dt = dt.date()
-    return dt.weekday() < 5 and dt not in _feriados_nacionais_br(dt.year)
-
-
-def _proximo_dia_util_leitura(dt):
-    """Se hoje for sábado/domingo/feriado, usa o próximo dia útil como D0."""
-    from datetime import timedelta
-    if hasattr(dt, 'date'):
-        dt = dt.date()
-    atual = dt
-    while not _eh_dia_util_leitura(atual):
-        atual += timedelta(days=1)
-    return atual
-
-
-def _ultimo_dia_util_do_mes(ano, mes):
-    from datetime import date, timedelta
-    if mes == 12:
-        atual = date(ano + 1, 1, 1) - timedelta(days=1)
-    else:
-        atual = date(ano, mes + 1, 1) - timedelta(days=1)
-    while not _eh_dia_util_leitura(atual):
-        atual -= timedelta(days=1)
-    return atual
-
-
-def _dias_uteis_entre_leitura(data_prevista, referencia):
-    """Retorna D em dias úteis: mesma data=D0, dia útil anterior=D1, etc."""
-    from datetime import timedelta
-    if pd.isna(data_prevista):
-        return None
-    if hasattr(data_prevista, 'date'):
-        data_prevista = data_prevista.date()
-    if hasattr(referencia, 'date'):
-        referencia = referencia.date()
-
-    if data_prevista >= referencia:
-        return 0
-
-    contador = 0
-    atual = data_prevista
-    while atual < referencia:
-        atual += timedelta(days=1)
-        if _eh_dia_util_leitura(atual):
-            contador += 1
-    return contador
-
-
-def _referencia_operacional_mes(mes_operacional):
-    """Define a data-base para calcular o D.
-
-    - Para o mês atual: hoje, ou o próximo dia útil se hoje não for útil.
-    - Para mês passado/futuro: último dia útil daquele mês, só para histórico.
-    """
-    hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-    ref_atual = _proximo_dia_util_leitura(hoje)
-    mes_atual = ref_atual.strftime("%m/%Y")
-    mes_txt = str(mes_operacional or "").strip()
-
-    if not mes_txt or mes_txt == mes_atual:
-        return ref_atual
-
-    try:
-        dt_mes = pd.to_datetime("01/" + mes_txt, dayfirst=True, errors="coerce")
-        if pd.isna(dt_mes):
-            return ref_atual
-        return _ultimo_dia_util_do_mes(int(dt_mes.year), int(dt_mes.month))
-    except Exception:
-        return ref_atual
-
-
-def _recalcular_d_operacional_dinamico(df):
-    """Recalcula D0/D1/D2 dinamicamente a partir da DT PREVISTA.
-
-    Isso faz o D andar sozinho quando vira o dia:
-    D0 -> D1, D1 -> D2, D2 -> D3...
-
-    Também respeita a virada do mês por MÊS OPERACIONAL: a competência atual
-    não carrega atrasos do mês anterior.
-    """
-    df = df.copy()
-    if "DT PREVISTA" not in df.columns:
-        return df
-
-    dt_prevista = pd.to_datetime(df["DT PREVISTA"], dayfirst=True, errors="coerce")
-    if "MÊS OPERACIONAL" not in df.columns:
-        df["MÊS OPERACIONAL"] = dt_prevista.dt.strftime("%m/%Y").fillna("")
-    else:
-        vazio = df["MÊS OPERACIONAL"].fillna("").astype(str).str.strip() == ""
-        df.loc[vazio, "MÊS OPERACIONAL"] = dt_prevista.dt.strftime("%m/%Y").fillna("")
-
-    referencias = {}
-    novos_d = []
-    for idx, dt in dt_prevista.items():
-        if pd.isna(dt):
-            novos_d.append(str(df.at[idx, "D OPERACIONAL"]) if "D OPERACIONAL" in df.columns else "D?")
-            continue
-        mes = str(df.at[idx, "MÊS OPERACIONAL"] or dt.strftime("%m/%Y")).strip()
-        if mes not in referencias:
-            referencias[mes] = _referencia_operacional_mes(mes)
-        atraso = _dias_uteis_entre_leitura(dt, referencias[mes])
-        novos_d.append(f"D{int(atraso)}" if atraso is not None else "D?")
-
-    df["D OPERACIONAL"] = novos_d
-    return df
-
 def _nome_base_por_arquivo(caminho):
     nome = Path(caminho).name.upper()
     if "PIRACICABA" in nome:
@@ -966,7 +807,6 @@ def _preparar_tarefas_leitura(df, caminho=None):
             df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
 
     df = _garantir_mes_operacional(df, caminho)
-    df = _recalcular_d_operacional_dinamico(df)
 
     df["TAREFA"] = df["TAREFA"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
     df = df[df["TAREFA"] != ""].copy()
@@ -1223,7 +1063,6 @@ def _resumo_leitura_from_tarefas(base):
     if base.empty:
         return pd.DataFrame()
     df = _garantir_mes_operacional(base.copy())
-    df = _recalcular_d_operacional_dinamico(df)
     df["STATUS OPERACIONAL"] = df.get("STATUS OPERACIONAL", "").fillna("").astype(str).str.upper().replace({"SEM TOTAL": "PENDENTE"})
     for col in ["FEITA", "PARCIAL", "PENDENTE"]:
         df[col] = (df["STATUS OPERACIONAL"] == col).astype(int)
@@ -1337,7 +1176,6 @@ def mostrar_painel_leitura():
             st.warning("Não encontrei a aba/estrutura de resumo por D e município. Verifique se o extrator subiu o arquivo novo com RESUMO_MUNICIPIO ou DETALHE_MUNICIPIO.")
         else:
             st.markdown("#### Filtros")
-            st.caption("D operacional recalculado automaticamente por dia útil. Se hoje não for dia útil, o próximo dia útil é considerado D0; na virada do mês, a competência reinicia.")
             f0, f1, f2, f3 = st.columns([1.0, 1.1, 1.1, 1.8])
             if "MÊS OPERACIONAL" not in df_operacional.columns:
                 df_operacional = _garantir_mes_operacional(df_operacional)
@@ -1447,8 +1285,6 @@ def mostrar_painel_leitura():
         # fica apenas como fallback quando ainda não houver arquivos Tarefas_*.xlsx.
         if not df_tarefas_reais.empty:
             parcial_dia = df_tarefas_reais.copy()
-            parcial_dia = _garantir_mes_operacional(parcial_dia)
-            parcial_dia = _recalcular_d_operacional_dinamico(parcial_dia)
 
             # Normaliza datas para permitir seleção igual ao painel de corte.
             if "DT PREVISTA" in parcial_dia.columns:
@@ -2010,22 +1846,22 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
         if eh_disjuntor_jundiai(recurso):
             contrato = "Disjuntor Jundiaí"
             if not eh_recusa:
-                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_CORTE", 0.0), "RELIGUE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_RELIGUE", 0.0)}.get(grupo, 0.0)
+                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_CORTE", 13.72), "RELIGUE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_RELIGUE", 27.43)}.get(grupo, 0.0)
                 faturamento_min = faturamento
                 faturamento_max = faturamento
 
         elif eh_disjuntor_santa_cruz(recurso):
             contrato = "Disjuntor Santa Cruz"
             if not eh_recusa:
-                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE", 0.0), "RELIGUE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE", 0.0)}.get(grupo, 0.0)
+                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE", 11.98), "RELIGUE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE", 23.97)}.get(grupo, 0.0)
                 faturamento_min = faturamento
                 faturamento_max = faturamento
 
         elif str(recurso).startswith("JUN58") and qtd_exec >= 2:
             contrato = "STC Jundiai"
             if not eh_recusa:
-                faturamento_min = {"CORTE": secret_float("TARIFA_STC_JUNDIAI_CORTE_MIN", 0.0), "RELIGUE": secret_float("TARIFA_STC_JUNDIAI_RELIGUE_MIN", 0.0)}.get(grupo, 0.0)
-                faturamento_max = {"CORTE": secret_float("TARIFA_STC_JUNDIAI_CORTE_MAX", 0.0), "RELIGUE": secret_float("TARIFA_STC_JUNDIAI_RELIGUE_MAX", 0.0)}.get(grupo, 0.0)
+                faturamento_min = {"CORTE": secret_float("TARIFA_STC_JUNDIAI_CORTE_MIN", 38.18), "RELIGUE": secret_float("TARIFA_STC_JUNDIAI_RELIGUE_MIN", 36.36)}.get(grupo, 0.0)
+                faturamento_max = {"CORTE": secret_float("TARIFA_STC_JUNDIAI_CORTE_MAX", 45.45), "RELIGUE": secret_float("TARIFA_STC_JUNDIAI_RELIGUE_MAX", 50.91)}.get(grupo, 0.0)
                 faturamento = faturamento_min
 
         if contrato:
@@ -2598,11 +2434,11 @@ def valor_express_por_contrato(contrato):
     """
     contrato = str(contrato)
     if contrato == "Disjuntor Jundiaí":
-        return secret_float("TARIFA_EXPRESS_DISJUNTOR_JUNDIAI", 0.0)
+        return secret_float("TARIFA_EXPRESS_DISJUNTOR_JUNDIAI", 27.43)
     if contrato == "Disjuntor Santa Cruz":
-        return secret_float("TARIFA_EXPRESS_DISJUNTOR_SANTA_CRUZ", 0.0)
+        return secret_float("TARIFA_EXPRESS_DISJUNTOR_SANTA_CRUZ", 23.97)
     if contrato == "STC Jundiai":
-        return secret_float("TARIFA_EXPRESS_STC_JUNDIAI", 0.0)
+        return secret_float("TARIFA_EXPRESS_STC_JUNDIAI", 38.18)
     return 0.0
 
 
