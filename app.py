@@ -1155,7 +1155,16 @@ def _deduplicar_tarefas_leitura(df):
     if ordenacao:
         base = base.sort_values(ordenacao)
 
-    chaves = ["BASE", "TAREFA", "_DT_PREVISTA_DEDUP"]
+    # Na visão mensal/lote, a tarefa precisa ser única dentro do mês/lote.
+    # Antes a chave usava também a DT PREVISTA; quando o mesmo serviço aparecia
+    # em mais de um arquivo/data do mês, TOTAL TAREFA vinha por nunique, mas
+    # FEITA/PARCIAL/PENDENTE somavam repetições. Isso gerava FEITA > TAREFA.
+    chaves = ["BASE", "TAREFA", "MÊS OPERACIONAL", "LOTE OPERACIONAL"]
+    for col in chaves:
+        if col not in base.columns:
+            base[col] = ""
+        base[col] = base[col].fillna("").astype(str).str.strip()
+
     base = base.drop_duplicates(subset=chaves, keep="last").drop(columns=["_DT_PREVISTA_DEDUP"], errors="ignore")
     return base.reset_index(drop=True)
 
@@ -1300,7 +1309,10 @@ def mostrar_painel_leitura():
                 reverse=True,
             )
             mes_atual = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%m/%Y")
-            meses_default = [mes_atual] if mes_atual in meses_disp else (meses_disp[:1] if meses_disp else [])
+            # Para a leitura, a competência atual não deve puxar mês anterior.
+            # Se ainda não houver arquivo de Maio, a visão mensal/lote fica vazia
+            # em vez de mostrar Abril como se ainda fosse backlog válido.
+            meses_default = [mes_atual] if mes_atual in meses_disp else []
 
             bases_disp = sorted(df_operacional.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
             lotes_disp = sorted(
@@ -1316,8 +1328,12 @@ def mostrar_painel_leitura():
             municipios_sel = f3.multiselect("Município", municipios_disp, default=municipios_disp, key="leit_mun_op")
 
             resumo = df_operacional.copy()
-            if meses_sel and "MÊS OPERACIONAL" in resumo.columns:
-                resumo = resumo[resumo["MÊS OPERACIONAL"].isin(meses_sel)]
+            if "MÊS OPERACIONAL" in resumo.columns:
+                if meses_sel:
+                    resumo = resumo[resumo["MÊS OPERACIONAL"].isin(meses_sel)]
+                else:
+                    # Sem seleção de mês = não mostrar meses antigos por engano.
+                    resumo = resumo.iloc[0:0]
             if bases_sel and "BASE" in resumo.columns:
                 resumo = resumo[resumo["BASE"].isin(bases_sel)]
             if lotes_sel and "LOTE OPERACIONAL" in resumo.columns:
