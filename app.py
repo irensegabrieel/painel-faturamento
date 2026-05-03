@@ -651,6 +651,67 @@ def _garantir_mes_operacional(df, caminho=None):
     return df
 
 
+
+
+def _lote_maio_2026(data_valor):
+    """Classificação manual de lote para Maio/2026.
+
+    Regra definida para esta competência:
+    - 04/05/2026 = Lote 1
+    - cada dia útil seguinte incrementa +1
+    - sábados e domingos não geram lote próprio
+
+    Depois essa regra pode ser substituída por uma tabela/calendário automático.
+    """
+    dt = pd.to_datetime(data_valor, dayfirst=True, errors="coerce")
+    if pd.isna(dt):
+        return ""
+    dt = dt.date()
+    inicio = pd.Timestamp("2026-05-04").date()
+    if dt < inicio or dt.month != 5 or dt.year != 2026:
+        return ""
+    if dt.weekday() >= 5:
+        return ""
+    contador = 0
+    atual = inicio
+    while atual <= dt:
+        if atual.weekday() < 5:
+            contador += 1
+        atual = atual + pd.Timedelta(days=1).date() - pd.Timestamp("1970-01-01").date() if False else atual
+        break
+    # loop simples sem truque de pandas para manter compatível
+    from datetime import timedelta as _timedelta
+    contador = 0
+    atual = inicio
+    while atual <= dt:
+        if atual.weekday() < 5:
+            contador += 1
+        atual += _timedelta(days=1)
+    return f"Lote {contador}" if contador > 0 else ""
+
+
+def _ordenar_lote(valor):
+    import re
+    m = re.search(r"(\d+)", str(valor or ""))
+    return int(m.group(1)) if m else 9999
+
+
+def _garantir_lote_operacional(df):
+    """Garante coluna LOTE OPERACIONAL.
+
+    Para Maio/2026 usa a regra manual solicitada: 04/05/2026 começa como Lote 1.
+    Se a data não for de Maio/2026, deixa vazio por enquanto para não inventar lote.
+    """
+    df = df.copy()
+    if "LOTE OPERACIONAL" in df.columns and not (df["LOTE OPERACIONAL"].fillna("").astype(str).str.strip() == "").all():
+        df["LOTE OPERACIONAL"] = df["LOTE OPERACIONAL"].fillna("").astype(str).str.strip()
+        return df
+    if "DT PREVISTA" in df.columns:
+        df["LOTE OPERACIONAL"] = pd.to_datetime(df["DT PREVISTA"], dayfirst=True, errors="coerce").apply(_lote_maio_2026)
+    else:
+        df["LOTE OPERACIONAL"] = ""
+    return df
+
 def _nome_base_por_arquivo(caminho):
     nome = Path(caminho).name.upper()
     if "PIRACICABA" in nome:
@@ -721,6 +782,9 @@ def _padronizar_colunas_leitura(df):
 
         elif n in ["MES", "COMPETENCIA", "MES OPERACIONAL", "MÊS OPERACIONAL"]:
             mapa[col] = "MÊS OPERACIONAL"
+
+        elif n in ["LOTE", "LOTE OPERACIONAL", "LOTE DA LEITURA"] or n.startswith("LOTE"):
+            mapa[col] = "LOTE OPERACIONAL"
 
         elif n in ["AGENTE COMERCIAL", "AGENTE"]:
             mapa[col] = "AGENTE COMERCIAL"
@@ -807,6 +871,7 @@ def _preparar_tarefas_leitura(df, caminho=None):
             df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
 
     df = _garantir_mes_operacional(df, caminho)
+    df = _garantir_lote_operacional(df)
 
     df["TAREFA"] = df["TAREFA"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
     df = df[df["TAREFA"] != ""].copy()
@@ -905,8 +970,9 @@ def _preparar_resumo_leitura(df, caminho=None):
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
     df = _garantir_mes_operacional(df, caminho)
+    df = _garantir_lote_operacional(df)
 
-    saida = df[[c for c in ["BASE", "MÊS OPERACIONAL", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in df.columns]].copy()
+    saida = df[[c for c in ["BASE", "MÊS OPERACIONAL", "LOTE OPERACIONAL", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in df.columns]].copy()
     saida["FORMATO_ORIGEM"] = "RESUMO"
     return saida
 
@@ -1063,12 +1129,13 @@ def _resumo_leitura_from_tarefas(base):
     if base.empty:
         return pd.DataFrame()
     df = _garantir_mes_operacional(base.copy())
+    df = _garantir_lote_operacional(df)
     df["STATUS OPERACIONAL"] = df.get("STATUS OPERACIONAL", "").fillna("").astype(str).str.upper().replace({"SEM TOTAL": "PENDENTE"})
     for col in ["FEITA", "PARCIAL", "PENDENTE"]:
         df[col] = (df["STATUS OPERACIONAL"] == col).astype(int)
     df["SEM TOTAL"] = 0
 
-    agrupadores = ["BASE", "MÊS OPERACIONAL", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL"]
+    agrupadores = ["BASE", "MÊS OPERACIONAL", "LOTE OPERACIONAL", "MUNICÍPIO", "MUNICÍPIO NOME"]
     for col in agrupadores:
         if col not in df.columns:
             df[col] = ""
@@ -1089,8 +1156,8 @@ def _resumo_leitura_from_tarefas(base):
         )
         .reset_index()
     )
-    resumo["ORDEM_D"] = resumo["D OPERACIONAL"].apply(_ordenar_d)
-    return resumo.sort_values(["BASE", "MÊS OPERACIONAL", "ORDEM_D", "MUNICÍPIO NOME"]).drop(columns=["ORDEM_D"])
+    resumo["ORDEM_LOTE"] = resumo["LOTE OPERACIONAL"].apply(_ordenar_lote)
+    return resumo.sort_values(["BASE", "MÊS OPERACIONAL", "ORDEM_LOTE", "MUNICÍPIO NOME"]).drop(columns=["ORDEM_LOTE"])
 
 def _formatar_df_parcial_agente(df):
     if df.empty:
@@ -1122,7 +1189,7 @@ def _resumo_parcial_agente(df):
 
 def mostrar_painel_leitura():
     st.subheader("📖 Contrato Leitura")
-    st.caption("Acompanhamento CWSI por base, município, D operacional e parcial do dia.")
+    st.caption("Acompanhamento CWSI por base, município, lote operacional e parcial do dia.")
 
     df_tarefas, df_resumo_arquivo, arquivos, diagnostico = carregar_leitura_completa()
 
@@ -1169,16 +1236,19 @@ def mostrar_painel_leitura():
         st.error("Encontrei arquivos, mas não há dados operacionais nem parcial por agente para mostrar.")
         return
 
-    aba_operacional, aba_parcial = st.tabs(["📊 D por município", "📋 Parcial do dia"])
+    aba_operacional, aba_parcial = st.tabs(["📦 Mês / Lote", "📋 Parcial do dia"])
 
     with aba_operacional:
         if df_operacional.empty:
-            st.warning("Não encontrei a aba/estrutura de resumo por D e município. Verifique se o extrator subiu o arquivo novo com RESUMO_MUNICIPIO ou DETALHE_MUNICIPIO.")
+            st.warning("Não encontrei dados mensais/lotes de leitura. Verifique se o extrator subiu arquivos Tarefas_*.xlsx com DT PREVISTA.")
         else:
             st.markdown("#### Filtros")
-            f0, f1, f2, f3 = st.columns([1.0, 1.1, 1.1, 1.8])
+            f0, f1, f2, f3 = st.columns([1.0, 1.1, 1.2, 1.8])
             if "MÊS OPERACIONAL" not in df_operacional.columns:
                 df_operacional = _garantir_mes_operacional(df_operacional)
+            if "LOTE OPERACIONAL" not in df_operacional.columns:
+                df_operacional = _garantir_lote_operacional(df_operacional)
+
             meses_disp = df_operacional.get("MÊS OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist()
             meses_disp = [m for m in meses_disp if m]
             meses_disp = sorted(
@@ -1190,13 +1260,16 @@ def mostrar_painel_leitura():
             meses_default = [mes_atual] if mes_atual in meses_disp else (meses_disp[:1] if meses_disp else [])
 
             bases_disp = sorted(df_operacional.get("BASE", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-            d_disp = sorted(df_operacional.get("D OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(), key=_ordenar_d)
+            lotes_disp = sorted(
+                [l for l in df_operacional.get("LOTE OPERACIONAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist() if l],
+                key=_ordenar_lote,
+            )
             municipios_disp = sorted(df_operacional.get("MUNICÍPIO NOME", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
             municipios_disp = [m for m in municipios_disp if m and str(m).upper() not in ["TOTAL DA BASE", "TOTAL"]]
 
             meses_sel = f0.multiselect("Mês", meses_disp, default=meses_default, key="leit_mes_op")
             bases_sel = f1.multiselect("Base", bases_disp, default=bases_disp, key="leit_base_op")
-            d_sel = f2.multiselect("D", d_disp, default=d_disp, key="leit_d_op")
+            lotes_sel = f2.multiselect("Lote", lotes_disp, default=lotes_disp, key="leit_lote_op")
             municipios_sel = f3.multiselect("Município", municipios_disp, default=municipios_disp, key="leit_mun_op")
 
             resumo = df_operacional.copy()
@@ -1204,8 +1277,8 @@ def mostrar_painel_leitura():
                 resumo = resumo[resumo["MÊS OPERACIONAL"].isin(meses_sel)]
             if bases_sel and "BASE" in resumo.columns:
                 resumo = resumo[resumo["BASE"].isin(bases_sel)]
-            if d_sel and "D OPERACIONAL" in resumo.columns:
-                resumo = resumo[resumo["D OPERACIONAL"].isin(d_sel)]
+            if lotes_sel and "LOTE OPERACIONAL" in resumo.columns:
+                resumo = resumo[resumo["LOTE OPERACIONAL"].isin(lotes_sel)]
             if municipios_sel and "MUNICÍPIO NOME" in resumo.columns:
                 resumo = resumo[resumo["MUNICÍPIO NOME"].isin(municipios_sel)]
 
@@ -1233,33 +1306,33 @@ def mostrar_painel_leitura():
             c6.metric("Execução leitura", f"{perc_leitura:.1f}%".replace(".", ","))
 
             if faltam:
-                st.markdown(f"<div class='zero-card'><b>Leituras faltantes:</b> {numero(faltam)} ({perc_faltante:.1f}%)</div>".replace(".", ","), unsafe_allow_html=True)
+                st.markdown(f"<div class='zero-card'><b>Leituras faltantes no mês/lote:</b> {numero(faltam)} ({perc_faltante:.1f}%)</div>".replace(".", ","), unsafe_allow_html=True)
 
-            st.markdown("#### Resumo por base e D")
-            resumo_base_d = (
-                resumo.groupby(["MÊS OPERACIONAL", "BASE", "D OPERACIONAL"], dropna=False)
+            st.markdown("#### Resumo por mês, base e lote")
+            resumo_base_lote = (
+                resumo.groupby(["MÊS OPERACIONAL", "BASE", "LOTE OPERACIONAL"], dropna=False)
                 .agg({"TOTAL TAREFA": "sum", "FEITA": "sum", "PARCIAL": "sum", "PENDENTE": "sum", "SEM TOTAL": "sum", "FALTAM": "sum", "T. INSTALA": "sum", "T. VISITADA": "sum"})
                 .reset_index()
             )
-            if not resumo_base_d.empty:
-                resumo_base_d["ORDEM_D"] = resumo_base_d["D OPERACIONAL"].apply(_ordenar_d)
-                resumo_base_d = resumo_base_d.sort_values(["MÊS OPERACIONAL", "BASE", "ORDEM_D"]).drop(columns=["ORDEM_D"])
-            tabela_base_d = resumo_base_d.rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
-            st.dataframe(tabela_base_d, use_container_width=True, hide_index=True)
+            if not resumo_base_lote.empty:
+                resumo_base_lote["ORDEM_LOTE"] = resumo_base_lote["LOTE OPERACIONAL"].apply(_ordenar_lote)
+                resumo_base_lote = resumo_base_lote.sort_values(["MÊS OPERACIONAL", "BASE", "ORDEM_LOTE"]).drop(columns=["ORDEM_LOTE"])
+            tabela_base_lote = resumo_base_lote.rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
+            st.dataframe(tabela_base_lote, use_container_width=True, hide_index=True)
 
             st.markdown("#### Detalhe por município")
             detalhe = resumo.copy()
-            if "ORDEM_D" not in detalhe.columns:
-                detalhe["ORDEM_D"] = detalhe["D OPERACIONAL"].apply(_ordenar_d)
-            detalhe = detalhe.sort_values([c for c in ["BASE", "MUNICÍPIO NOME", "ORDEM_D"] if c in detalhe.columns]).drop(columns=["ORDEM_D"], errors="ignore")
-            colunas = [c for c in ["MÊS OPERACIONAL", "BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in detalhe.columns]
+            if "ORDEM_LOTE" not in detalhe.columns:
+                detalhe["ORDEM_LOTE"] = detalhe["LOTE OPERACIONAL"].apply(_ordenar_lote)
+            detalhe = detalhe.sort_values([c for c in ["BASE", "MUNICÍPIO NOME", "ORDEM_LOTE"] if c in detalhe.columns]).drop(columns=["ORDEM_LOTE"], errors="ignore")
+            colunas = [c for c in ["MÊS OPERACIONAL", "BASE", "LOTE OPERACIONAL", "MUNICÍPIO", "MUNICÍPIO NOME", "TOTAL TAREFA", "FEITA", "PARCIAL", "PENDENTE", "FALTAM", "T. INSTALA", "T. VISITADA"] if c in detalhe.columns]
             tabela_detalhe = detalhe[colunas].rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
             st.dataframe(tabela_detalhe, use_container_width=True, hide_index=True)
 
-            if not resumo_base_d.empty:
-                chart_df = resumo_base_d.melt(
-                    id_vars=["BASE", "D OPERACIONAL"],
-                    value_vars=["FEITA", "PARCIAL", "PENDENTE", "SEM TOTAL"],
+            if not resumo_base_lote.empty:
+                chart_df = resumo_base_lote.melt(
+                    id_vars=["BASE", "LOTE OPERACIONAL"],
+                    value_vars=["FEITA", "PARCIAL", "PENDENTE"],
                     var_name="STATUS",
                     value_name="QTD",
                 )
@@ -1267,11 +1340,11 @@ def mostrar_painel_leitura():
                     alt.Chart(chart_df)
                     .mark_bar()
                     .encode(
-                        x=alt.X("D OPERACIONAL:N", sort=sorted(chart_df["D OPERACIONAL"].unique().tolist(), key=_ordenar_d)),
+                        x=alt.X("LOTE OPERACIONAL:N", sort=sorted(chart_df["LOTE OPERACIONAL"].unique().tolist(), key=_ordenar_lote)),
                         y="QTD:Q",
                         color="STATUS:N",
                         column="BASE:N",
-                        tooltip=["BASE", "D OPERACIONAL", "STATUS", "QTD"],
+                        tooltip=["BASE", "LOTE OPERACIONAL", "STATUS", "QTD"],
                     )
                     .properties(height=260)
                 )
@@ -1291,6 +1364,7 @@ def mostrar_painel_leitura():
                 parcial_dia["DT_PREVISTA_DT"] = pd.to_datetime(parcial_dia["DT PREVISTA"], dayfirst=True, errors="coerce")
             else:
                 parcial_dia["DT_PREVISTA_DT"] = pd.NaT
+            parcial_dia = _garantir_lote_operacional(parcial_dia)
 
             datas_disponiveis_df = (
                 parcial_dia[["DT_PREVISTA_DT"]]
@@ -1464,7 +1538,7 @@ def mostrar_painel_leitura():
                 for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
                     if col in nao_prontos.columns:
                         nao_prontos[col] = pd.to_datetime(nao_prontos[col], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
-                cols_pend = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in nao_prontos.columns]
+                cols_pend = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "LOTE OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in nao_prontos.columns]
                 nao_prontos = nao_prontos.sort_values([c for c in ["BASE", "MUNICÍPIO NOME", "FALTAM", "TAREFA"] if c in nao_prontos.columns], ascending=[True, True, False, True][:len([c for c in ["BASE", "MUNICÍPIO NOME", "FALTAM", "TAREFA"] if c in nao_prontos.columns])])
                 tabela_nao_prontos = nao_prontos[cols_pend].rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
                 st.dataframe(tabela_nao_prontos, use_container_width=True, hide_index=True)
@@ -1474,7 +1548,7 @@ def mostrar_painel_leitura():
                 for col in ["DT PREVISTA", "DT LIMITE", "DT PLANEJA"]:
                     if col in todas.columns:
                         todas[col] = pd.to_datetime(todas[col], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
-                cols_todas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "D OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in todas.columns]
+                cols_todas = [c for c in ["BASE", "MUNICÍPIO", "MUNICÍPIO NOME", "LOTE OPERACIONAL", "TAREFA", "STATUS OPERACIONAL", "STATUS", "DT PREVISTA", "AGENTE COMERCIAL", "T. INSTALA", "T. VISITADA", "FALTAM", "DESCRIÇÃO", "TIPO"] if c in todas.columns]
                 tabela_todas = todas[cols_todas].rename(columns={"T. INSTALA": "LEITURAS TOTAL", "T. VISITADA": "LEITURAS FEITAS", "FALTAM": "LEITURAS FALTANTES"})
                 st.dataframe(tabela_todas, use_container_width=True, hide_index=True)
 
