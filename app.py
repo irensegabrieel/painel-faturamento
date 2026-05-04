@@ -1997,6 +1997,21 @@ def eh_disjuntor_santa_cruz(recurso):
     return primeiros_numeros.startswith("89") or primeiros_numeros.startswith("20")
 
 
+def contrato_para_base_notas(contrato):
+    """Mapeia contratos de visão/estimativa para o contrato operacional da base de notas.
+
+    Alguns botões da lateral representam visões estimadas (ex.: contrato do carro),
+    mas a aba Parcial/Ranking/Comparativo usa a base de notas, onde essas notas
+    entram como STC Jundiai. Sem esse mapeamento, a tela fica sem datas mesmo
+    quando existe produção do carro/STC no dia.
+    """
+    nome = str(contrato or "").strip()
+    nome_upper = nome.upper()
+    if "CARRO" in nome_upper and "STC" in nome_upper:
+        return "STC Jundiai"
+    return nome
+
+
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def preparar_parcial_do_dia(notas, incluir_recusas=False):
     """
@@ -3356,7 +3371,7 @@ def atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido):
     }
 
 
-def mostrar_status_atualizacao(notas, contrato_escolhido):
+def mostrar_status_atualizacao(notas, contrato_filtro_notas):
     caminho_notas = caminho_arquivo(ARQUIVOS["notas"])
     status = atualizar_status_dashboard(notas, caminho_notas, contrato_escolhido)
 
@@ -4867,6 +4882,7 @@ if st.sidebar.button("📖 Americana e Piracicaba", use_container_width=True):
 
 modo_painel = st.session_state.modo_painel
 contrato_escolhido = st.session_state.contrato_escolhido
+contrato_filtro_notas = contrato_para_base_notas(contrato_escolhido)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Tela selecionada:**")
@@ -4933,7 +4949,7 @@ if contrato_escolhido != "Todos":
 
 mostrar_carro = not carro.empty
 
-mostrar_aba_carro = contrato_escolhido in ["Todos", "STC Jundiai"]
+mostrar_aba_carro = (contrato_escolhido == "Todos") or (contrato_filtro_notas == "STC Jundiai") or (not carro.empty)
 
 nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana"]
 if mostrar_aba_carro:
@@ -4963,7 +4979,7 @@ with aba_resumo:
     resumo_contrato_periodo, resumo_grupo_periodo = resumo_por_periodo(
         notas,
         meses_escolhidos_resumo,
-        contrato_escolhido,
+        contrato_filtro_notas,
     )
 
     periodo_texto = ", ".join(meses_escolhidos_resumo) if meses_escolhidos_resumo else "mês mais recente"
@@ -5038,6 +5054,8 @@ with aba_resumo:
 
 with aba_parcial:
     st.subheader("Parcial do dia por recurso")
+    if contrato_escolhido != contrato_filtro_notas:
+        st.caption(f"Exibindo a base operacional de notas: {contrato_filtro_notas}.")
 
     # Base com recusas para mostrar na parcial.
     parcial_com_recusas = preparar_parcial_do_dia(notas, incluir_recusas=True)
@@ -5045,8 +5063,8 @@ with aba_parcial:
     if parcial_com_recusas.empty:
         st.info("Ainda não há dados suficientes para montar a parcial do dia.")
     else:
-        if contrato_escolhido != "Todos" and "CONTRATO" in parcial_com_recusas.columns:
-            parcial_com_recusas = parcial_com_recusas[parcial_com_recusas["CONTRATO"] == contrato_escolhido]
+        if contrato_filtro_notas != "Todos" and "CONTRATO" in parcial_com_recusas.columns:
+            parcial_com_recusas = parcial_com_recusas[parcial_com_recusas["CONTRATO"] == contrato_filtro_notas]
 
         datas_disponiveis = (
             parcial_com_recusas[["DATA", "DATA_DT"]]
@@ -5055,7 +5073,7 @@ with aba_parcial:
         )
 
         if datas_disponiveis.empty:
-            st.info("Nenhuma data encontrada na base de notas.")
+            st.info("Nenhuma data encontrada na base de notas para este contrato/filtro.")
         else:
             opcoes_datas = datas_disponiveis["DATA"].tolist()
             data_escolhida = st.selectbox("Escolha o dia", opcoes_datas, index=0)
@@ -5259,7 +5277,7 @@ with aba_ranking:
         contrato_ranking = col_f1.selectbox(
             "Contrato",
             contratos_exec,
-            index=contratos_exec.index(contrato_escolhido) if contrato_escolhido in contratos_exec else 0,
+            index=contratos_exec.index(contrato_filtro_notas) if contrato_filtro_notas in contratos_exec else 0,
             key="ranking_contrato",
         )
 
@@ -5557,8 +5575,8 @@ with aba_comparativo:
         periodo_anterior = periodo_escolhido - 1
         mes_anterior = periodo_anterior.strftime("%m/%Y")
 
-        atual = calcular_resumo_mensal(notas, mes_escolhido, contrato_escolhido)
-        anterior = calcular_resumo_mensal(notas, mes_anterior, contrato_escolhido)
+        atual = calcular_resumo_mensal(notas, mes_escolhido, contrato_filtro_notas)
+        anterior = calcular_resumo_mensal(notas, mes_anterior, contrato_filtro_notas)
 
         st.markdown(f"**Comparando: {mes_escolhido} x {mes_anterior}**")
 
@@ -5591,7 +5609,7 @@ with aba_comparativo:
         st.markdown("**Evolução mês a mês**")
         linhas_evolucao = []
         for mes in reversed(opcoes_meses):
-            r = calcular_resumo_mensal(notas, mes, contrato_escolhido)
+            r = calcular_resumo_mensal(notas, mes, contrato_filtro_notas)
             linhas_evolucao.append({
                 "MES": mes,
                 "FATURAMENTO": r["FATURAMENTO"],
@@ -5608,7 +5626,7 @@ with aba_comparativo:
             st.dataframe(formatar_tabela(evolucao), use_container_width=True, hide_index=True)
 
         st.markdown("**Resumo por contrato no mês escolhido**")
-        resumo_mes, _ = resumo_por_periodo(notas, [mes_escolhido], contrato_escolhido)
+        resumo_mes, _ = resumo_por_periodo(notas, [mes_escolhido], contrato_filtro_notas)
         if resumo_mes.empty:
             st.info("Nenhum dado encontrado para esse mês.")
         else:
@@ -5703,9 +5721,9 @@ with aba_notas:
         # A base de notas acumulada não tem contrato salvo. Por isso, para filtrar por contrato,
         # reaproveitamos a classificação feita na parcial.
         parcial_para_filtro = preparar_parcial_do_dia(notas)
-        if contrato_escolhido != "Todos" and not parcial_para_filtro.empty:
+        if contrato_filtro_notas != "Todos" and not parcial_para_filtro.empty:
             ordens_do_contrato = parcial_para_filtro.loc[
-                parcial_para_filtro["CONTRATO"] == contrato_escolhido,
+                parcial_para_filtro["CONTRATO"] == contrato_filtro_notas,
                 "ORDEM_DE_SERVICO"
             ].astype(str).unique().tolist()
             if "ORDEM_DE_SERVICO" in df_notas.columns:
