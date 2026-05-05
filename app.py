@@ -5119,7 +5119,7 @@ mostrar_aba_carro = (contrato_escolhido == "Todos") or (contrato_filtro_notas ==
 
 nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana"]
 if mostrar_aba_carro:
-    nomes_abas.append("Carro estimado")
+    nomes_abas.append("STC")
 nomes_abas += ["Notas", "Downloads"]
 
 abas = st.tabs(nomes_abas)
@@ -5169,8 +5169,8 @@ with aba_resumo:
 
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Faturamento contratos", dinheiro(total_contratos))
-            c2.metric("Carro estimado mínimo", dinheiro(total_carro_min))
-            c3.metric("Carro estimado máximo", dinheiro(total_carro_max))
+            c2.metric("STC mínimo", dinheiro(total_carro_min))
+            c3.metric("STC máximo", dinheiro(total_carro_max))
             c4.metric("Notas únicas", numero(qtd_notas))
         else:
             c1, c2 = st.columns(2)
@@ -5859,7 +5859,7 @@ if mostrar_aba_carro:
         else:
             st.info("Selecione o contrato do carro no menu lateral para visualizar.")
 
-        st.subheader("Carro estimado por dia")
+        st.subheader("STC estimado por dia")
 
         if not carro_dias.empty:
             tabela_carro = carro_dias.pivot_table(
