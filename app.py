@@ -4945,10 +4945,13 @@ def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True
 
 
 # Antes de carregar os CSV/Excel, tenta puxar do GitHub a versão mais recente.
+# UX ajustada: quando encontra dados novos, NÃO força st.rerun().
+# O rerun imediato deixava o painel com aparência de travado/inutilizado.
+# Agora o app sincroniza, limpa o cache dentro de sincronizar_github_se_preciso(),
+# continua a execução normal e carrega os arquivos novos neste mesmo ciclo.
 _status_sync_github = sincronizar_github_se_preciso()
 if _status_sync_github.get("changed"):
-    st.toast("Dados atualizados pelo GitHub. Recarregando painel...", icon="✅")
-    st.rerun()
+    st.session_state["github_dados_atualizados_sem_recarregar"] = True
 
 bases, faltando = carregar_bases()
 
@@ -4983,6 +4986,10 @@ st.sidebar.caption(f"Perfil: {NOME_ACESSO}")
 if isinstance(_status_sync_github, dict) and _status_sync_github.get("quando"):
     st.sidebar.caption(f"GitHub: {_status_sync_github.get('message', '')} ({_status_sync_github.get('quando')})")
 
+if st.session_state.pop("github_dados_atualizados_sem_recarregar", False):
+    st.sidebar.success("✅ Dados novos aplicados sem recarregar o painel.")
+    st.toast("Dados novos aplicados sem interromper o uso do painel.", icon="✅")
+
 if faltando:
     st.warning("Arquivos não encontrados: " + ", ".join(faltando))
 
@@ -5000,12 +5007,12 @@ if st.sidebar.button("🔄 Atualizar dados", use_container_width=True):
     status_manual = sincronizar_github_se_preciso(forcar=True)
     st.cache_data.clear()
     if status_manual.get("changed"):
-        st.sidebar.success("Atualizado pelo GitHub.")
+        st.sidebar.success("Atualizado pelo GitHub. Os dados serão aplicados no próximo ciclo da tela.")
+        st.toast("Atualização baixada. Continue usando; a tela aplicará os dados no próximo refresh.", icon="✅")
     elif status_manual.get("ok"):
         st.sidebar.info("Cache limpo. Nenhum commit novo no GitHub.")
     else:
         st.sidebar.warning(status_manual.get("message", "Não consegui consultar o GitHub, mas limpei o cache local."))
-    st.rerun()
 
 
 contratos_lista = []
