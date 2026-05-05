@@ -455,22 +455,166 @@ ARQUIVOS_LEITURA = {
 
 ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 
-# Como dias anteriores não mudam, mantemos o carregamento geral em 15 minutos
-# e deixamos cálculos históricos/ranqueamentos em cache mais longo.
-CACHE_TTL_SEGUNDOS = 900
-CACHE_TTL_RANKING_SEGUNDOS = 900
+# Atualização mais curta para evitar que o Streamlit fique preso em dados antigos.
+# O cache continua existindo para não pesar o app, mas agora é revalidado com frequência.
+CACHE_TTL_SEGUNDOS = int(secret_float("CACHE_TTL_SEGUNDOS", 60))
+CACHE_TTL_RANKING_SEGUNDOS = int(secret_float("CACHE_TTL_RANKING_SEGUNDOS", 300))
+GITHUB_SYNC_INTERVALO_SEGUNDOS = int(secret_float("GITHUB_SYNC_INTERVALO_SEGUNDOS", 60))
+STATUS_GITHUB_SYNC_PATH = Path(tempfile.gettempdir()) / "gzus_github_sync_status.json"
 
-# Atualiza a página automaticamente a cada 15 minutos.
+# Atualiza a página automaticamente a cada 1 minuto.
+# Isso não substitui a sincronização com o GitHub: apenas faz a tela reler os dados.
 st.markdown(
     """
     <script>
     setTimeout(function(){
         window.location.reload();
-    }, 900000);
+    }, 60000);
     </script>
     """,
     unsafe_allow_html=True
 )
+
+
+def _github_sync_habilitado():
+    valor = str(secret_value("SINCRONIZAR_GITHUB_AUTO", "true") or "true").strip().lower()
+    return valor not in ["0", "false", "nao", "não", "no", "off"]
+
+
+def _ler_status_github_sync():
+    try:
+        if STATUS_GITHUB_SYNC_PATH.exists():
+            return json.loads(STATUS_GITHUB_SYNC_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _salvar_status_github_sync(status):
+    try:
+        STATUS_GITHUB_SYNC_PATH.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _executar_git(args):
+    import subprocess
+    return subprocess.run(
+        ["git", "-C", str(PASTA_ATUAL), *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _branch_git_atual():
+    branch_secret = str(secret_value("GITHUB_SYNC_BRANCH", "") or "").strip()
+    if branch_secret:
+        return branch_secret
+
+    for env_nome in ["STREAMLIT_GIT_BRANCH", "GITHUB_BRANCH", "GIT_BRANCH"]:
+        branch_env = str(os.getenv(env_nome, "") or "").strip()
+        if branch_env:
+            return branch_env.replace("origin/", "")
+
+    try:
+        r = _executar_git(["rev-parse", "--abbrev-ref", "HEAD"])
+        branch = (r.stdout or "").strip()
+        if branch and branch != "HEAD":
+            return branch
+    except Exception:
+        pass
+
+    return "main"
+
+
+def sincronizar_github_se_preciso(forcar=False):
+    """Puxa atualizações do GitHub sem precisar rebootar o app no Streamlit Cloud.
+
+    Por que isso existe:
+    - O extrator sobe CSV/Excel no GitHub.
+    - Em alguns deploys do Streamlit Cloud, o app continua lendo o checkout antigo
+      até reboot/redeploy.
+    - Esta rotina faz git fetch + reset para a branch atual e limpa o cache quando
+      detecta commit novo.
+
+    Para desligar: coloque SINCRONIZAR_GITHUB_AUTO = "false" nos Secrets.
+    Para escolher branch: coloque GITHUB_SYNC_BRANCH = "main" ou o nome usado.
+    """
+    if not _github_sync_habilitado() and not forcar:
+        return {"ok": False, "changed": False, "skipped": True, "message": "Sincronização automática desligada"}
+
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    status_antigo = _ler_status_github_sync()
+    ultimo_ts = float(status_antigo.get("timestamp", 0) or 0)
+
+    if not forcar and ultimo_ts and (agora.timestamp() - ultimo_ts) < GITHUB_SYNC_INTERVALO_SEGUNDOS:
+        status_antigo["skipped"] = True
+        return status_antigo
+
+    status = {
+        "ok": False,
+        "changed": False,
+        "skipped": False,
+        "timestamp": agora.timestamp(),
+        "quando": agora.strftime("%d/%m/%Y %H:%M:%S"),
+    }
+
+    try:
+        dentro_repo = _executar_git(["rev-parse", "--is-inside-work-tree"])
+        if dentro_repo.returncode != 0:
+            status["message"] = "Este ambiente não parece ser um repositório Git."
+            _salvar_status_github_sync(status)
+            return status
+
+        branch = _branch_git_atual()
+        status["branch"] = branch
+
+        antes = _executar_git(["rev-parse", "HEAD"])
+        commit_antes = (antes.stdout or "").strip()
+        status["commit_antes"] = commit_antes[:12]
+
+        fetch = _executar_git(["fetch", "origin", branch])
+        if fetch.returncode != 0:
+            # Fallback para ambientes onde o fetch por branch falha, mas fetch geral funciona.
+            fetch = _executar_git(["fetch", "origin"])
+        if fetch.returncode != 0:
+            status["message"] = (fetch.stderr or fetch.stdout or "Erro ao executar git fetch.").strip()[-500:]
+            _salvar_status_github_sync(status)
+            return status
+
+        remoto = _executar_git(["rev-parse", f"origin/{branch}"])
+        if remoto.returncode != 0:
+            status["message"] = (remoto.stderr or remoto.stdout or f"Não encontrei origin/{branch}.").strip()[-500:]
+            _salvar_status_github_sync(status)
+            return status
+
+        commit_remoto = (remoto.stdout or "").strip()
+        status["commit_remoto"] = commit_remoto[:12]
+
+        if commit_remoto and commit_remoto != commit_antes:
+            reset = _executar_git(["reset", "--hard", f"origin/{branch}"])
+            if reset.returncode != 0:
+                status["message"] = (reset.stderr or reset.stdout or "Erro ao executar git reset.").strip()[-500:]
+                _salvar_status_github_sync(status)
+                return status
+
+            st.cache_data.clear()
+            status["changed"] = True
+            status["ok"] = True
+            status["message"] = "Atualização puxada do GitHub e cache limpo."
+            _salvar_status_github_sync(status)
+            return status
+
+        status["ok"] = True
+        status["message"] = "Sem commit novo no GitHub."
+        _salvar_status_github_sync(status)
+        return status
+
+    except Exception as e:
+        status["message"] = f"Erro na sincronização GitHub: {e}"
+        _salvar_status_github_sync(status)
+        return status
 
 
 def caminho_arquivo(nome):
@@ -4800,6 +4944,12 @@ def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True
 
 
 
+# Antes de carregar os CSV/Excel, tenta puxar do GitHub a versão mais recente.
+_status_sync_github = sincronizar_github_se_preciso()
+if _status_sync_github.get("changed"):
+    st.toast("Dados atualizados pelo GitHub. Recarregando painel...", icon="✅")
+    st.rerun()
+
 bases, faltando = carregar_bases()
 
 if PERFIL_ACESSO == "supervisor_stc":
@@ -4828,8 +4978,10 @@ if PERFIL_ACESSO == "supervisor_stc":
     st.stop()
 
 st.title("🤖 G.Z.U.S. — Gestão Inteligente de Serviços")
-st.caption("Painel operacional com assistente inteligente. Atualização automática a cada 15 minutos.")
+st.caption("Painel operacional com assistente inteligente. Atualização automática a cada 1 minuto e sincronização com GitHub.")
 st.sidebar.caption(f"Perfil: {NOME_ACESSO}")
+if isinstance(_status_sync_github, dict) and _status_sync_github.get("quando"):
+    st.sidebar.caption(f"GitHub: {_status_sync_github.get('message', '')} ({_status_sync_github.get('quando')})")
 
 if faltando:
     st.warning("Arquivos não encontrados: " + ", ".join(faltando))
@@ -4845,7 +4997,14 @@ if PERFIL_ACESSO == "gerente" and not notas.empty:
 st.sidebar.header("Filtros")
 
 if st.sidebar.button("🔄 Atualizar dados", use_container_width=True):
+    status_manual = sincronizar_github_se_preciso(forcar=True)
     st.cache_data.clear()
+    if status_manual.get("changed"):
+        st.sidebar.success("Atualizado pelo GitHub.")
+    elif status_manual.get("ok"):
+        st.sidebar.info("Cache limpo. Nenhum commit novo no GitHub.")
+    else:
+        st.sidebar.warning(status_manual.get("message", "Não consegui consultar o GitHub, mas limpei o cache local."))
     st.rerun()
 
 
