@@ -2311,6 +2311,143 @@ def calcular_recursos_sem_movimento_no_dia(parcial_com_recusas, data_escolhida):
     return sem_movimento.sort_values(["CONTRATO", "RECURSO"]).reset_index(drop=True)
 
 
+
+@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
+def calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida):
+    """Pré-processa a parcial de um dia e mantém o resultado em cache.
+
+    Trocar o selectbox de dia fazia o Streamlit recalcular filtros, agrupamentos,
+    recusas e alerta de equipes sem movimento em cima da base inteira. Como dia
+    anterior quase não muda, este cache guarda o resultado por data/contrato já
+    filtrado. Quando os arquivos mudam ou o cache é limpo pelo sync do GitHub, o
+    cálculo é refeito automaticamente.
+    """
+    resultado_vazio = {
+        "parcial_dia_tudo": pd.DataFrame(),
+        "parcial_dia": pd.DataFrame(),
+        "recusas_dia": pd.DataFrame(),
+        "resumo_equipe": pd.DataFrame(),
+        "recursos_sem_movimento": pd.DataFrame(),
+        "totais": {
+            "total_notas": 0,
+            "total_recursos_ativos": 0,
+            "total_cortes": 0,
+            "total_religues": 0,
+            "total_recusas": 0,
+            "total_faturamento": 0.0,
+            "total_faturamento_min": 0.0,
+            "total_faturamento_max": 0.0,
+        },
+    }
+
+    if parcial_com_recusas is None or parcial_com_recusas.empty or not data_escolhida:
+        return resultado_vazio
+
+    base = parcial_com_recusas.copy()
+    if "DATA" not in base.columns:
+        return resultado_vazio
+
+    parcial_dia_tudo = base[base["DATA"] == data_escolhida].copy()
+    if parcial_dia_tudo.empty:
+        return resultado_vazio
+
+    if "EH_RECUSA" not in parcial_dia_tudo.columns:
+        parcial_dia_tudo["EH_RECUSA"] = 0
+    parcial_dia_tudo["EH_RECUSA"] = pd.to_numeric(parcial_dia_tudo["EH_RECUSA"], errors="coerce").fillna(0).astype(int)
+
+    parcial_dia = parcial_dia_tudo[parcial_dia_tudo["EH_RECUSA"] == 0].copy()
+    recusas_dia = parcial_dia_tudo[parcial_dia_tudo["EH_RECUSA"] == 1].copy()
+
+    for df_tmp in [parcial_dia, recusas_dia]:
+        for col in ["ORDEM_DE_SERVICO", "RECURSO", "CONTRATO"]:
+            if col not in df_tmp.columns:
+                df_tmp[col] = ""
+        for col in ["EH_CORTE", "EH_RELIGUE"]:
+            if col not in df_tmp.columns:
+                df_tmp[col] = 0
+            df_tmp[col] = pd.to_numeric(df_tmp[col], errors="coerce").fillna(0).astype(int)
+        for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
+            if col not in df_tmp.columns:
+                df_tmp[col] = 0.0
+            df_tmp[col] = pd.to_numeric(df_tmp[col], errors="coerce").fillna(0.0)
+
+    totais = {
+        "total_notas": parcial_dia["ORDEM_DE_SERVICO"].nunique() if not parcial_dia.empty else 0,
+        "total_recursos_ativos": parcial_dia["RECURSO"].nunique() if not parcial_dia.empty else 0,
+        "total_cortes": int(parcial_dia["EH_CORTE"].sum()) if not parcial_dia.empty else 0,
+        "total_religues": int(parcial_dia["EH_RELIGUE"].sum()) if not parcial_dia.empty else 0,
+        "total_recusas": recusas_dia["ORDEM_DE_SERVICO"].nunique() if not recusas_dia.empty else 0,
+        "total_faturamento": float(parcial_dia["FATURAMENTO"].sum()) if not parcial_dia.empty else 0.0,
+        "total_faturamento_min": float(parcial_dia["FATURAMENTO_MIN"].sum()) if not parcial_dia.empty else 0.0,
+        "total_faturamento_max": float(parcial_dia["FATURAMENTO_MAX"].sum()) if not parcial_dia.empty else 0.0,
+    }
+
+    resumo_producao = (
+        parcial_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
+        .agg(
+            TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
+            CORTES=("EH_CORTE", "sum"),
+            RELIGUES=("EH_RELIGUE", "sum"),
+            FATURAMENTO=("FATURAMENTO", "sum"),
+            FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
+            FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
+        )
+        .reset_index()
+        if not parcial_dia.empty
+        else pd.DataFrame(columns=[
+            "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES",
+            "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
+        ])
+    )
+
+    resumo_recusas_por_recurso = (
+        recusas_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
+        .agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
+        .reset_index()
+        if not recusas_dia.empty
+        else pd.DataFrame(columns=["RECURSO", "CONTRATO", "RECUSAS"])
+    )
+
+    resumo_equipe = resumo_producao.merge(
+        resumo_recusas_por_recurso,
+        on=["RECURSO", "CONTRATO"],
+        how="outer",
+    ).fillna({
+        "TOTAL_NOTAS": 0,
+        "CORTES": 0,
+        "RELIGUES": 0,
+        "FATURAMENTO": 0,
+        "FATURAMENTO_MIN": 0,
+        "FATURAMENTO_MAX": 0,
+        "RECUSAS": 0,
+    })
+
+    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS"]:
+        if col in resumo_equipe.columns:
+            resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0).astype(int)
+
+    for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
+        if col in resumo_equipe.columns:
+            resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0.0)
+
+    resumo_equipe = (
+        resumo_equipe
+        .sort_values(["TOTAL_NOTAS", "FATURAMENTO", "RECUSAS"], ascending=[False, False, False])
+        .reset_index(drop=True)
+    )
+
+    recursos_sem_movimento = calcular_recursos_sem_movimento_no_dia(base, data_escolhida)
+
+    return {
+        "parcial_dia_tudo": parcial_dia_tudo,
+        "parcial_dia": parcial_dia,
+        "recusas_dia": recusas_dia,
+        "resumo_equipe": resumo_equipe,
+        "recursos_sem_movimento": recursos_sem_movimento,
+        "totais": totais,
+    }
+
+
 def render_alerta_recursos_sem_movimento(recursos_sem_movimento, contrato_unico=False):
     """Mostra o alerta de equipes sem nenhuma nota ou recusa no dia."""
     if recursos_sem_movimento is None or recursos_sem_movimento.empty:
@@ -5426,21 +5563,23 @@ with aba_parcial:
             opcoes_datas = datas_disponiveis["DATA"].tolist()
             data_escolhida = st.selectbox("Escolha o dia", opcoes_datas, index=0)
 
-            parcial_dia_tudo = parcial_com_recusas[parcial_com_recusas["DATA"] == data_escolhida].copy()
-            parcial_dia = parcial_dia_tudo[parcial_dia_tudo["EH_RECUSA"] == 0].copy()
-            recusas_dia = parcial_dia_tudo[parcial_dia_tudo["EH_RECUSA"] == 1].copy()
+            dados_dia_cache = calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida)
+            parcial_dia_tudo = dados_dia_cache["parcial_dia_tudo"].copy()
+            parcial_dia = dados_dia_cache["parcial_dia"].copy()
+            recusas_dia = dados_dia_cache["recusas_dia"].copy()
+            totais_dia = dados_dia_cache["totais"]
 
             if parcial_dia_tudo.empty:
                 st.info("Nenhuma nota encontrada para esse dia.")
             else:
-                total_notas = parcial_dia["ORDEM_DE_SERVICO"].nunique() if not parcial_dia.empty else 0
-                total_recursos_ativos = parcial_dia["RECURSO"].nunique() if not parcial_dia.empty else 0
-                total_cortes = int(parcial_dia["EH_CORTE"].sum()) if not parcial_dia.empty else 0
-                total_religues = int(parcial_dia["EH_RELIGUE"].sum()) if not parcial_dia.empty else 0
-                total_recusas = recusas_dia["ORDEM_DE_SERVICO"].nunique() if not recusas_dia.empty else 0
-                total_faturamento = parcial_dia["FATURAMENTO"].sum() if not parcial_dia.empty else 0
-                total_faturamento_min = parcial_dia["FATURAMENTO_MIN"].sum() if not parcial_dia.empty else 0
-                total_faturamento_max = parcial_dia["FATURAMENTO_MAX"].sum() if not parcial_dia.empty else 0
+                total_notas = int(totais_dia.get("total_notas", 0))
+                total_recursos_ativos = int(totais_dia.get("total_recursos_ativos", 0))
+                total_cortes = int(totais_dia.get("total_cortes", 0))
+                total_religues = int(totais_dia.get("total_religues", 0))
+                total_recusas = int(totais_dia.get("total_recusas", 0))
+                total_faturamento = float(totais_dia.get("total_faturamento", 0.0))
+                total_faturamento_min = float(totais_dia.get("total_faturamento_min", 0.0))
+                total_faturamento_max = float(totais_dia.get("total_faturamento_max", 0.0))
 
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Recursos ativos", numero(total_recursos_ativos))
@@ -5466,66 +5605,14 @@ with aba_parcial:
 
                 st.markdown('<div class="section-title">Ranking do dia por produção</div>', unsafe_allow_html=True)
 
-                resumo_producao = (
-                    parcial_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
-                    .agg(
-                        TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
-                        CORTES=("EH_CORTE", "sum"),
-                        RELIGUES=("EH_RELIGUE", "sum"),
-                        FATURAMENTO=("FATURAMENTO", "sum"),
-                        FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
-                        FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
-                    )
-                    .reset_index()
-                    if not parcial_dia.empty
-                    else pd.DataFrame(columns=[
-                        "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES",
-                        "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
-                    ])
-                )
-
-                resumo_recusas_por_recurso = (
-                    recusas_dia.groupby(["RECURSO", "CONTRATO"], dropna=False)
-                    .agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
-                    .reset_index()
-                    if not recusas_dia.empty
-                    else pd.DataFrame(columns=["RECURSO", "CONTRATO", "RECUSAS"])
-                )
-
-                resumo_equipe = resumo_producao.merge(
-                    resumo_recusas_por_recurso,
-                    on=["RECURSO", "CONTRATO"],
-                    how="outer",
-                ).fillna({
-                    "TOTAL_NOTAS": 0,
-                    "CORTES": 0,
-                    "RELIGUES": 0,
-                    "FATURAMENTO": 0,
-                    "FATURAMENTO_MIN": 0,
-                    "FATURAMENTO_MAX": 0,
-                    "RECUSAS": 0,
-                })
-
-                for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS"]:
-                    if col in resumo_equipe.columns:
-                        resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0).astype(int)
-
-                for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
-                    if col in resumo_equipe.columns:
-                        resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0)
-
-                resumo_equipe = (
-                    resumo_equipe
-                    .sort_values(["TOTAL_NOTAS", "FATURAMENTO", "RECUSAS"], ascending=[False, False, False])
-                    .reset_index(drop=True)
-                )
+                resumo_equipe = dados_dia_cache["resumo_equipe"].copy()
 
                 if resumo_equipe.empty:
                     st.info("Nenhuma nota ou recusa encontrada para esse dia.")
                 else:
                     resumo_equipe.insert(0, "POSIÇÃO", range(1, len(resumo_equipe) + 1))
 
-                    recursos_sem_movimento = calcular_recursos_sem_movimento_no_dia(parcial_com_recusas, data_escolhida)
+                    recursos_sem_movimento = dados_dia_cache["recursos_sem_movimento"].copy()
                     render_alerta_recursos_sem_movimento(
                         recursos_sem_movimento,
                         contrato_unico=(contrato_escolhido != "Todos"),
