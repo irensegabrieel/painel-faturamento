@@ -3181,6 +3181,188 @@ def calcular_express_mensal(notas, mes):
     return resumo, data_max_txt, sem_vinculo, str(caminho)
 
 
+
+# ==============================
+# META CPFL - CONTRATO CARRO / STC
+# ==============================
+# Primeira versão aplicada somente para o contrato operacional STC Jundiai.
+# Regra: Meta CPFL considera CORTES + Pagamento Express de corte.
+
+FERIADOS_CPFL = {
+    "2026-04-03",  # Sexta-feira Santa
+    "2026-04-21",  # Tiradentes
+    "2026-05-01",  # Dia do Trabalho
+}
+
+METAS_CPFL_STC = {
+    "03/2026": {"util": 224, "sexta_vespera": 137, "sabado": 46},
+    "04/2026": {"util": 262, "sexta_vespera": 149, "sabado": 50},
+    "05/2026": {"util": 247, "sexta_vespera": 143, "sabado": 48},
+}
+
+
+def _data_para_timestamp(valor):
+    return pd.to_datetime(valor, dayfirst=True, errors="coerce")
+
+
+def _eh_feriado_cpfl(data_ts):
+    if pd.isna(data_ts):
+        return False
+    return data_ts.strftime("%Y-%m-%d") in FERIADOS_CPFL
+
+
+def _eh_vespera_feriado_cpfl(data_ts):
+    if pd.isna(data_ts):
+        return False
+    proximo = data_ts + pd.Timedelta(days=1)
+    return proximo.strftime("%Y-%m-%d") in FERIADOS_CPFL
+
+
+def meta_cpfl_stc_dia(data_valor):
+    """Retorna a meta diária CPFL para STC Jundiai conforme mês/dia da semana."""
+    data_ts = _data_para_timestamp(data_valor)
+    if pd.isna(data_ts):
+        return 0
+
+    mes = data_ts.strftime("%m/%Y")
+    regra = METAS_CPFL_STC.get(mes)
+    if not regra:
+        return 0
+
+    if _eh_feriado_cpfl(data_ts):
+        return 0
+
+    dia_semana = int(data_ts.weekday())  # segunda=0 ... domingo=6
+    if dia_semana == 6:
+        return 0
+    if dia_semana == 5:
+        return int(regra.get("sabado", 0))
+    if dia_semana == 4 or _eh_vespera_feriado_cpfl(data_ts):
+        return int(regra.get("sexta_vespera", 0))
+    return int(regra.get("util", 0))
+
+
+def meta_cpfl_stc_periodo(inicio, fim):
+    inicio_ts = _data_para_timestamp(inicio)
+    fim_ts = _data_para_timestamp(fim)
+    if pd.isna(inicio_ts) or pd.isna(fim_ts):
+        return 0
+    dias = pd.date_range(inicio_ts.normalize(), fim_ts.normalize(), freq="D")
+    return int(sum(meta_cpfl_stc_dia(d) for d in dias))
+
+
+def _periodo_datas_cpfl(tipo_periodo, valor_periodo):
+    """Converte seleção Dia/Semana/Mês em intervalo de datas."""
+    if tipo_periodo == "Dia" and valor_periodo:
+        dt = _data_para_timestamp(valor_periodo)
+        return dt, dt
+    if tipo_periodo == "Semana" and valor_periodo:
+        inicio = _data_para_timestamp(valor_periodo)
+        return inicio, inicio + pd.Timedelta(days=6)
+    if tipo_periodo == "Mês" and valor_periodo:
+        inicio = pd.to_datetime("01/" + str(valor_periodo), dayfirst=True, errors="coerce")
+        if pd.isna(inicio):
+            return pd.NaT, pd.NaT
+        fim = inicio + pd.offsets.MonthEnd(0)
+        return inicio, fim
+    return pd.NaT, pd.NaT
+
+
+@st.cache_data(ttl=CACHE_TTL_RANKING_SEGUNDOS, show_spinner=False)
+def express_detalhado_cpfl_cache(notas):
+    """Retorna as linhas de Pagamento Express já conciliadas com RECURSO e CONTRATO."""
+    caminho = caminho_pagamento_express()
+    if not caminho:
+        return pd.DataFrame()
+
+    express = ler_pagamento_express(str(caminho))
+    if express.empty:
+        return pd.DataFrame()
+
+    mapa_codigo_recurso = mapa_codigo_para_recurso_real(notas)
+    mapa_nota_recurso = mapa_nota_para_recurso_real(notas)
+    mapa_nome_recurso = mapa_nome_para_recurso_real(notas)
+
+    express = express.copy()
+    express["RECURSO_DEPARA"] = express.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("")
+
+    if "RECURSO_EXPRESS_DIRETO" in express.columns:
+        recurso_direto = express["RECURSO_EXPRESS_DIRETO"].fillna("").astype(str).str.strip().str.upper()
+        mascara_recurso_direto = (recurso_direto != "") & (~recurso_direto.isin(["NAN", "NONE"]))
+        express.loc[mascara_recurso_direto, "RECURSO_DEPARA"] = recurso_direto[mascara_recurso_direto]
+
+    if "NOTA_NORM" in express.columns and mapa_nota_recurso:
+        mascara_sem_recurso = express["RECURSO_DEPARA"].fillna("").astype(str).str.strip().eq("")
+        recursos_por_nota = express.loc[mascara_sem_recurso, "NOTA_NORM"].map(
+            lambda n: mapa_nota_recurso.get(str(n), ("", ""))[0]
+        )
+        express.loc[mascara_sem_recurso, "RECURSO_DEPARA"] = recursos_por_nota.fillna("")
+
+    if mapa_nome_recurso:
+        mascara_sem_recurso = express["RECURSO_DEPARA"].fillna("").astype(str).str.strip().eq("")
+        recursos_por_nome = express.loc[mascara_sem_recurso, "NOME_EXPRESS_NORM"].map(
+            lambda n: mapa_nome_recurso.get(str(n), ("", ""))[0]
+        )
+        express.loc[mascara_sem_recurso, "RECURSO_DEPARA"] = recursos_por_nome.fillna("")
+
+    if "NOME_EXPRESS_02_NORM" not in express.columns:
+        express["NOME_EXPRESS_02_NORM"] = ""
+
+    express["RECURSO_CARRO"] = express.apply(
+        lambda r: recurso_carro_por_dupla(
+            r.get("NOME_EXPRESS_NORM", ""),
+            r.get("NOME_EXPRESS_02_NORM", ""),
+        ),
+        axis=1,
+    )
+    mascara_carro = express["RECURSO_CARRO"].fillna("").astype(str).str.strip() != ""
+    express.loc[mascara_carro, "RECURSO_DEPARA"] = express.loc[mascara_carro, "RECURSO_CARRO"]
+
+    express["RECURSO"] = express["RECURSO_DEPARA"].apply(lambda v: resolver_recurso_depara(v, mapa_codigo_recurso))
+    express["RECURSO"] = express["RECURSO"].fillna("").astype(str).str.strip().str.upper()
+    express["CONTRATO"] = express["RECURSO"].apply(contrato_por_recurso_express)
+
+    express_ok = express[(express["RECURSO"] != "") & (express["CONTRATO"] != "")].copy()
+    return express_ok
+
+
+def contar_express_cpfl_periodo(notas, contrato, inicio, fim):
+    express = express_detalhado_cpfl_cache(notas)
+    if express.empty or "DATA_EXPRESS_DT" not in express.columns:
+        return 0
+
+    inicio_ts = _data_para_timestamp(inicio)
+    fim_ts = _data_para_timestamp(fim)
+    if pd.isna(inicio_ts) or pd.isna(fim_ts):
+        return 0
+
+    base = express.copy()
+    base["DATA_EXPRESS_DT"] = pd.to_datetime(base["DATA_EXPRESS_DT"], errors="coerce")
+    base = base[base["DATA_EXPRESS_DT"].notna()].copy()
+
+    if contrato != "Todos" and "CONTRATO" in base.columns:
+        base = base[base["CONTRATO"] == contrato].copy()
+
+    base = base[
+        (base["DATA_EXPRESS_DT"].dt.normalize() >= inicio_ts.normalize())
+        & (base["DATA_EXPRESS_DT"].dt.normalize() <= fim_ts.normalize())
+    ].copy()
+    return int(len(base))
+
+
+def render_meta_cpfl_stc(titulo, meta, cortes_feitos, express_feitos):
+    total_feito = int(cortes_feitos) + int(express_feitos)
+    saldo = total_feito - int(meta)
+    execucao = (total_feito / meta * 100) if meta else 0
+
+    st.markdown(f'<div class="section-title">{titulo}</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Meta CPFL", numero(meta))
+    c2.metric("Cortes feitos", numero(cortes_feitos))
+    c3.metric("Express feitos", numero(express_feitos))
+    c4.metric("Total CPFL", numero(total_feito))
+    c5.metric("Execução", f"{execucao:.1f}%".replace(".", ","), numero(saldo))
+
 def resumo_express_periodo(notas, meses, contrato_escolhido="Todos"):
     """
     Resume o Pagamento Express por contrato para um ou mais meses.
@@ -5267,6 +5449,12 @@ with aba_parcial:
                 c4.metric("Religues", numero(total_religues))
                 c5.metric("Recusas", numero(total_recusas))
 
+                if contrato_filtro_notas == "STC Jundiai":
+                    data_meta_inicio, data_meta_fim = _periodo_datas_cpfl("Dia", data_escolhida)
+                    meta_cpfl = meta_cpfl_stc_periodo(data_meta_inicio, data_meta_fim)
+                    express_cpfl = contar_express_cpfl_periodo(notas, "STC Jundiai", data_meta_inicio, data_meta_fim)
+                    render_meta_cpfl_stc("Meta CPFL do dia", meta_cpfl, total_cortes, express_cpfl)
+
                 tem_carro_no_dia = "CONTRATO" in parcial_dia.columns and (
                     parcial_dia["CONTRATO"] == "STC Jundiai"
                 ).any()
@@ -5576,6 +5764,17 @@ with aba_ranking:
                 m4.metric("Express", numero(total_express_mensal))
             else:
                 m4.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
+
+            if contrato_ranking == "STC Jundiai" and tipo_periodo in ["Dia", "Semana", "Mês"] and valor_periodo:
+                meta_inicio, meta_fim = _periodo_datas_cpfl(tipo_periodo, valor_periodo)
+                meta_cpfl = meta_cpfl_stc_periodo(meta_inicio, meta_fim)
+                cortes_cpfl = int(base_filtrada_exec.loc[
+                    pd.to_numeric(base_filtrada_exec.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0,
+                    "EH_CORTE"
+                ].sum()) if not base_filtrada_exec.empty and "EH_CORTE" in base_filtrada_exec.columns else 0
+                express_cpfl = contar_express_cpfl_periodo(notas, "STC Jundiai", meta_inicio, meta_fim)
+                titulo_meta = "Meta CPFL da semana" if tipo_periodo == "Semana" else ("Meta CPFL do mês" if tipo_periodo == "Mês" else "Meta CPFL do dia")
+                render_meta_cpfl_stc(titulo_meta, meta_cpfl, cortes_cpfl, express_cpfl)
 
             if tipo_periodo == "Mês" and valor_periodo and not express_sem_vinculo.empty:
                 with st.expander("Ver Express sem vínculo de Ordem de Serviço"):
