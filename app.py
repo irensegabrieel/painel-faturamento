@@ -3500,6 +3500,128 @@ def render_meta_cpfl_stc(titulo, meta, cortes_feitos, express_feitos):
     c4.metric("Total CPFL", numero(total_feito))
     c5.metric("Execução", f"{execucao:.1f}%".replace(".", ","), numero(saldo))
 
+
+
+def _periodos_meses_cpfl_ate_momento(meses):
+    """Retorna períodos mensais para meta CPFL acumulada.
+
+    Para o mês atual, considera somente até hoje.
+    Para meses anteriores, considera o mês inteiro.
+    Meses futuros ficam com período vazio para não projetar execução antes da hora.
+    """
+    hoje = pd.Timestamp(datetime.now(ZoneInfo("America/Sao_Paulo")).date())
+    periodos = []
+    for mes in meses or []:
+        inicio = pd.to_datetime("01/" + str(mes), dayfirst=True, errors="coerce")
+        if pd.isna(inicio):
+            continue
+        fim_mes = inicio + pd.offsets.MonthEnd(0)
+        if inicio > hoje:
+            continue
+        fim = min(fim_mes, hoje) if (inicio.year == hoje.year and inicio.month == hoje.month) else fim_mes
+        periodos.append((inicio, fim))
+    return periodos
+
+
+def meta_cpfl_stc_meses_ate_momento(meses):
+    return int(sum(meta_cpfl_stc_periodo(inicio, fim) for inicio, fim in _periodos_meses_cpfl_ate_momento(meses)))
+
+
+def contar_cortes_cpfl_stc_meses_ate_momento(notas, meses, contrato="STC Jundiai"):
+    parcial = preparar_parcial_do_dia(notas, incluir_recusas=True)
+    if parcial.empty or "DATA_DT" not in parcial.columns or "EH_CORTE" not in parcial.columns:
+        return 0
+    base = parcial.copy()
+    base["DATA_DT"] = pd.to_datetime(base["DATA_DT"], dayfirst=True, errors="coerce")
+    base = base[base["DATA_DT"].notna()].copy()
+    if contrato != "Todos" and "CONTRATO" in base.columns:
+        base = base[base["CONTRATO"] == contrato].copy()
+    if "EH_RECUSA" in base.columns:
+        base = base[pd.to_numeric(base["EH_RECUSA"], errors="coerce").fillna(0).astype(int) == 0].copy()
+    total = 0
+    for inicio, fim in _periodos_meses_cpfl_ate_momento(meses):
+        recorte = base[(base["DATA_DT"].dt.normalize() >= inicio.normalize()) & (base["DATA_DT"].dt.normalize() <= fim.normalize())]
+        total += int(pd.to_numeric(recorte["EH_CORTE"], errors="coerce").fillna(0).astype(int).sum())
+    return int(total)
+
+
+def contar_express_cpfl_stc_meses_ate_momento(notas, meses, contrato="STC Jundiai"):
+    express = express_detalhado_cpfl_cache(notas)
+    if express.empty or "DATA_EXPRESS_DT" not in express.columns:
+        return 0
+    base = express.copy()
+    base["DATA_EXPRESS_DT"] = pd.to_datetime(base["DATA_EXPRESS_DT"], errors="coerce")
+    base = base[base["DATA_EXPRESS_DT"].notna()].copy()
+    if contrato != "Todos" and "CONTRATO" in base.columns:
+        base = base[base["CONTRATO"] == contrato].copy()
+    total = 0
+    for inicio, fim in _periodos_meses_cpfl_ate_momento(meses):
+        recorte = base[(base["DATA_EXPRESS_DT"].dt.normalize() >= inicio.normalize()) & (base["DATA_EXPRESS_DT"].dt.normalize() <= fim.normalize())]
+        total += int(len(recorte))
+    return int(total)
+
+
+def render_auditoria_express_ranking(
+    tipo_periodo, valor_periodo, express_caminho, express_data_max, express_sem_vinculo,
+    express_resumo_recurso, total_express_mensal
+):
+    """Mostra a auditoria do Pagamento Express no fim do Ranking de recursos."""
+    if not (tipo_periodo == "Mês" and valor_periodo):
+        return
+
+    st.markdown('<div class="section-title">Auditoria do Pagamento Express</div>', unsafe_allow_html=True)
+    if express_caminho:
+        if express_data_max:
+            st.info(f"Pagamento Express conciliado por DE/PARA Nome → Recurso até {express_data_max}.")
+        else:
+            st.info("Pagamento Express conciliado por DE/PARA Nome → Recurso. A planilha não trouxe data válida para exibir o limite.")
+    else:
+        st.caption("Pagamento Express: arquivo não localizado.")
+
+    if not express_sem_vinculo.empty:
+        st.warning(f"Pagamento Express: {numero(len(express_sem_vinculo))} linha(s) não encontraram nome no DE/PARA Nome → Recurso.")
+
+    with st.expander("Auditoria do Pagamento Express", expanded=(total_express_mensal == 0)):
+        if express_caminho:
+            st.caption(f"Arquivo lido: {express_caminho}")
+        if not express_resumo_recurso.empty:
+            st.success(f"Express conciliado: {numero(total_express_mensal)} nota(s) no mês {valor_periodo}.")
+            st.dataframe(
+                formatar_tabela(express_resumo_recurso.sort_values(["EXPRESS", "RECURSO"], ascending=[False, True])),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("Nenhum Express entrou no ranking para este filtro. Verifique abaixo se o arquivo foi lido, se a data bate com o mês e se os nomes estão no DE/PARA.")
+            caminho_debug = caminho_pagamento_express()
+            if caminho_debug:
+                express_debug = ler_pagamento_express(str(caminho_debug))
+                if express_debug.empty:
+                    st.warning("O arquivo foi encontrado, mas ficou vazio após o filtro de VALIDAÇÃO = PAGAMENTO EXPRESS ou sem nome de executor.")
+                else:
+                    total_linhas_debug = len(express_debug)
+                    datas_validas_debug = int(express_debug.get("DATA_EXPRESS_DT", pd.Series(dtype=object)).notna().sum()) if "DATA_EXPRESS_DT" in express_debug.columns else 0
+                    st.write({
+                        "linhas_lidas": total_linhas_debug,
+                        "datas_validas": datas_validas_debug,
+                        "meses_no_excel": express_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y").value_counts(dropna=False).to_dict() if "DATA_EXPRESS_DT" in express_debug.columns and express_debug["DATA_EXPRESS_DT"].notna().any() else {},
+                        "nomes_mapeados_por_depara": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
+                        "recursos_diretos_no_excel": int(express_debug.get("RECURSO_EXPRESS_DIRETO", pd.Series(dtype=object)).fillna("").astype(str).str.strip().replace({"nan":"", "NaN":"", "None":""}).ne("").sum()) if "RECURSO_EXPRESS_DIRETO" in express_debug.columns else 0,
+                        "tamanho_depara_nome_recurso": len(DEPARA_NOME_RECURSO_EXPRESS),
+                    })
+                    cols_debug = [
+                        "NOME_EXPRESS", "NOME_EXPRESS_NORM", "DATA_EXPRESS_DT", "NOTA_NORM", "VALIDAÇÃO", "VALIDACAO"
+                    ]
+                    cols_debug = [c for c in cols_debug if c in express_debug.columns]
+                    amostra_debug = express_debug.copy()
+                    if "DATA_EXPRESS_DT" in amostra_debug.columns and amostra_debug["DATA_EXPRESS_DT"].notna().any():
+                        amostra_debug = amostra_debug[amostra_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y") == valor_periodo].copy()
+                    amostra_debug["RECURSO_DEPARA"] = amostra_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("") if "NOME_EXPRESS_NORM" in amostra_debug.columns else ""
+                    cols_debug = cols_debug + ["RECURSO_DEPARA"]
+                    st.dataframe(amostra_debug[cols_debug].head(80), use_container_width=True, hide_index=True)
+            else:
+                st.error("Arquivo pagamento_express.xlsx não localizado na pasta dashboard nem na raiz do app.")
+
 def resumo_express_periodo(notas, meses, contrato_escolhido="Todos"):
     """
     Resume o Pagamento Express por contrato para um ou mais meses.
@@ -5496,6 +5618,12 @@ with aba_resumo:
             c1.metric("Faturamento contratos", dinheiro(total_contratos))
             c2.metric("Notas únicas", numero(qtd_notas))
 
+        if contrato_filtro_notas == "STC Jundiai":
+            meta_cpfl_mes = meta_cpfl_stc_meses_ate_momento(meses_escolhidos_resumo)
+            cortes_cpfl_mes = contar_cortes_cpfl_stc_meses_ate_momento(notas, meses_escolhidos_resumo, "STC Jundiai")
+            express_cpfl_mes = contar_express_cpfl_stc_meses_ate_momento(notas, meses_escolhidos_resumo, "STC Jundiai")
+            render_meta_cpfl_stc("Meta CPFL acumulada no mês", meta_cpfl_mes, cortes_cpfl_mes, express_cpfl_mes)
+
         st.subheader("Faturamento por contrato")
 
         grafico_resumo = resumo_contrato_periodo.copy()
@@ -5775,60 +5903,6 @@ with aba_ranking:
             total_executores = int(ranking_exec["RECURSO"].nunique())
             total_fat_atribuido = float(ranking_exec["FATURAMENTO_ATRIBUÍDO"].sum())
 
-            if tipo_periodo == "Mês" and valor_periodo:
-                if express_caminho:
-                    if express_data_max:
-                        st.info(f"Pagamento Express conciliado por DE/PARA Nome → Recurso até {express_data_max}.")
-                    else:
-                        st.info("Pagamento Express conciliado por DE/PARA Nome → Recurso. A planilha não trouxe data válida para exibir o limite.")
-                else:
-                    st.caption("Pagamento Express: arquivo não localizado.")
-
-                if not express_sem_vinculo.empty:
-                    st.warning(f"Pagamento Express: {numero(len(express_sem_vinculo))} linha(s) não encontraram nome no DE/PARA Nome → Recurso.")
-
-                # Auditoria sempre visível no período mensal: se zerar, a tela mostra exatamente o motivo.
-                with st.expander("Auditoria do Pagamento Express", expanded=(total_express_mensal == 0)):
-                    if express_caminho:
-                        st.caption(f"Arquivo lido: {express_caminho}")
-                    if not express_resumo_recurso.empty:
-                        st.success(f"Express conciliado: {numero(total_express_mensal)} nota(s) no mês {valor_periodo}.")
-                        st.dataframe(
-                            formatar_tabela(express_resumo_recurso.sort_values(["EXPRESS", "RECURSO"], ascending=[False, True])),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-                    else:
-                        st.info("Nenhum Express entrou no ranking para este filtro. Verifique abaixo se o arquivo foi lido, se a data bate com o mês e se os nomes estão no DE/PARA.")
-                        caminho_debug = caminho_pagamento_express()
-                        if caminho_debug:
-                            express_debug = ler_pagamento_express(str(caminho_debug))
-                            if express_debug.empty:
-                                st.warning("O arquivo foi encontrado, mas ficou vazio após o filtro de VALIDAÇÃO = PAGAMENTO EXPRESS ou sem nome de executor.")
-                            else:
-                                total_linhas_debug = len(express_debug)
-                                datas_validas_debug = int(express_debug.get("DATA_EXPRESS_DT", pd.Series(dtype=object)).notna().sum()) if "DATA_EXPRESS_DT" in express_debug.columns else 0
-                                st.write({
-                                    "linhas_lidas": total_linhas_debug,
-                                    "datas_validas": datas_validas_debug,
-                                    "meses_no_excel": express_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y").value_counts(dropna=False).to_dict() if "DATA_EXPRESS_DT" in express_debug.columns and express_debug["DATA_EXPRESS_DT"].notna().any() else {},
-                                    "nomes_mapeados_por_depara": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
-                                    "recursos_diretos_no_excel": int(express_debug.get("RECURSO_EXPRESS_DIRETO", pd.Series(dtype=object)).fillna("").astype(str).str.strip().replace({"nan":"", "NaN":"", "None":""}).ne("").sum()) if "RECURSO_EXPRESS_DIRETO" in express_debug.columns else 0,
-                                    "tamanho_depara_nome_recurso": len(DEPARA_NOME_RECURSO_EXPRESS),
-                                })
-                                cols_debug = [
-                                    "NOME_EXPRESS", "NOME_EXPRESS_NORM", "DATA_EXPRESS_DT", "NOTA_NORM", "VALIDAÇÃO", "VALIDACAO"
-                                ]
-                                cols_debug = [c for c in cols_debug if c in express_debug.columns]
-                                amostra_debug = express_debug.copy()
-                                if "DATA_EXPRESS_DT" in amostra_debug.columns and amostra_debug["DATA_EXPRESS_DT"].notna().any():
-                                    amostra_debug = amostra_debug[amostra_debug["DATA_EXPRESS_DT"].dt.strftime("%m/%Y") == valor_periodo].copy()
-                                amostra_debug["RECURSO_DEPARA"] = amostra_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("") if "NOME_EXPRESS_NORM" in amostra_debug.columns else ""
-                                cols_debug = cols_debug + ["RECURSO_DEPARA"]
-                                st.dataframe(amostra_debug[cols_debug].head(80), use_container_width=True, hide_index=True)
-                        else:
-                            st.error("Arquivo pagamento_express.xlsx não localizado na pasta dashboard nem na raiz do app.")
-
             media_notas_executor = total_notas_exec / total_executores if total_executores else 0
 
             lider = ranking_exec.iloc[0]
@@ -5997,6 +6071,11 @@ with aba_ranking:
                     use_container_width=True,
                     hide_index=True,
                 )
+
+            render_auditoria_express_ranking(
+                tipo_periodo, valor_periodo, express_caminho, express_data_max, express_sem_vinculo,
+                express_resumo_recurso, total_express_mensal
+            )
 
             csv_ranking = ranking_exec.to_csv(index=False, sep=";", encoding="utf-8-sig")
             st.download_button(
