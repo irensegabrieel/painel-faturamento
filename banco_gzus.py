@@ -385,6 +385,28 @@ def otimizar(conn: sqlite3.Connection) -> None:
         pass
 
 
+def limpar_banco_dashboard_leve(conn: sqlite3.Connection) -> dict[str, str]:
+    """Remove tabelas brutas do banco leve para ficar abaixo do limite do GitHub Web.
+
+    O banco completo local continua com tudo.
+    O banco dashboard fica apenas com resumos e tabelas pequenas.
+    """
+    removidas = {}
+    for tabela in [
+        'notas',
+        'notas_processadas',
+        'leitura_tarefas',
+        'leitura_resumos',
+    ]:
+        try:
+            if tabela_existe(conn, tabela):
+                conn.execute(f'DROP TABLE IF EXISTS "{tabela}"')
+                removidas[tabela] = 'removida'
+        except Exception as e:
+            removidas[tabela] = f'erro: {e}'
+    return removidas
+
+
 def importar_tudo(limite_excels: Optional[int] = None) -> dict:
     garantir_pastas()
     resultado = {'completo': {}, 'dashboard': {}}
@@ -398,8 +420,11 @@ def importar_tudo(limite_excels: Optional[int] = None) -> dict:
         otimizar(conn)
 
     with conectar(BANCO_DASHBOARD) as conn:
+        # O banco leve precisa importar as notas temporariamente para gerar resumos,
+        # mas NÃO deve manter a tabela bruta, senão passa do limite de upload do GitHub Web.
         resultado['dashboard']['csvs'] = importar_csvs(conn, incluir_metadados=False)
         resultado['dashboard']['resumos'] = criar_resumos(conn)
+        resultado['dashboard']['limpeza_banco_leve'] = limpar_banco_dashboard_leve(conn)
         conn.commit()
     with conectar(BANCO_DASHBOARD) as conn:
         otimizar(conn)
@@ -476,4 +501,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-    
