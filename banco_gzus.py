@@ -1,7 +1,7 @@
 """
 banco_gzus.py
 ================
-SQLite V2 para o sistema G.Z.U.S. com tabela processada e índices de performance.
+SQLite V3 para o sistema G.Z.U.S. com banco completo local e banco leve para o dashboard.
 
 Objetivo:
 - Manter o sistema atual funcionando com CSV/Excel.
@@ -11,6 +11,10 @@ Objetivo:
 Como usar no terminal, dentro da pasta do projeto:
     python banco_gzus.py importar
     python banco_gzus.py resumo
+
+Arquivos gerados:
+    dashboard/gzus.db             -> banco completo local
+    dashboard/gzus_dashboard.db   -> banco leve para subir no GitHub
 
 Requisitos:
     pip install pandas openpyxl
@@ -39,6 +43,7 @@ PASTA_ATUAL = Path(".")
 PASTA_DASHBOARD = Path("dashboard")
 PASTA_LEITURA = PASTA_DASHBOARD / "leitura"
 BANCO_PADRAO = PASTA_DASHBOARD / "gzus.db"
+BANCO_DASHBOARD_LEVE = PASTA_DASHBOARD / "gzus_dashboard.db"
 
 # Mesmos arquivos principais usados no dashboard atual.
 ARQUIVOS_CSV_DASHBOARD = {
@@ -489,6 +494,104 @@ def criar_indices(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+
+
+def _tabela_existe_conn(conn: sqlite3.Connection, tabela: str) -> bool:
+    try:
+        return conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (tabela,)).fetchone() is not None
+    except Exception:
+        return False
+
+
+def _copiar_tabela_para_dashboard(conn_origem: sqlite3.Connection, conn_destino: sqlite3.Connection, tabela: str, colunas: Optional[list[str]] = None) -> int:
+    """Copia uma tabela do banco completo para o banco leve.
+
+    Quando colunas for informado, copia apenas as colunas existentes. Isso reduz muito
+    o tamanho do arquivo que vai para o GitHub/Streamlit.
+    """
+    if not _tabela_existe_conn(conn_origem, tabela):
+        return 0
+
+    try:
+        info = pd.read_sql_query(f'PRAGMA table_info("{tabela}")', conn_origem)
+        existentes = info.get("name", pd.Series(dtype=str)).astype(str).tolist()
+        if colunas:
+            escolhidas = [c for c in colunas if c in existentes]
+            if not escolhidas:
+                return 0
+            sql_cols = ", ".join([f'"{c}"' for c in escolhidas])
+            df = pd.read_sql_query(f'SELECT {sql_cols} FROM "{tabela}"', conn_origem)
+        else:
+            df = pd.read_sql_query(f'SELECT * FROM "{tabela}"', conn_origem)
+        if df.empty:
+            return 0
+        df.to_sql(tabela, conn_destino, if_exists="replace", index=False)
+        return len(df)
+    except Exception as e:
+        print(f"Aviso: não consegui copiar {tabela} para banco leve: {e}")
+        return 0
+
+
+def criar_banco_dashboard_leve(caminho_completo: Path | str = BANCO_PADRAO, caminho_leve: Path | str = BANCO_DASHBOARD_LEVE) -> dict[str, int]:
+    """Cria dashboard/gzus_dashboard.db, menor que o banco completo.
+
+    Este é o banco correto para subir no GitHub/Streamlit. Ele não carrega as tabelas
+    brutas enormes; mantém só o necessário para o painel abrir rápido.
+    """
+    caminho_completo = Path(caminho_completo)
+    caminho_leve = Path(caminho_leve)
+    garantir_pastas()
+    if caminho_leve.exists():
+        caminho_leve.unlink()
+
+    resultado: dict[str, int] = {}
+    conn_origem = sqlite3.connect(str(caminho_completo))
+    conn_destino = sqlite3.connect(str(caminho_leve))
+    conn_destino.execute("PRAGMA journal_mode=DELETE")
+    conn_destino.execute("PRAGMA synchronous=OFF")
+
+    colunas_notas_processadas = [
+        "ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "RECUSA",
+        "ELETRICISTA1", "ELETRICISTA2", "QTD_EXECUTORES",
+        "DATA", "DATA_DT", "MES", "CONTRATO",
+        "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX",
+        "EH_CORTE", "EH_RELIGUE", "EH_RECUSA",
+    ]
+
+    resultado["notas_processadas"] = _copiar_tabela_para_dashboard(conn_origem, conn_destino, "notas_processadas", colunas_notas_processadas)
+
+    # Tabelas pequenas que o app ainda usa diretamente.
+    for tabela in [
+        "faturamento_contratos",
+        "faturamento_dias",
+        "faturamento_carro_estimado",
+        "faturamento_carro_dias",
+        "resumo_dia_contrato",
+        "resumo_dia_recurso",
+    ]:
+        resultado[tabela] = _copiar_tabela_para_dashboard(conn_origem, conn_destino, tabela)
+
+    # Controle mínimo para auditoria do que foi gerado.
+    if _tabela_existe_conn(conn_origem, "controle_importacao"):
+        try:
+            df_ctrl = pd.read_sql_query('SELECT * FROM "controle_importacao" ORDER BY id DESC LIMIT 50', conn_origem)
+            df_ctrl.to_sql("controle_importacao", conn_destino, if_exists="replace", index=False)
+            resultado["controle_importacao"] = len(df_ctrl)
+        except Exception:
+            resultado["controle_importacao"] = 0
+
+    criar_indices(conn_destino)
+    try:
+        conn_destino.execute("VACUUM")
+    except Exception:
+        pass
+    conn_destino.close()
+    conn_origem.close()
+
+    resultado["arquivo_kb"] = int(caminho_leve.stat().st_size / 1024) if caminho_leve.exists() else 0
+    return resultado
+
+
 def importar_tudo(caminho_banco: Path | str = BANCO_PADRAO, limite_excels: Optional[int] = None) -> dict:
     conn = conectar(caminho_banco)
     criar_tabela_controle(conn)
@@ -500,7 +603,18 @@ def importar_tudo(caminho_banco: Path | str = BANCO_PADRAO, limite_excels: Optio
     }
     resultado["performance_v2"] = criar_resumos_performance(conn)
     criar_indices(conn)
+    try:
+        conn.execute("VACUUM")
+    except Exception:
+        pass
     conn.close()
+
+    # Além do banco completo local, gera um banco leve para GitHub/Streamlit.
+    try:
+        resultado["dashboard_leve"] = criar_banco_dashboard_leve(caminho_banco, BANCO_DASHBOARD_LEVE)
+        resultado["dashboard_leve_arquivo"] = str(BANCO_DASHBOARD_LEVE)
+    except Exception as e:
+        resultado["dashboard_leve_erro"] = str(e)
     return resultado
 
 
