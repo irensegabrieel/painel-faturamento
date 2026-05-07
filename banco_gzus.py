@@ -1,7 +1,7 @@
 """
 banco_gzus.py
 ================
-Primeira camada SQLite para o sistema G.Z.U.S.
+SQLite V2 para o sistema G.Z.U.S. com tabela processada e índices de performance.
 
 Objetivo:
 - Manter o sistema atual funcionando com CSV/Excel.
@@ -206,11 +206,14 @@ def importar_csvs_dashboard(conn: sqlite3.Connection) -> dict[str, int]:
             resultado[tabela] = 0
             continue
 
-        # Tenta separador padrao; se vier estranho, tenta autodetectar.
+        # Tenta primeiro o separador usado pelos CSVs do painel.
+        # Se vier errado, tenta autodetectar.
         try:
-            df = pd.read_csv(caminho)
+            df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
+            if len(df.columns) <= 1:
+                df = pd.read_csv(caminho, sep=None, engine="python", encoding="utf-8-sig")
         except Exception:
-            df = pd.read_csv(caminho, sep=None, engine="python")
+            df = pd.read_csv(caminho, sep=None, engine="python", encoding="utf-8-sig")
 
         df = adicionar_metadados(df, caminho, origem="CSV_DASHBOARD")
         linhas = salvar_dataframe(conn, df, tabela, modo="replace")
@@ -287,11 +290,187 @@ def importar_excels_leitura(conn: sqlite3.Connection, limite_arquivos: Optional[
     return resultado
 
 
+
+# ==============================
+# PERFORMANCE V2 - NOTAS PROCESSADAS
+# ==============================
+
+def _txt(valor) -> str:
+    if pd.isna(valor):
+        return ""
+    texto = str(valor).strip()
+    if texto.endswith(".0"):
+        texto = texto[:-2]
+    return texto
+
+
+def _numero(valor, padrao=0.0) -> float:
+    try:
+        if pd.isna(valor):
+            return float(padrao)
+        if isinstance(valor, str):
+            valor = valor.replace(".", "").replace(",", ".") if "," in valor else valor
+        return float(valor)
+    except Exception:
+        return float(padrao)
+
+
+def _eh_disjuntor_jundiai(recurso) -> bool:
+    recurso_norm = _txt(recurso).upper()
+    return recurso_norm.startswith("JUN55") or recurso_norm.startswith("JUN59") or recurso_norm.startswith("SAL55")
+
+
+def _eh_disjuntor_santa_cruz(recurso) -> bool:
+    import re
+    recurso_norm = _txt(recurso).upper()
+    m = re.search(r"(\d+)", recurso_norm)
+    if not m:
+        return False
+    primeiros_numeros = m.group(1)
+    return primeiros_numeros.startswith("89") or primeiros_numeros.startswith("20")
+
+
+def criar_notas_processadas(conn: sqlite3.Connection) -> int:
+    try:
+        df = pd.read_sql_query('SELECT * FROM "notas"', conn)
+    except Exception:
+        return 0
+
+    if df.empty:
+        return 0
+    if len(df.columns) <= 1 or any(";" in str(c) for c in df.columns):
+        return 0
+
+    for col in ["ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "RECUSA", "ELETRICISTA1", "ELETRICISTA2", "DATA"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].apply(_txt).astype(str).str.strip()
+
+    if "QTD_EXECUTORES" not in df.columns:
+        df["QTD_EXECUTORES"] = ((df["ELETRICISTA1"] != "").astype(int) + (df["ELETRICISTA2"] != "").astype(int))
+    else:
+        df["QTD_EXECUTORES"] = pd.to_numeric(df["QTD_EXECUTORES"], errors="coerce").fillna(0).astype(int)
+
+    df["GRUPO_NOTA"] = df["GRUPO_NOTA"].astype(str).str.upper().str.strip()
+    df["RECURSO"] = df["RECURSO"].astype(str).str.upper().str.strip()
+    df["RECUSA"] = df["RECUSA"].fillna("").astype(str).str.strip()
+    df["EH_RECUSA"] = (df["RECUSA"] != "").astype(int)
+
+    tarifas = {
+        "JUNDIAI_CORTE": 13.72,
+        "JUNDIAI_RELIGUE": 27.43,
+        "SANTA_CORTE": 11.98,
+        "SANTA_RELIGUE": 23.97,
+        "STC_CORTE_MIN": 38.18,
+        "STC_RELIGUE_MIN": 36.36,
+        "STC_CORTE_MAX": 45.45,
+        "STC_RELIGUE_MAX": 50.91,
+    }
+
+    contratos, fats, fats_min, fats_max, eh_corte, eh_religue, manter = [], [], [], [], [], [], []
+    for _, row in df.iterrows():
+        recurso = row.get("RECURSO", "")
+        grupo = row.get("GRUPO_NOTA", "")
+        qtd_exec = int(_numero(row.get("QTD_EXECUTORES", 0), 0))
+        recusa = _txt(row.get("RECUSA", "")) != ""
+        contrato = ""
+        fat = fat_min = fat_max = 0.0
+        if _eh_disjuntor_jundiai(recurso):
+            contrato = "Disjuntor Jundiaí"
+            if not recusa:
+                fat = {"CORTE": tarifas["JUNDIAI_CORTE"], "RELIGUE": tarifas["JUNDIAI_RELIGUE"]}.get(grupo, 0.0)
+                fat_min = fat_max = fat
+        elif _eh_disjuntor_santa_cruz(recurso):
+            contrato = "Disjuntor Santa Cruz"
+            if not recusa:
+                fat = {"CORTE": tarifas["SANTA_CORTE"], "RELIGUE": tarifas["SANTA_RELIGUE"]}.get(grupo, 0.0)
+                fat_min = fat_max = fat
+        elif str(recurso).startswith("JUN58") and qtd_exec >= 2:
+            contrato = "STC Jundiai"
+            if not recusa:
+                fat_min = {"CORTE": tarifas["STC_CORTE_MIN"], "RELIGUE": tarifas["STC_RELIGUE_MIN"]}.get(grupo, 0.0)
+                fat_max = {"CORTE": tarifas["STC_CORTE_MAX"], "RELIGUE": tarifas["STC_RELIGUE_MAX"]}.get(grupo, 0.0)
+                fat = fat_min
+        manter.append(bool(contrato))
+        contratos.append(contrato); fats.append(fat); fats_min.append(fat_min); fats_max.append(fat_max)
+        eh_corte.append(1 if (grupo == "CORTE" and not recusa) else 0)
+        eh_religue.append(1 if (grupo == "RELIGUE" and not recusa) else 0)
+
+    out = df.loc[manter].copy()
+    if out.empty:
+        return 0
+    out["CONTRATO"] = [c for c, m in zip(contratos, manter) if m]
+    out["FATURAMENTO"] = [v for v, m in zip(fats, manter) if m]
+    out["FATURAMENTO_MIN"] = [v for v, m in zip(fats_min, manter) if m]
+    out["FATURAMENTO_MAX"] = [v for v, m in zip(fats_max, manter) if m]
+    out["EH_CORTE"] = [v for v, m in zip(eh_corte, manter) if m]
+    out["EH_RELIGUE"] = [v for v, m in zip(eh_religue, manter) if m]
+    out["DATA_DT"] = pd.to_datetime(out["DATA"], dayfirst=True, errors="coerce")
+    out = out.dropna(subset=["DATA_DT"]).copy()
+    out["DATA"] = out["DATA_DT"].dt.strftime("%d/%m/%Y")
+    out["DATA_DT"] = out["DATA_DT"].dt.strftime("%Y-%m-%d")
+    out["MES"] = pd.to_datetime(out["DATA_DT"], errors="coerce").dt.strftime("%m/%Y")
+    return salvar_dataframe(conn, out, "notas_processadas", modo="replace")
+
+
+def criar_resumos_performance(conn: sqlite3.Connection) -> dict[str, int]:
+    resultado = {"notas_processadas": criar_notas_processadas(conn)}
+    try:
+        conn.execute('DROP TABLE IF EXISTS resumo_dia_contrato')
+        conn.execute("""
+            CREATE TABLE resumo_dia_contrato AS
+            SELECT DATA, DATA_DT, CONTRATO,
+                   COUNT(DISTINCT CASE WHEN EH_RECUSA = 0 THEN ORDEM_DE_SERVICO END) AS TOTAL_NOTAS,
+                   SUM(EH_CORTE) AS CORTES,
+                   SUM(EH_RELIGUE) AS RELIGUES,
+                   SUM(CASE WHEN EH_RECUSA = 1 THEN 1 ELSE 0 END) AS RECUSAS,
+                   COUNT(DISTINCT RECURSO) AS RECURSOS_ATIVOS,
+                   SUM(FATURAMENTO) AS FATURAMENTO,
+                   SUM(FATURAMENTO_MIN) AS FATURAMENTO_MIN,
+                   SUM(FATURAMENTO_MAX) AS FATURAMENTO_MAX
+            FROM notas_processadas
+            GROUP BY DATA, DATA_DT, CONTRATO
+        """)
+        resultado["resumo_dia_contrato"] = conn.execute('SELECT COUNT(*) FROM resumo_dia_contrato').fetchone()[0]
+    except Exception:
+        resultado["resumo_dia_contrato"] = 0
+    try:
+        conn.execute('DROP TABLE IF EXISTS resumo_dia_recurso')
+        conn.execute("""
+            CREATE TABLE resumo_dia_recurso AS
+            SELECT DATA, DATA_DT, CONTRATO, RECURSO,
+                   COUNT(DISTINCT CASE WHEN EH_RECUSA = 0 THEN ORDEM_DE_SERVICO END) AS TOTAL_NOTAS,
+                   SUM(EH_CORTE) AS CORTES,
+                   SUM(EH_RELIGUE) AS RELIGUES,
+                   SUM(CASE WHEN EH_RECUSA = 1 THEN 1 ELSE 0 END) AS RECUSAS,
+                   SUM(FATURAMENTO) AS FATURAMENTO,
+                   SUM(FATURAMENTO_MIN) AS FATURAMENTO_MIN,
+                   SUM(FATURAMENTO_MAX) AS FATURAMENTO_MAX
+            FROM notas_processadas
+            GROUP BY DATA, DATA_DT, CONTRATO, RECURSO
+        """)
+        resultado["resumo_dia_recurso"] = conn.execute('SELECT COUNT(*) FROM resumo_dia_recurso').fetchone()[0]
+    except Exception:
+        resultado["resumo_dia_recurso"] = 0
+    conn.commit()
+    return resultado
+
+
 def criar_indices(conn: sqlite3.Connection) -> None:
     """Cria indices simples para acelerar filtros comuns. Ignora se a coluna nao existir."""
     indices = [
         ("notas", "CONTRATO"),
         ("notas", "RECURSO"),
+        ("notas_processadas", "DATA"),
+        ("notas_processadas", "DATA_DT"),
+        ("notas_processadas", "CONTRATO"),
+        ("notas_processadas", "RECURSO"),
+        ("notas_processadas", "MES"),
+        ("resumo_dia_contrato", "DATA"),
+        ("resumo_dia_contrato", "CONTRATO"),
+        ("resumo_dia_recurso", "DATA"),
+        ("resumo_dia_recurso", "CONTRATO"),
+        ("resumo_dia_recurso", "RECURSO"),
         ("faturamento_contratos", "CONTRATO"),
         ("faturamento_dias", "CONTRATO"),
         ("leitura_tarefas", "BASE"),
@@ -319,6 +498,7 @@ def importar_tudo(caminho_banco: Path | str = BANCO_PADRAO, limite_excels: Optio
         "csvs_dashboard": importar_csvs_dashboard(conn),
         "excels_leitura": importar_excels_leitura(conn, limite_arquivos=limite_excels),
     }
+    resultado["performance_v2"] = criar_resumos_performance(conn)
     criar_indices(conn)
     conn.close()
     return resultado
