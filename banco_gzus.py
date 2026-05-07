@@ -1,19 +1,8 @@
-"""
-banco_gzus.py — G.Z.U.S. otimizado
-
-Uso dentro da pasta do projeto painel-faturamento:
-    python banco_gzus.py importar
-    python banco_gzus.py resumo
-
-O que ele faz:
-- Mantém dashboard/gzus.db como banco completo/local.
-- Cria dashboard/gzus_dashboard.db como banco leve para subir ao GitHub/Streamlit.
-- Cria índices e tabelas-resumo para acelerar filtros.
-"""
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -76,7 +65,6 @@ def caminho_csv(nome: str) -> Optional[Path]:
 
 
 def ler_csv_dashboard(caminho: Path) -> pd.DataFrame:
-    # Os CSVs do painel normalmente usam ;. Se vier diferente, tenta autodetectar.
     try:
         df = pd.read_csv(caminho, sep=';', encoding='utf-8-sig')
         if len(df.columns) <= 1:
@@ -84,12 +72,11 @@ def ler_csv_dashboard(caminho: Path) -> pd.DataFrame:
     except Exception:
         df = pd.read_csv(caminho, sep=None, engine='python', encoding='utf-8-sig')
 
-    # Remove colunas vazias criadas por exportações ocasionais.
     df = df.loc[:, [c for c in df.columns if str(c).strip() and not str(c).startswith('Unnamed')]].copy()
 
-    # Conversões seguras.
     for col in df.columns:
-        if 'FATURAMENTO' in str(col).upper():
+        col_upper = str(col).upper()
+        if 'FATURAMENTO' in col_upper:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         if col in ['QTD_NOTAS', 'QTD_EXECUTORES', 'DIA_SEMANA_NUM']:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
@@ -98,10 +85,7 @@ def ler_csv_dashboard(caminho: Path) -> pd.DataFrame:
 
 def salvar_df(conn: sqlite3.Connection, df: pd.DataFrame, tabela: str) -> int:
     if df is None or df.empty:
-        try:
-            conn.execute(f'DROP TABLE IF EXISTS "{tabela}"')
-        except Exception:
-            pass
+        conn.execute(f'DROP TABLE IF EXISTS "{tabela}"')
         return 0
     df = df.copy()
     for col in df.columns:
@@ -116,6 +100,7 @@ def registrar(conn: sqlite3.Connection, arquivo: Path, tabela: str, linhas: int)
         CREATE TABLE IF NOT EXISTS controle_importacao (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             arquivo TEXT,
+            caminho TEXT,
             tabela TEXT,
             linhas INTEGER,
             importado_em TEXT,
@@ -125,9 +110,9 @@ def registrar(conn: sqlite3.Connection, arquivo: Path, tabela: str, linhas: int)
     ''')
     conn.execute('''
         INSERT INTO controle_importacao
-        (arquivo, tabela, linhas, importado_em, tamanho_bytes, modificado_em)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (arquivo.name, tabela, int(linhas), agora_iso(), int(arquivo.stat().st_size), float(arquivo.stat().st_mtime)))
+        (arquivo, caminho, tabela, linhas, importado_em, tamanho_bytes, modificado_em)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (arquivo.name, str(arquivo), tabela, int(linhas), agora_iso(), int(arquivo.stat().st_size), float(arquivo.stat().st_mtime)))
 
 
 def importar_csvs(conn: sqlite3.Connection, incluir_metadados: bool = False) -> dict[str, int]:
@@ -148,7 +133,7 @@ def importar_csvs(conn: sqlite3.Connection, incluir_metadados: bool = False) -> 
 
 
 def tabela_existe(conn: sqlite3.Connection, tabela: str) -> bool:
-    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tabela,)).fetchone() is not None
+    return conn.execute('SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=?', (tabela,)).fetchone() is not None
 
 
 def colunas(conn: sqlite3.Connection, tabela: str) -> set[str]:
@@ -157,9 +142,88 @@ def colunas(conn: sqlite3.Connection, tabela: str) -> set[str]:
     return {r[1] for r in conn.execute(f'PRAGMA table_info("{tabela}")').fetchall()}
 
 
+def _eh_disjuntor_jundiai(recurso: str) -> bool:
+    r = str(recurso or '').strip().upper()
+    return r.startswith('JUN55') or r.startswith('JUN59') or r.startswith('SAL55')
+
+
+def _eh_disjuntor_santa_cruz(recurso: str) -> bool:
+    r = str(recurso or '').strip().upper()
+    m = re.search(r'(\d+)', r)
+    if not m:
+        return False
+    return m.group(1).startswith('89') or m.group(1).startswith('20')
+
+
+def _derivar_contrato(recurso: str, qtd_exec: int) -> str:
+    r = str(recurso or '').strip().upper()
+    try:
+        qtd = int(qtd_exec or 0)
+    except Exception:
+        qtd = 0
+    if _eh_disjuntor_jundiai(r):
+        return 'Disjuntor Jundiaí'
+    if _eh_disjuntor_santa_cruz(r):
+        return 'Disjuntor Santa Cruz'
+    if r.startswith('JUN58') and qtd >= 2:
+        return 'STC Jundiai'
+    return ''
+
+
+def criar_notas_processadas(conn: sqlite3.Connection) -> dict[str, int | str]:
+    out: dict[str, int | str] = {}
+    if not tabela_existe(conn, 'notas'):
+        return out
+
+    df = pd.read_sql_query('SELECT * FROM "notas"', conn)
+    if df.empty:
+        salvar_df(conn, df, 'notas_processadas')
+        out['notas_processadas'] = 0
+        return out
+
+    for col in ['ORDEM_DE_SERVICO', 'GRUPO_NOTA', 'RECURSO', 'RECUSA', 'ELETRICISTA1', 'ELETRICISTA2', 'DATA']:
+        if col not in df.columns:
+            df[col] = ''
+        df[col] = df[col].fillna('').astype(str).str.strip()
+
+    if 'QTD_EXECUTORES' not in df.columns:
+        df['QTD_EXECUTORES'] = ((df['ELETRICISTA1'] != '').astype(int) + (df['ELETRICISTA2'] != '').astype(int))
+    else:
+        df['QTD_EXECUTORES'] = pd.to_numeric(df['QTD_EXECUTORES'], errors='coerce').fillna(0).astype(int)
+
+    df['GRUPO_NOTA'] = df['GRUPO_NOTA'].astype(str).str.upper().str.strip()
+    df['RECURSO'] = df['RECURSO'].astype(str).str.upper().str.strip()
+    df['RECUSA'] = df['RECUSA'].fillna('').astype(str).str.strip()
+
+    df['CONTRATO_DERIVADO'] = [_derivar_contrato(r, q) for r, q in zip(df['RECURSO'], df['QTD_EXECUTORES'])]
+    df['CONTRATO'] = df['CONTRATO_DERIVADO']
+
+    df['EH_RECUSA'] = (df['RECUSA'] != '').astype(int)
+    df['EH_CORTE'] = ((df['GRUPO_NOTA'] == 'CORTE') & (df['EH_RECUSA'] == 0) & (df['CONTRATO'] != '')).astype(int)
+    df['EH_RELIGUE'] = ((df['GRUPO_NOTA'].str.contains('RELIG', na=False)) & (df['EH_RECUSA'] == 0) & (df['CONTRATO'] != '')).astype(int)
+    df['EH_NOTA_VALIDA'] = ((df['EH_RECUSA'] == 0) & (df['CONTRATO'] != '')).astype(int)
+
+    data_dt = pd.to_datetime(df['DATA'], dayfirst=True, errors='coerce')
+    df['DATA_SQL'] = data_dt.dt.strftime('%Y-%m-%d')
+    df['DATA'] = data_dt.dt.strftime('%d/%m/%Y').fillna(df['DATA'])
+
+    linhas = salvar_df(conn, df, 'notas_processadas')
+    out['notas_processadas'] = linhas
+
+    try:
+        max_data = pd.to_datetime(df['DATA_SQL'], errors='coerce').max()
+        out['ultima_data_notas_processadas'] = max_data.strftime('%d/%m/%Y') if pd.notna(max_data) else ''
+    except Exception:
+        pass
+
+    return out
+
+
 def criar_indices(conn: sqlite3.Connection) -> None:
     specs = [
-        ('notas', 'DATA'), ('notas', 'CONTRATO'), ('notas', 'RECURSO'), ('notas', 'GRUPO_NOTA'),
+        ('notas', 'DATA'), ('notas', 'RECURSO'), ('notas', 'GRUPO_NOTA'),
+        ('notas_processadas', 'DATA'), ('notas_processadas', 'DATA_SQL'),
+        ('notas_processadas', 'CONTRATO'), ('notas_processadas', 'RECURSO'),
         ('faturamento_contratos', 'CONTRATO'),
         ('faturamento_dias', 'CONTRATO'), ('faturamento_dias', 'DATA'),
         ('faturamento_carro_dias', 'CONTRATO'), ('faturamento_carro_dias', 'DATA'),
@@ -173,90 +237,100 @@ def criar_indices(conn: sqlite3.Connection) -> None:
             pass
 
 
-def criar_resumos(conn: sqlite3.Connection) -> dict[str, int]:
-    """Cria tabelas pequenas para o painel usar depois sem recalcular tudo."""
-    out = {}
-    if not tabela_existe(conn, 'notas'):
-        return out
-    cols = colunas(conn, 'notas')
+def criar_resumos(conn: sqlite3.Connection) -> dict[str, int | str]:
+    out: dict[str, int | str] = {}
+    out.update(criar_notas_processadas(conn))
 
-    # resumo_dia
+    if not tabela_existe(conn, 'notas_processadas'):
+        return out
+
     try:
-        if {'DATA', 'CONTRATO'}.issubset(cols):
-            grupo = 'GRUPO_NOTA' if 'GRUPO_NOTA' in cols else None
-            recurso = 'RECURSO' if 'RECURSO' in cols else None
-            ordem = 'ORDEM_DE_SERVICO' if 'ORDEM_DE_SERVICO' in cols else None
-            expr_corte = "SUM(CASE WHEN UPPER(COALESCE(GRUPO_NOTA,'')) LIKE '%CORTE%' THEN 1 ELSE 0 END)" if grupo else '0'
-            expr_religue = "SUM(CASE WHEN UPPER(COALESCE(GRUPO_NOTA,'')) LIKE '%RELIG%' THEN 1 ELSE 0 END)" if grupo else '0'
-            expr_recursos = f'COUNT(DISTINCT "{recurso}")' if recurso else '0'
-            expr_notas = f'COUNT(DISTINCT "{ordem}")' if ordem else 'COUNT(*)'
-            conn.execute('DROP TABLE IF EXISTS resumo_dia')
-            conn.execute(f'''
-                CREATE TABLE resumo_dia AS
-                SELECT
-                    DATA,
-                    CONTRATO,
-                    {expr_notas} AS TOTAL_NOTAS,
-                    {expr_corte} AS CORTES,
-                    {expr_religue} AS RELIGUES,
-                    {expr_recursos} AS RECURSOS_ATIVOS
-                FROM notas
-                GROUP BY DATA, CONTRATO
-            ''')
-            out['resumo_dia'] = conn.execute('SELECT COUNT(*) FROM resumo_dia').fetchone()[0]
+        conn.execute('DROP TABLE IF EXISTS resumo_dia')
+        conn.execute('''
+            CREATE TABLE resumo_dia AS
+            SELECT
+                DATA,
+                DATA_SQL,
+                CONTRATO,
+                COUNT(DISTINCT CASE WHEN EH_NOTA_VALIDA = 1 THEN ORDEM_DE_SERVICO END) AS TOTAL_NOTAS,
+                SUM(EH_CORTE) AS CORTES,
+                SUM(EH_RELIGUE) AS RELIGUES,
+                SUM(EH_RECUSA) AS RECUSAS,
+                COUNT(DISTINCT CASE WHEN CONTRATO <> '' THEN RECURSO END) AS RECURSOS_ATIVOS
+            FROM notas_processadas
+            WHERE COALESCE(CONTRATO,'') <> ''
+            GROUP BY DATA, DATA_SQL, CONTRATO
+        ''')
+        out['resumo_dia'] = conn.execute('SELECT COUNT(*) FROM resumo_dia').fetchone()[0]
     except Exception as e:
         out['erro_resumo_dia'] = str(e)
 
-    # ranking_recursos_dia
     try:
-        if {'DATA', 'CONTRATO', 'RECURSO'}.issubset(cols):
-            grupo = 'GRUPO_NOTA' if 'GRUPO_NOTA' in cols else None
-            ordem = 'ORDEM_DE_SERVICO' if 'ORDEM_DE_SERVICO' in cols else None
-            fat = 'FATURAMENTO' if 'FATURAMENTO' in cols else None
-            expr_corte = "SUM(CASE WHEN UPPER(COALESCE(GRUPO_NOTA,'')) LIKE '%CORTE%' THEN 1 ELSE 0 END)" if grupo else '0'
-            expr_religue = "SUM(CASE WHEN UPPER(COALESCE(GRUPO_NOTA,'')) LIKE '%RELIG%' THEN 1 ELSE 0 END)" if grupo else '0'
-            expr_notas = f'COUNT(DISTINCT "{ordem}")' if ordem else 'COUNT(*)'
-            expr_fat = f'SUM(COALESCE("{fat}",0))' if fat else '0'
-            conn.execute('DROP TABLE IF EXISTS ranking_recursos_dia')
-            conn.execute(f'''
-                CREATE TABLE ranking_recursos_dia AS
-                SELECT
-                    DATA,
-                    CONTRATO,
-                    RECURSO,
-                    {expr_notas} AS NOTAS,
-                    {expr_corte} AS CORTES,
-                    {expr_religue} AS RELIGUES,
-                    {expr_fat} AS FATURAMENTO_ATRIBUIDO
-                FROM notas
-                WHERE COALESCE(RECURSO,'') <> ''
-                GROUP BY DATA, CONTRATO, RECURSO
-            ''')
-            out['ranking_recursos_dia'] = conn.execute('SELECT COUNT(*) FROM ranking_recursos_dia').fetchone()[0]
+        conn.execute('DROP TABLE IF EXISTS resumo_dia_total')
+        conn.execute('''
+            CREATE TABLE resumo_dia_total AS
+            SELECT
+                DATA,
+                DATA_SQL,
+                'Todos' AS CONTRATO,
+                SUM(TOTAL_NOTAS) AS TOTAL_NOTAS,
+                SUM(CORTES) AS CORTES,
+                SUM(RELIGUES) AS RELIGUES,
+                SUM(RECUSAS) AS RECUSAS,
+                SUM(RECURSOS_ATIVOS) AS RECURSOS_ATIVOS
+            FROM resumo_dia
+            GROUP BY DATA, DATA_SQL
+        ''')
+        out['resumo_dia_total'] = conn.execute('SELECT COUNT(*) FROM resumo_dia_total').fetchone()[0]
+    except Exception as e:
+        out['erro_resumo_dia_total'] = str(e)
+
+    try:
+        conn.execute('DROP TABLE IF EXISTS ranking_recursos_dia')
+        conn.execute('''
+            CREATE TABLE ranking_recursos_dia AS
+            SELECT
+                DATA,
+                DATA_SQL,
+                CONTRATO,
+                RECURSO,
+                COUNT(DISTINCT CASE WHEN EH_NOTA_VALIDA = 1 THEN ORDEM_DE_SERVICO END) AS NOTAS,
+                SUM(EH_CORTE) AS CORTES,
+                SUM(EH_RELIGUE) AS RELIGUES,
+                SUM(EH_RECUSA) AS RECUSAS
+            FROM notas_processadas
+            WHERE COALESCE(CONTRATO,'') <> '' AND COALESCE(RECURSO,'') <> ''
+            GROUP BY DATA, DATA_SQL, CONTRATO, RECURSO
+        ''')
+        out['ranking_recursos_dia'] = conn.execute('SELECT COUNT(*) FROM ranking_recursos_dia').fetchone()[0]
     except Exception as e:
         out['erro_ranking_recursos_dia'] = str(e)
 
-    # meses disponíveis: tabelinha pequena para inicializar filtros sem varrer tudo no app.
     try:
-        if 'DATA' in cols:
-            conn.execute('DROP TABLE IF EXISTS meses_notas')
-            conn.execute('''
-                CREATE TABLE meses_notas AS
-                SELECT DISTINCT substr(DATA, 4, 7) AS MES
-                FROM notas
-                WHERE DATA IS NOT NULL AND length(DATA) >= 10
-            ''')
-            out['meses_notas'] = conn.execute('SELECT COUNT(*) FROM meses_notas').fetchone()[0]
+        conn.execute('DROP TABLE IF EXISTS meses_notas')
+        conn.execute('''
+            CREATE TABLE meses_notas AS
+            SELECT DISTINCT substr(DATA, 4, 7) AS MES
+            FROM notas_processadas
+            WHERE DATA IS NOT NULL AND length(DATA) >= 10
+        ''')
+        out['meses_notas'] = conn.execute('SELECT COUNT(*) FROM meses_notas').fetchone()[0]
     except Exception as e:
         out['erro_meses_notas'] = str(e)
 
     criar_indices(conn)
-    for tabela, coluna in [('resumo_dia', 'DATA'), ('resumo_dia', 'CONTRATO'), ('ranking_recursos_dia', 'DATA'), ('ranking_recursos_dia', 'CONTRATO'), ('ranking_recursos_dia', 'RECURSO')]:
+    for tabela, coluna in [
+        ('resumo_dia', 'DATA'), ('resumo_dia', 'DATA_SQL'), ('resumo_dia', 'CONTRATO'),
+        ('resumo_dia_total', 'DATA'), ('resumo_dia_total', 'DATA_SQL'),
+        ('ranking_recursos_dia', 'DATA'), ('ranking_recursos_dia', 'DATA_SQL'),
+        ('ranking_recursos_dia', 'CONTRATO'), ('ranking_recursos_dia', 'RECURSO'),
+    ]:
         try:
             if tabela_existe(conn, tabela) and coluna in colunas(conn, tabela):
-                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{tabela}_{coluna} ON {tabela} ("{coluna}")')
+                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{tabela}_{coluna} ON "{tabela}" ("{coluna}")')
         except Exception:
             pass
+
     return out
 
 
@@ -292,7 +366,7 @@ def importar_leitura_completa(conn: sqlite3.Connection, limite: Optional[int] = 
             df['_origem_arquivo'] = caminho.name
             df['_aba_excel'] = aba
             cols_norm = {str(c).upper().strip() for c in df.columns}
-            if 'TAREFA' in cols_norm or aba.upper().strip() == 'TAREFAS':
+            if 'TAREFA' in cols_norm or aba.upper().strip() in ['TAREFAS', 'TAREFAS_CONSOLIDADAS']:
                 tarefas.append(df)
             elif any(c in cols_norm for c in ['TOTAL TAREFAS', 'TOTAL TAREFA', 'FEITA', 'PENDENTE', 'PARCIAL']):
                 resumos.append(df)
@@ -315,7 +389,6 @@ def importar_tudo(limite_excels: Optional[int] = None) -> dict:
     garantir_pastas()
     resultado = {'completo': {}, 'dashboard': {}}
 
-    # Banco completo local: pode guardar leitura bruta também.
     with conectar(BANCO_COMPLETO) as conn:
         resultado['completo']['csvs'] = importar_csvs(conn, incluir_metadados=True)
         resultado['completo']['resumos'] = criar_resumos(conn)
@@ -324,7 +397,6 @@ def importar_tudo(limite_excels: Optional[int] = None) -> dict:
     with conectar(BANCO_COMPLETO) as conn:
         otimizar(conn)
 
-    # Banco leve do Streamlit: só o que o app precisa rápido.
     with conectar(BANCO_DASHBOARD) as conn:
         resultado['dashboard']['csvs'] = importar_csvs(conn, incluir_metadados=False)
         resultado['dashboard']['resumos'] = criar_resumos(conn)
@@ -346,7 +418,7 @@ def resumo_banco(caminho: Path | str) -> pd.DataFrame:
     if not caminho.exists():
         return pd.DataFrame()
     with sqlite3.connect(str(caminho)) as conn:
-        tabelas = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name", conn)
+        tabelas = pd.read_sql_query('SELECT name FROM sqlite_master WHERE type=\'table\' ORDER BY name', conn)
         linhas = []
         for t in tabelas['name'].tolist():
             try:
@@ -357,9 +429,31 @@ def resumo_banco(caminho: Path | str) -> pd.DataFrame:
         return pd.DataFrame(linhas)
 
 
+def diagnostico_datas() -> None:
+    for caminho in [BANCO_COMPLETO, BANCO_DASHBOARD]:
+        if not caminho.exists():
+            continue
+        with sqlite3.connect(str(caminho)) as conn:
+            print(f'\nDatas em {caminho.name}:')
+            for tabela in ['notas', 'notas_processadas', 'resumo_dia']:
+                if tabela_existe(conn, tabela):
+                    try:
+                        q = f'''
+                            SELECT DATA, COUNT(*) AS LINHAS
+                            FROM "{tabela}"
+                            GROUP BY DATA
+                            ORDER BY substr(DATA,7,4)||substr(DATA,4,2)||substr(DATA,1,2) DESC
+                            LIMIT 8
+                        '''
+                        print(f'\n{tabela}:')
+                        print(pd.read_sql_query(q, conn).to_string(index=False))
+                    except Exception as e:
+                        print(f'{tabela}: erro {e}')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Banco SQLite do sistema G.Z.U.S.')
-    parser.add_argument('acao', choices=['importar', 'resumo'], help='O que deseja fazer')
+    parser.add_argument('acao', choices=['importar', 'resumo', 'datas'], help='O que deseja fazer')
     parser.add_argument('--limite-excels', type=int, default=None, help='Limita quantos Excels de leitura importar no banco completo')
     args = parser.parse_args()
 
@@ -369,6 +463,8 @@ def main() -> None:
         print('\nImportação finalizada.')
         print(f'Banco completo: {BANCO_COMPLETO.resolve()}')
         print(f'Banco leve do dashboard: {BANCO_DASHBOARD.resolve()}')
+    elif args.acao == 'datas':
+        diagnostico_datas()
     else:
         dfs = [resumo_banco(BANCO_COMPLETO), resumo_banco(BANCO_DASHBOARD)]
         df = pd.concat([d for d in dfs if not d.empty], ignore_index=True) if any(not d.empty for d in dfs) else pd.DataFrame()
