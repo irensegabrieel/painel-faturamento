@@ -5,6 +5,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import json
 import tempfile
+import sqlite3
 import pandas as pd
 import streamlit as st
 import altair as alt
@@ -421,6 +422,26 @@ ARQUIVOS = {
     "carro": "faturamento_carro_estimado_dashboard.csv",
     "carro_dias": "faturamento_carro_dias_dashboard.csv",
 }
+
+# ==============================
+# SQLITE / BANCO LOCAL OPCIONAL
+# ==============================
+# O painel continua funcionando com CSV/Excel.
+# Quando dashboard/gzus.db existir, ele tenta ler primeiro do SQLite.
+# Se algo falhar ou o banco não tiver a tabela esperada, volta automaticamente para os CSVs.
+BANCO_GZUS_CANDIDATOS = [
+    PASTA_DASHBOARD / "gzus.db",
+    PASTA_ATUAL / "gzus.db",
+]
+
+TABELAS_SQLITE_DASHBOARD = {
+    "notas": "notas",
+    "contratos": "faturamento_contratos",
+    "dias": "faturamento_dias",
+    "carro": "faturamento_carro_estimado",
+    "carro_dias": "faturamento_carro_dias",
+}
+
 
 # ==============================
 # CONTRATO LEITURA (em testes)
@@ -1863,6 +1884,107 @@ def mostrar_base_leitura(base_nome):
 
 
 
+
+def sqlite_ativado():
+    """Permite desligar o SQLite por Secret caso precise voltar 100% para CSV."""
+    valor = str(secret_value("USAR_SQLITE_GZUS", "true") or "true").strip().lower()
+    return valor not in ["0", "false", "nao", "não", "no", "off"]
+
+
+def caminho_banco_gzus():
+    for caminho in BANCO_GZUS_CANDIDATOS:
+        try:
+            if caminho.exists() and caminho.is_file():
+                return caminho
+        except Exception:
+            pass
+    return None
+
+
+def _sqlite_tabela_existe(caminho_banco, tabela):
+    try:
+        with sqlite3.connect(str(caminho_banco)) as conn:
+            cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (tabela,))
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def _sqlite_tabela_parece_valida(df):
+    """Evita usar tabela importada com separador errado ou vazia."""
+    if df is None or df.empty:
+        return False
+    if len(df.columns) <= 1:
+        return False
+    # Se o CSV foi importado com separador errado, normalmente vira uma coluna gigante com ';' no nome.
+    if any(";" in str(c) for c in df.columns):
+        return False
+    return True
+
+
+def _normalizar_df_dashboard(df):
+    """Aplica conversões numéricas iguais às usadas nos CSVs."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    df = df.copy()
+
+    # Metadados criados pelo banco_gzus.py não atrapalham, mas também não são usados no painel.
+    # Mantemos por segurança; se quiser ocultar depois, basta filtrar aqui.
+    for col in df.columns:
+        if "FATURAMENTO" in str(col):
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        if col in ["QTD_NOTAS", "QTD_EXECUTORES", "DIA_SEMANA_NUM"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    return df
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def ler_sqlite_dashboard_cache(caminho_banco_str, tabela, mtime_banco):
+    # mtime_banco entra só para invalidar cache quando gzus.db for atualizado.
+    del mtime_banco
+    with sqlite3.connect(caminho_banco_str) as conn:
+        return pd.read_sql_query(f'SELECT * FROM "{tabela}"', conn)
+
+
+def ler_sqlite_dashboard(chave):
+    """Tenta carregar uma base do dashboard pelo SQLite. Retorna DataFrame vazio se não der."""
+    if not sqlite_ativado():
+        return pd.DataFrame()
+
+    caminho_banco = caminho_banco_gzus()
+    if not caminho_banco:
+        return pd.DataFrame()
+
+    tabela = TABELAS_SQLITE_DASHBOARD.get(chave)
+    if not tabela or not _sqlite_tabela_existe(caminho_banco, tabela):
+        return pd.DataFrame()
+
+    try:
+        mtime = caminho_banco.stat().st_mtime
+        df = ler_sqlite_dashboard_cache(str(caminho_banco), tabela, mtime)
+        if not _sqlite_tabela_parece_valida(df):
+            return pd.DataFrame()
+        return _normalizar_df_dashboard(df)
+    except Exception:
+        return pd.DataFrame()
+
+
+def ler_base_dashboard(chave, nome_arquivo):
+    """Fonte única de leitura: SQLite primeiro, CSV como plano B."""
+    df_sqlite = ler_sqlite_dashboard(chave)
+    if not df_sqlite.empty:
+        return df_sqlite, "sqlite"
+
+    caminho = caminho_arquivo(nome_arquivo)
+    if caminho:
+        return ler_csv(str(caminho)), "csv"
+
+    return pd.DataFrame(), "faltando"
+
+
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def ler_csv(caminho):
     df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
@@ -2109,15 +2231,18 @@ def ranking_recursos_cacheado(base, contrato, tipo_periodo, valor_periodo, crite
 def carregar_bases():
     bases = {}
     faltando = []
+    fontes = {}
 
     for chave, nome in ARQUIVOS.items():
-        caminho = caminho_arquivo(nome)
-
-        if caminho:
-            bases[chave] = ler_csv(str(caminho))
+        df, fonte = ler_base_dashboard(chave, nome)
+        if not df.empty:
+            bases[chave] = df
+            fontes[chave] = fonte
         else:
             faltando.append(nome)
+            fontes[chave] = fonte
 
+    st.session_state["fontes_dados_dashboard"] = fontes
     return bases, faltando
 
 
@@ -5396,6 +5521,15 @@ if _status_sync_github.get("changed"):
 
 bases, faltando = carregar_bases()
 
+# Diagnóstico discreto da fonte usada. Se aparecer, o painel já está lendo o gzus.db.
+try:
+    fontes_usadas = st.session_state.get("fontes_dados_dashboard", {})
+    com_sqlite = [k for k, v in fontes_usadas.items() if v == "sqlite"]
+    if com_sqlite:
+        st.sidebar.caption("🗄️ SQLite ativo: " + ", ".join(com_sqlite))
+except Exception:
+    pass
+
 if PERFIL_ACESSO == "supervisor_stc":
     bases = filtrar_bases_para_supervisor_stc(bases)
 
@@ -6291,6 +6425,11 @@ with aba_notas:
 
 with aba_download:
     st.subheader("Arquivos carregados")
+
+    banco_atual = caminho_banco_gzus()
+    if banco_atual:
+        with open(banco_atual, "rb") as f:
+            st.download_button("Baixar gzus.db", f, file_name="gzus.db")
 
     for chave, nome in ARQUIVOS.items():
         caminho = caminho_arquivo(nome)
