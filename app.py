@@ -427,10 +427,12 @@ ARQUIVOS = {
 # SQLITE / BANCO LOCAL OPCIONAL
 # ==============================
 # O painel continua funcionando com CSV/Excel.
-# Quando dashboard/gzus.db existir, ele tenta ler primeiro do SQLite.
-# Se algo falhar ou o banco não tiver a tabela esperada, volta automaticamente para os CSVs.
+# Quando dashboard/gzus_dashboard.db existir, ele tenta ler primeiro o banco leve.
+# Se algo falhar ou o banco não tiver a tabela esperada, volta automaticamente para CSV/Excel.
 BANCO_GZUS_CANDIDATOS = [
+    PASTA_DASHBOARD / "gzus_dashboard.db",
     PASTA_DASHBOARD / "gzus.db",
+    PASTA_ATUAL / "gzus_dashboard.db",
     PASTA_ATUAL / "gzus.db",
 ]
 
