@@ -435,7 +435,7 @@ BANCO_GZUS_CANDIDATOS = [
 ]
 
 TABELAS_SQLITE_DASHBOARD = {
-    "notas": "notas",
+    "notas": "notas_processadas",
     "contratos": "faturamento_contratos",
     "dias": "faturamento_dias",
     "carro": "faturamento_carro_estimado",
@@ -2295,6 +2295,33 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
     """
     if notas.empty:
         return pd.DataFrame()
+
+    # ATALHO DE PERFORMANCE SQLITE V2:
+    # Quando o banco_gzus.py já entrega a tabela notas_processadas, ela já vem
+    # com CONTRATO, FATURAMENTO, EH_CORTE, EH_RELIGUE e EH_RECUSA calculados.
+    # Assim evitamos varrer linha a linha quase 80 mil notas a cada troca de filtro.
+    colunas_prontas = {"CONTRATO", "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX", "EH_CORTE", "EH_RELIGUE", "EH_RECUSA"}
+    if colunas_prontas.issubset(set(notas.columns)):
+        df_pronta = notas.copy()
+        for col in ["ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "RECUSA", "ELETRICISTA1", "ELETRICISTA2", "DATA", "CONTRATO"]:
+            if col not in df_pronta.columns:
+                df_pronta[col] = ""
+            df_pronta[col] = df_pronta[col].fillna("").astype(str).str.strip()
+        for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX", "EH_CORTE", "EH_RELIGUE", "EH_RECUSA", "QTD_EXECUTORES"]:
+            if col in df_pronta.columns:
+                df_pronta[col] = pd.to_numeric(df_pronta[col], errors="coerce").fillna(0)
+        df_pronta["EH_CORTE"] = df_pronta["EH_CORTE"].astype(int)
+        df_pronta["EH_RELIGUE"] = df_pronta["EH_RELIGUE"].astype(int)
+        df_pronta["EH_RECUSA"] = df_pronta["EH_RECUSA"].astype(int)
+        if not incluir_recusas:
+            df_pronta = df_pronta[df_pronta["EH_RECUSA"] == 0].copy()
+        if "DATA_DT" in df_pronta.columns:
+            df_pronta["DATA_DT"] = pd.to_datetime(df_pronta["DATA_DT"], dayfirst=True, errors="coerce")
+        else:
+            df_pronta["DATA_DT"] = pd.to_datetime(df_pronta["DATA"], dayfirst=True, errors="coerce")
+        df_pronta = df_pronta.dropna(subset=["DATA_DT"]).copy()
+        df_pronta["DATA"] = df_pronta["DATA_DT"].dt.strftime("%d/%m/%Y")
+        return df_pronta
 
     df = notas.copy()
 
@@ -5526,7 +5553,7 @@ try:
     fontes_usadas = st.session_state.get("fontes_dados_dashboard", {})
     com_sqlite = [k for k, v in fontes_usadas.items() if v == "sqlite"]
     if com_sqlite:
-        st.sidebar.caption("🗄️ SQLite ativo: " + ", ".join(com_sqlite))
+        st.sidebar.caption("🚀 SQLite V2 ativo: " + ", ".join(com_sqlite))
 except Exception:
     pass
 
