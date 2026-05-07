@@ -427,9 +427,11 @@ ARQUIVOS = {
 # SQLITE / BANCO LOCAL OPCIONAL
 # ==============================
 # O painel continua funcionando com CSV/Excel.
-# Quando dashboard/gzus.db existir, ele tenta ler primeiro do SQLite.
+# Prioridade: banco ultraleve do Streamlit (gzus_dashboard.db).
 # Se algo falhar ou o banco não tiver a tabela esperada, volta automaticamente para os CSVs.
 BANCO_GZUS_CANDIDATOS = [
+    PASTA_DASHBOARD / "gzus_dashboard.db",
+    PASTA_ATUAL / "gzus_dashboard.db",
     PASTA_DASHBOARD / "gzus.db",
     PASTA_ATUAL / "gzus.db",
 ]
@@ -482,6 +484,7 @@ CACHE_TTL_SEGUNDOS = int(secret_float("CACHE_TTL_SEGUNDOS", 60))
 CACHE_TTL_RANKING_SEGUNDOS = int(secret_float("CACHE_TTL_RANKING_SEGUNDOS", 300))
 GITHUB_SYNC_INTERVALO_SEGUNDOS = int(secret_float("GITHUB_SYNC_INTERVALO_SEGUNDOS", 60))
 STATUS_GITHUB_SYNC_PATH = Path(tempfile.gettempdir()) / "gzus_github_sync_status.json"
+LEITURA_HABILITADA = False  # Removido temporariamente para deixar o painel principal mais leve.
 
 # Atualiza a página automaticamente a cada 1 minuto.
 # Isso não substitui a sincronização com o GitHub: apenas faz a tela reler os dados.
@@ -5553,8 +5556,8 @@ notas = bases.get("notas", pd.DataFrame())
 
 # Perfis restritos têm telas próprias para evitar exposição acidental de dados financeiros.
 if PERFIL_ACESSO == "supervisor_leitura":
-    mostrar_painel_supervisor_leitura()
-    mostrar_chatbot_popup(pd.DataFrame(), pode_ver_financeiro=False, pode_ver_express=False, modo_leitura=True)
+    st.title("📖 Leitura temporariamente desativada")
+    st.info("A área de Leitura foi removida temporariamente para acelerar o painel principal.")
     st.stop()
 
 if PERFIL_ACESSO == "supervisor_stc":
@@ -5623,11 +5626,9 @@ for contrato_nome in contratos_lista:
         st.session_state.modo_painel = "corte"
         st.session_state.contrato_escolhido = contrato_nome
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Contratos - Leitura (em testes)")
-
-if st.sidebar.button("📖 Americana e Piracicaba", use_container_width=True):
-    st.session_state.modo_painel = "leitura"
+# Área de Leitura removida temporariamente para reduzir carga inicial.
+if st.session_state.get("modo_painel") == "leitura":
+    st.session_state.modo_painel = "corte"
 
 modo_painel = st.session_state.modo_painel
 contrato_escolhido = st.session_state.contrato_escolhido
@@ -5635,10 +5636,7 @@ contrato_filtro_notas = contrato_para_base_notas(contrato_escolhido)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Tela selecionada:**")
-if modo_painel == "leitura":
-    st.sidebar.info("Leitura (em testes)")
-else:
-    st.sidebar.info(contrato_escolhido)
+st.sidebar.info(contrato_escolhido)
 
 if modo_painel == "corte" and not notas.empty:
     mostrar_status_atualizacao(notas, contrato_escolhido)
@@ -5679,10 +5677,6 @@ carro = carro_original.copy()
 dias = dias_original.copy()
 carro_dias = carro_dias_original.copy()
 
-if modo_painel == "leitura":
-    mostrar_painel_leitura()
-    st.stop()
-
 if contrato_escolhido != "Todos":
     if not contratos.empty and "CONTRATO" in contratos.columns:
         contratos = contratos[contratos["CONTRATO"] == contrato_escolhido]
@@ -5705,26 +5699,21 @@ if mostrar_aba_carro:
     nomes_abas.append("STC")
 nomes_abas += ["Notas", "Downloads"]
 
-abas = st.tabs(nomes_abas)
-aba_resumo = abas[0]
-aba_parcial = abas[1]
-aba_ranking = abas[2]
-aba_comparativo = abas[3]
-aba_dias = abas[4]
-
-if mostrar_aba_carro:
-    aba_carro = abas[5]
-    aba_notas = abas[6]
-    aba_download = abas[7]
-else:
-    aba_notas = abas[5]
-    aba_download = abas[6]
+# Mais leve que st.tabs: no Streamlit, todas as abas executam ao mesmo tempo.
+# Com radio, só a tela escolhida roda, reduzindo carregamento após login e troca de filtros.
+tela_escolhida = st.radio(
+    "Tela",
+    nomes_abas,
+    horizontal=True,
+    label_visibility="collapsed",
+    key="tela_principal_gzus",
+)
 
 # ==============================
 # ABA RESUMO
 # ==============================
 
-with aba_resumo:
+if tela_escolhida == "Resumo":
     resumo_contrato_periodo, resumo_grupo_periodo = resumo_por_periodo(
         notas,
         meses_escolhidos_resumo,
@@ -5807,7 +5796,7 @@ with aba_resumo:
 # ABA PARCIAL DO DIA
 # ==============================
 
-with aba_parcial:
+if tela_escolhida == "Parcial do dia":
     st.subheader("Parcial do dia por recurso")
     if contrato_escolhido != contrato_filtro_notas:
         st.caption(f"Exibindo a base operacional de notas: {contrato_filtro_notas}.")
@@ -5968,7 +5957,7 @@ with aba_parcial:
 # ABA RANKING DE RECURSOS
 # ==============================
 
-with aba_ranking:
+if tela_escolhida == "Ranking de recursos":
     st.subheader("🏆 Ranking de recursos")
     st.caption("Ranking por RECURSO/equipe, usando o código operacional da equipe, como SAL5539-EMP.")
     st.markdown(
@@ -6232,7 +6221,7 @@ with aba_ranking:
 # ABA COMPARATIVO MENSAL
 # ==============================
 
-with aba_comparativo:
+if tela_escolhida == "Comparativo mensal":
     st.subheader("Comparativo mensal")
     st.caption("Compara o mês escolhido com o mês anterior, somando Pagamento Express pelo mês de referência.")
 
@@ -6311,7 +6300,7 @@ with aba_comparativo:
 # ABA DIAS
 # ==============================
 
-with aba_dias:
+if tela_escolhida == "Dias da semana":
     st.subheader("Faturamento por dia da semana")
 
     if not dias.empty:
@@ -6353,8 +6342,7 @@ with aba_dias:
 # ABA CARRO
 # ==============================
 
-if mostrar_aba_carro:
-    with aba_carro:
+if mostrar_aba_carro and tela_escolhida == "STC":
         st.subheader("Contrato do carro — estimativa")
 
         if not carro.empty:
@@ -6385,7 +6373,7 @@ if mostrar_aba_carro:
 # ABA NOTAS
 # ==============================
 
-with aba_notas:
+if tela_escolhida == "Notas":
     st.subheader("Consulta de notas")
 
     if not notas.empty:
@@ -6431,7 +6419,7 @@ with aba_notas:
 # ABA DOWNLOAD
 # ==============================
 
-with aba_download:
+if tela_escolhida == "Downloads":
     st.subheader("Arquivos carregados")
 
     banco_atual = caminho_banco_gzus()
