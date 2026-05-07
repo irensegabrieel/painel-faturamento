@@ -430,11 +430,7 @@ ARQUIVOS = {
 # Quando dashboard/gzus.db existir, ele tenta ler primeiro do SQLite.
 # Se algo falhar ou o banco não tiver a tabela esperada, volta automaticamente para os CSVs.
 BANCO_GZUS_CANDIDATOS = [
-    # Banco leve gerado para o Streamlit Cloud: carrega mais rápido e evita arquivo gigante.
-    PASTA_DASHBOARD / "gzus_dashboard.db",
-    # Fallback local/completo, usado só se o banco leve não existir.
     PASTA_DASHBOARD / "gzus.db",
-    PASTA_ATUAL / "gzus_dashboard.db",
     PASTA_ATUAL / "gzus.db",
 ]
 
@@ -482,29 +478,27 @@ ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domi
 
 # Atualização mais curta para evitar que o Streamlit fique preso em dados antigos.
 # O cache continua existindo para não pesar o app, mas agora é revalidado com frequência.
-CACHE_TTL_SEGUNDOS = int(secret_float("CACHE_TTL_SEGUNDOS", 600))
-CACHE_TTL_RANKING_SEGUNDOS = int(secret_float("CACHE_TTL_RANKING_SEGUNDOS", 900))
-GITHUB_SYNC_INTERVALO_SEGUNDOS = int(secret_float("GITHUB_SYNC_INTERVALO_SEGUNDOS", 300))
+CACHE_TTL_SEGUNDOS = int(secret_float("CACHE_TTL_SEGUNDOS", 60))
+CACHE_TTL_RANKING_SEGUNDOS = int(secret_float("CACHE_TTL_RANKING_SEGUNDOS", 300))
+GITHUB_SYNC_INTERVALO_SEGUNDOS = int(secret_float("GITHUB_SYNC_INTERVALO_SEGUNDOS", 60))
 STATUS_GITHUB_SYNC_PATH = Path(tempfile.gettempdir()) / "gzus_github_sync_status.json"
 
-# Auto refresh desligado por padrão para acelerar a abertura e evitar recarregamentos enquanto usa filtros.
-# Para religar pelo Streamlit Secrets: AUTO_RELOAD_PAINEL = "true".
-if str(secret_value("AUTO_RELOAD_PAINEL", "false") or "false").strip().lower() in ["1", "true", "sim", "yes", "on"]:
-    intervalo_reload_ms = int(secret_float("AUTO_RELOAD_INTERVALO_MS", 300000))
-    st.markdown(
-        f"""
-        <script>
-        setTimeout(function(){{
-            window.location.reload();
-        }}, {intervalo_reload_ms});
-        </script>
-        """,
-        unsafe_allow_html=True
-    )
+# Atualiza a página automaticamente a cada 1 minuto.
+# Isso não substitui a sincronização com o GitHub: apenas faz a tela reler os dados.
+st.markdown(
+    """
+    <script>
+    setTimeout(function(){
+        window.location.reload();
+    }, 60000);
+    </script>
+    """,
+    unsafe_allow_html=True
+)
 
 
 def _github_sync_habilitado():
-    valor = str(secret_value("SINCRONIZAR_GITHUB_AUTO", "false") or "false").strip().lower()
+    valor = str(secret_value("SINCRONIZAR_GITHUB_AUTO", "true") or "true").strip().lower()
     return valor not in ["0", "false", "nao", "não", "no", "off"]
 
 
@@ -5523,7 +5517,15 @@ def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True
 # continua a execução normal e carrega os arquivos novos neste mesmo ciclo.
 _status_sync_github = sincronizar_github_se_preciso()
 if _status_sync_github.get("changed"):
+    # Quando o extrator sobe gzus_dashboard.db/CSVs no GitHub, o Streamlit precisa
+    # reler o checkout atualizado e reconstruir os caches. Sem este rerun, a tela
+    # pode continuar mostrando o banco/CSV antigo até reboot manual.
     st.session_state["github_dados_atualizados_sem_recarregar"] = True
+    st.cache_data.clear()
+    try:
+        st.rerun()
+    except Exception:
+        pass
 
 bases, faltando = carregar_bases()
 
@@ -5533,12 +5535,6 @@ try:
     com_sqlite = [k for k, v in fontes_usadas.items() if v == "sqlite"]
     if com_sqlite:
         st.sidebar.caption("🗄️ SQLite ativo: " + ", ".join(com_sqlite))
-        try:
-            banco_usado = caminho_banco_gzus()
-            if banco_usado:
-                st.sidebar.caption(f"Banco: {banco_usado.name}")
-        except Exception:
-            pass
 except Exception:
     pass
 
@@ -5558,19 +5554,17 @@ notas = bases.get("notas", pd.DataFrame())
 # Perfis restritos têm telas próprias para evitar exposição acidental de dados financeiros.
 if PERFIL_ACESSO == "supervisor_leitura":
     mostrar_painel_supervisor_leitura()
-    if str(secret_value("ASSISTENTE_GZUS_AUTO", "false") or "false").strip().lower() in ["1", "true", "sim", "yes", "on"]:
-        mostrar_chatbot_popup(pd.DataFrame(), pode_ver_financeiro=False, pode_ver_express=False, modo_leitura=True)
+    mostrar_chatbot_popup(pd.DataFrame(), pode_ver_financeiro=False, pode_ver_express=False, modo_leitura=True)
     st.stop()
 
 if PERFIL_ACESSO == "supervisor_stc":
     mostrar_painel_supervisor_stc(bases)
     if not notas.empty:
-        if str(secret_value("ASSISTENTE_GZUS_AUTO", "false") or "false").strip().lower() in ["1", "true", "sim", "yes", "on"]:
-            mostrar_chatbot_popup(notas, pode_ver_financeiro=False, pode_ver_express=False)
+        mostrar_chatbot_popup(notas, pode_ver_financeiro=False, pode_ver_express=False)
     st.stop()
 
 st.title("🤖 G.Z.U.S. — Gestão Inteligente de Serviços")
-st.caption("Painel operacional com assistente inteligente. Atualização automática a cada 1 minuto e sincronização com GitHub.")
+st.caption("Painel operacional com assistente inteligente. Atualização automática com GitHub e banco leve SQLite.")
 st.sidebar.caption(f"Perfil: {NOME_ACESSO}")
 if isinstance(_status_sync_github, dict) and _status_sync_github.get("quando"):
     st.sidebar.caption(f"GitHub: {_status_sync_github.get('message', '')} ({_status_sync_github.get('quando')})")
@@ -5582,10 +5576,8 @@ if st.session_state.pop("github_dados_atualizados_sem_recarregar", False):
 if faltando:
     st.warning("Arquivos não encontrados: " + ", ".join(faltando))
 
-# Popup do assistente desligado por padrão para acelerar a primeira carga.
-# Para carregar automaticamente pelo Secrets: ASSISTENTE_GZUS_AUTO = "true".
-ASSISTENTE_GZUS_AUTO = str(secret_value("ASSISTENTE_GZUS_AUTO", "false") or "false").strip().lower() in ["1", "true", "sim", "yes", "on"]
-if PERFIL_ACESSO == "gerente" and not notas.empty and ASSISTENTE_GZUS_AUTO:
+# Popup do assistente: usa os mesmos dados do painel, sem depender de API externa.
+if PERFIL_ACESSO == "gerente" and not notas.empty:
     mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True)
 
 # ==============================
@@ -5593,14 +5585,6 @@ if PERFIL_ACESSO == "gerente" and not notas.empty and ASSISTENTE_GZUS_AUTO:
 # ==============================
 
 st.sidebar.header("Filtros")
-
-if PERFIL_ACESSO == "gerente" and not ASSISTENTE_GZUS_AUTO:
-    if "assistente_gzus_carregado" not in st.session_state:
-        st.session_state.assistente_gzus_carregado = False
-    if st.sidebar.button("🤖 Carregar assistente", use_container_width=True):
-        st.session_state.assistente_gzus_carregado = True
-    if st.session_state.get("assistente_gzus_carregado") and not notas.empty:
-        mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True)
 
 if st.sidebar.button("🔄 Atualizar dados", use_container_width=True):
     status_manual = sincronizar_github_se_preciso(forcar=True)
@@ -6461,4 +6445,3 @@ with aba_download:
         if caminho:
             with open(caminho, "rb") as f:
                 st.download_button(f"Baixar {caminho.name}", f, file_name=caminho.name)
-                
