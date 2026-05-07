@@ -383,33 +383,44 @@ if "nome_acesso" not in st.session_state:
     st.session_state.nome_acesso = ""
 
 if not st.session_state.autenticado:
+    # Login em uma única passagem: antes usava st.rerun() depois de validar a senha.
+    # Isso fazia o Streamlit executar o app duas vezes no clique de Entrar e aumentava
+    # bastante a sensação de demora pós-login. Agora, ao acertar a senha, o código
+    # continua no mesmo ciclo e já monta o painel.
     st.markdown("""
     <style>
     section[data-testid="stSidebar"] {display: none !important;}
     .main .block-container {max-width: 760px; padding-top: 7rem;}
     </style>
     """, unsafe_allow_html=True)
-    st.title("🔒 Acesso restrito")
-    st.caption("Entre com o perfil autorizado para acessar o painel.")
 
-    usuario = st.selectbox(
-        "Perfil",
-        options=list(USUARIOS_ACESSO.keys()),
-        format_func=lambda u: USUARIOS_ACESSO[u]["nome"],
-    )
-    senha = st.text_input("Digite a senha para acessar o painel:", type="password")
+    login_box = st.empty()
+    with login_box.container():
+        st.title("🔒 Acesso restrito")
+        st.caption("Entre com o perfil autorizado para acessar o painel.")
 
-    if st.button("Entrar"):
+        usuario = st.selectbox(
+            "Perfil",
+            options=list(USUARIOS_ACESSO.keys()),
+            format_func=lambda u: USUARIOS_ACESSO[u]["nome"],
+        )
+        senha = st.text_input("Digite a senha para acessar o painel:", type="password")
+
+        entrar = st.button("Entrar")
+
+    if entrar:
         dados_usuario = USUARIOS_ACESSO.get(usuario, {})
         if senha == dados_usuario.get("senha"):
             st.session_state.autenticado = True
             st.session_state.perfil_acesso = dados_usuario.get("perfil", "")
             st.session_state.nome_acesso = dados_usuario.get("nome", "")
-            st.rerun()
+            st.session_state.login_recente_sem_rerun = True
+            login_box.empty()
         else:
             st.error("Senha incorreta")
-
-    st.stop()
+            st.stop()
+    else:
+        st.stop()
 
 PERFIL_ACESSO = st.session_state.get("perfil_acesso", "gerente")
 NOME_ACESSO = st.session_state.get("nome_acesso", "Gerente")
