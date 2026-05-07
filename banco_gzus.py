@@ -1,28 +1,15 @@
 """
-banco_gzus.py
-================
-SQLite V3 para o sistema G.Z.U.S. com banco completo local e banco leve para o dashboard.
+banco_gzus.py — G.Z.U.S. otimizado
 
-Objetivo:
-- Manter o sistema atual funcionando com CSV/Excel.
-- Criar uma copia organizada em SQLite: gzus.db.
-- Permitir que o dashboard passe a ler do banco aos poucos.
-
-Como usar no terminal, dentro da pasta do projeto:
+Uso dentro da pasta do projeto painel-faturamento:
     python banco_gzus.py importar
     python banco_gzus.py resumo
 
-Arquivos gerados:
-    dashboard/gzus.db             -> banco completo local
-    dashboard/gzus_dashboard.db   -> banco leve para subir no GitHub
-
-Requisitos:
-    pip install pandas openpyxl
-
-Observacao importante:
-Este arquivo NAO apaga seus CSV/Excel. Ele apenas le e grava uma copia no banco.
+O que ele faz:
+- Mantém dashboard/gzus.db como banco completo/local.
+- Cria dashboard/gzus_dashboard.db como banco leve para subir ao GitHub/Streamlit.
+- Cria índices e tabelas-resumo para acelerar filtros.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -30,46 +17,35 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 import pandas as pd
 
+PASTA_ATUAL = Path('.')
+PASTA_DASHBOARD = Path('dashboard')
+PASTA_LEITURA = PASTA_DASHBOARD / 'leitura'
+BANCO_COMPLETO = PASTA_DASHBOARD / 'gzus.db'
+BANCO_DASHBOARD = PASTA_DASHBOARD / 'gzus_dashboard.db'
 
-# ==============================
-# CONFIGURACAO BASICA
-# ==============================
-
-PASTA_ATUAL = Path(".")
-PASTA_DASHBOARD = Path("dashboard")
-PASTA_LEITURA = PASTA_DASHBOARD / "leitura"
-BANCO_PADRAO = PASTA_DASHBOARD / "gzus.db"
-BANCO_DASHBOARD_LEVE = PASTA_DASHBOARD / "gzus_dashboard.db"
-
-# Mesmos arquivos principais usados no dashboard atual.
-ARQUIVOS_CSV_DASHBOARD = {
-    "notas": "notas_dashboard.csv",
-    "faturamento_contratos": "faturamento_contratos_dashboard.csv",
-    "faturamento_dias": "faturamento_dias_dashboard.csv",
-    "faturamento_carro_estimado": "faturamento_carro_estimado_dashboard.csv",
-    "faturamento_carro_dias": "faturamento_carro_dias_dashboard.csv",
+ARQUIVOS_CSV = {
+    'notas': 'notas_dashboard.csv',
+    'faturamento_contratos': 'faturamento_contratos_dashboard.csv',
+    'faturamento_dias': 'faturamento_dias_dashboard.csv',
+    'faturamento_carro_estimado': 'faturamento_carro_estimado_dashboard.csv',
+    'faturamento_carro_dias': 'faturamento_carro_dias_dashboard.csv',
 }
 
-# Arquivos de leitura gerados pelo extrator CWSI.
-PADROES_EXCEL_LEITURA = [
-    "Tarefas_Americana*.xlsx",
-    "Tarefas_Piracicaba*.xlsx",
-    "Parcial_Americana*.xlsx",
-    "Parcial_Piracicaba*.xlsx",
-    "Resumo_D_por_base_municipio*.xlsx",
+PADROES_LEITURA = [
+    'Tarefas_Americana*.xlsx',
+    'Tarefas_Piracicaba*.xlsx',
+    'Parcial_Americana*.xlsx',
+    'Parcial_Piracicaba*.xlsx',
+    'Resumo_D_por_base_municipio*.xlsx',
 ]
 
 
-# ==============================
-# FUNCOES AUXILIARES
-# ==============================
-
 def agora_iso() -> str:
-    return datetime.now().replace(microsecond=0).isoformat(sep=" ")
+    return datetime.now().replace(microsecond=0).isoformat(sep=' ')
 
 
 def garantir_pastas() -> None:
@@ -77,620 +53,330 @@ def garantir_pastas() -> None:
     PASTA_LEITURA.mkdir(parents=True, exist_ok=True)
 
 
-def conectar(caminho_banco: Path | str = BANCO_PADRAO) -> sqlite3.Connection:
+def conectar(caminho: Path | str) -> sqlite3.Connection:
     garantir_pastas()
-    conn = sqlite3.connect(str(caminho_banco))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA temp_store=MEMORY")
+    conn = sqlite3.connect(str(caminho))
+    conn.execute('PRAGMA journal_mode=DELETE')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    conn.execute('PRAGMA temp_store=MEMORY')
     return conn
 
 
-def limpar_nome_tabela(nome: str) -> str:
-    permitido = []
-    for ch in str(nome).lower().strip():
-        if ch.isalnum():
-            permitido.append(ch)
-        elif ch in [" ", "-", ".", "/", "\\"]:
-            permitido.append("_")
-    saida = "".join(permitido).strip("_")
-    while "__" in saida:
-        saida = saida.replace("__", "_")
-    return saida or "tabela"
-
-
-def caminho_csv(nome_arquivo: str) -> Optional[Path]:
+def caminho_csv(nome: str) -> Optional[Path]:
     candidatos = [
-        PASTA_DASHBOARD / nome_arquivo,
-        PASTA_ATUAL / nome_arquivo,
-        PASTA_ATUAL / nome_arquivo.replace(".csv", "(1).csv"),
+        PASTA_DASHBOARD / nome,
+        PASTA_ATUAL / nome,
+        PASTA_ATUAL / nome.replace('.csv', '(1).csv'),
     ]
     for c in candidatos:
         if c.exists():
             return c
-
-    achados = list(PASTA_DASHBOARD.glob(nome_arquivo.replace(".csv", "*.csv")))
-    achados += list(PASTA_ATUAL.glob(nome_arquivo.replace(".csv", "*.csv")))
+    achados = list(PASTA_DASHBOARD.glob(nome.replace('.csv', '*.csv'))) + list(PASTA_ATUAL.glob(nome.replace('.csv', '*.csv')))
     return max(achados, key=lambda p: p.stat().st_mtime) if achados else None
 
 
-def detectar_base_por_nome(caminho: Path) -> str:
-    nome = caminho.name.upper()
-    if "AMERICANA" in nome:
-        return "AMERICANA"
-    if "PIRACICABA" in nome:
-        return "PIRACICABA"
-    return ""
+def ler_csv_dashboard(caminho: Path) -> pd.DataFrame:
+    # Os CSVs do painel normalmente usam ;. Se vier diferente, tenta autodetectar.
+    try:
+        df = pd.read_csv(caminho, sep=';', encoding='utf-8-sig')
+        if len(df.columns) <= 1:
+            raise ValueError('CSV parece ter separador diferente')
+    except Exception:
+        df = pd.read_csv(caminho, sep=None, engine='python', encoding='utf-8-sig')
 
+    # Remove colunas vazias criadas por exportações ocasionais.
+    df = df.loc[:, [c for c in df.columns if str(c).strip() and not str(c).startswith('Unnamed')]].copy()
 
-def detectar_tipo_leitura(caminho: Path) -> str:
-    nome = caminho.name.upper()
-    if nome.startswith("TAREFAS_"):
-        return "TAREFAS"
-    if nome.startswith("PARCIAL_"):
-        return "PARCIAL"
-    if nome.startswith("RESUMO_D"):
-        return "RESUMO_D"
-    return "OUTRO"
-
-
-def adicionar_metadados(df: pd.DataFrame, caminho: Path, origem: str) -> pd.DataFrame:
-    df = df.copy()
-    df["_origem_arquivo"] = caminho.name
-    df["_origem_caminho"] = str(caminho)
-    df["_origem_tipo"] = origem
-    df["_importado_em"] = agora_iso()
+    # Conversões seguras.
+    for col in df.columns:
+        if 'FATURAMENTO' in str(col).upper():
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        if col in ['QTD_NOTAS', 'QTD_EXECUTORES', 'DIA_SEMANA_NUM']:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
     return df
 
 
-def salvar_dataframe(conn: sqlite3.Connection, df: pd.DataFrame, tabela: str, modo: str = "replace") -> int:
-    """Salva um DataFrame no SQLite e retorna a quantidade de linhas."""
-    tabela = limpar_nome_tabela(tabela)
+def salvar_df(conn: sqlite3.Connection, df: pd.DataFrame, tabela: str) -> int:
     if df is None or df.empty:
+        try:
+            conn.execute(f'DROP TABLE IF EXISTS "{tabela}"')
+        except Exception:
+            pass
         return 0
-
-    # SQLite aceita tipos simples melhor. Datas viram texto ISO quando possivel.
     df = df.copy()
     for col in df.columns:
         if pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].dt.strftime("%Y-%m-%d %H:%M:%S")
-
-    df.to_sql(tabela, conn, if_exists=modo, index=False)
+            df[col] = df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+    df.to_sql(tabela, conn, if_exists='replace', index=False)
     return len(df)
 
 
-def criar_tabela_controle(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
+def registrar(conn: sqlite3.Connection, arquivo: Path, tabela: str, linhas: int) -> None:
+    conn.execute('''
         CREATE TABLE IF NOT EXISTS controle_importacao (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            arquivo TEXT NOT NULL,
-            caminho TEXT,
+            arquivo TEXT,
             tabela TEXT,
             linhas INTEGER,
-            importado_em TEXT NOT NULL,
+            importado_em TEXT,
             tamanho_bytes INTEGER,
             modificado_em REAL
         )
-        """
-    )
-    conn.commit()
-
-
-def registrar_importacao(conn: sqlite3.Connection, caminho: Path, tabela: str, linhas: int) -> None:
-    conn.execute(
-        """
+    ''')
+    conn.execute('''
         INSERT INTO controle_importacao
-        (arquivo, caminho, tabela, linhas, importado_em, tamanho_bytes, modificado_em)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            caminho.name,
-            str(caminho),
-            limpar_nome_tabela(tabela),
-            int(linhas),
-            agora_iso(),
-            int(caminho.stat().st_size) if caminho.exists() else 0,
-            float(caminho.stat().st_mtime) if caminho.exists() else 0,
-        ),
-    )
-    conn.commit()
+        (arquivo, tabela, linhas, importado_em, tamanho_bytes, modificado_em)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (arquivo.name, tabela, int(linhas), agora_iso(), int(arquivo.stat().st_size), float(arquivo.stat().st_mtime)))
 
 
-# ==============================
-# IMPORTADORES
-# ==============================
-
-def importar_csvs_dashboard(conn: sqlite3.Connection) -> dict[str, int]:
-    """Importa os CSVs principais do dashboard para tabelas SQLite."""
-    resultado: dict[str, int] = {}
-
-    for tabela, nome_arquivo in ARQUIVOS_CSV_DASHBOARD.items():
-        caminho = caminho_csv(nome_arquivo)
-        if not caminho:
+def importar_csvs(conn: sqlite3.Connection, incluir_metadados: bool = False) -> dict[str, int]:
+    resultado = {}
+    for tabela, nome in ARQUIVOS_CSV.items():
+        c = caminho_csv(nome)
+        if not c:
             resultado[tabela] = 0
             continue
-
-        # Tenta primeiro o separador usado pelos CSVs do painel.
-        # Se vier errado, tenta autodetectar.
-        try:
-            df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
-            if len(df.columns) <= 1:
-                df = pd.read_csv(caminho, sep=None, engine="python", encoding="utf-8-sig")
-        except Exception:
-            df = pd.read_csv(caminho, sep=None, engine="python", encoding="utf-8-sig")
-
-        df = adicionar_metadados(df, caminho, origem="CSV_DASHBOARD")
-        linhas = salvar_dataframe(conn, df, tabela, modo="replace")
-        registrar_importacao(conn, caminho, tabela, linhas)
+        df = ler_csv_dashboard(c)
+        if incluir_metadados:
+            df['_origem_arquivo'] = c.name
+            df['_importado_em'] = agora_iso()
+        linhas = salvar_df(conn, df, tabela)
+        registrar(conn, c, tabela, linhas)
         resultado[tabela] = linhas
-
     return resultado
 
 
-def localizar_excels_leitura(pastas: Optional[Iterable[Path]] = None) -> list[Path]:
-    pastas_busca = list(pastas or [PASTA_LEITURA, PASTA_DASHBOARD, PASTA_ATUAL / "leitura", PASTA_ATUAL])
-    achados: dict[str, Path] = {}
-
-    for pasta in pastas_busca:
-        if not pasta.exists():
-            continue
-        for padrao in PADROES_EXCEL_LEITURA:
-            for caminho in pasta.glob(padrao):
-                if caminho.is_file() and caminho.suffix.lower() in [".xlsx", ".xls"]:
-                    achados[str(caminho.resolve())] = caminho.resolve()
-
-    return sorted(achados.values(), key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+def tabela_existe(conn: sqlite3.Connection, tabela: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tabela,)).fetchone() is not None
 
 
-def importar_excels_leitura(conn: sqlite3.Connection, limite_arquivos: Optional[int] = None) -> dict[str, int]:
-    """Importa as abas de leitura dos Excels gerados pelo extrator."""
-    arquivos = localizar_excels_leitura()
-    if limite_arquivos:
-        arquivos = arquivos[:limite_arquivos]
-
-    todas_tarefas = []
-    todos_resumos = []
-    resultado = {"leitura_tarefas": 0, "leitura_resumos": 0, "arquivos_lidos": 0}
-
-    for caminho in arquivos:
-        tipo = detectar_tipo_leitura(caminho)
-        base = detectar_base_por_nome(caminho)
-
-        try:
-            abas = pd.read_excel(caminho, sheet_name=None)
-        except Exception as e:
-            print(f"Aviso: não consegui ler {caminho.name}: {e}")
-            continue
-
-        resultado["arquivos_lidos"] += 1
-
-        for nome_aba, df in abas.items():
-            if df is None or df.empty:
-                continue
-
-            df = adicionar_metadados(df, caminho, origem=f"EXCEL_LEITURA_{tipo}")
-            df["_base_arquivo"] = base
-            df["_aba_excel"] = nome_aba
-
-            nome_aba_norm = nome_aba.upper().strip()
-            colunas_norm = {str(c).upper().strip() for c in df.columns}
-
-            # Abas detalhadas costumam ter TAREFA. Resumos costumam ter TOTAL TAREFAS ou FEITA/PENDENTE.
-            if "TAREFA" in colunas_norm or nome_aba_norm == "TAREFAS":
-                todas_tarefas.append(df)
-            elif any(c in colunas_norm for c in ["TOTAL TAREFAS", "FEITA", "PENDENTE", "PARCIAL"]):
-                todos_resumos.append(df)
-
-    if todas_tarefas:
-        df_tarefas = pd.concat(todas_tarefas, ignore_index=True)
-        linhas = salvar_dataframe(conn, df_tarefas, "leitura_tarefas", modo="replace")
-        resultado["leitura_tarefas"] = linhas
-
-    if todos_resumos:
-        df_resumos = pd.concat(todos_resumos, ignore_index=True)
-        linhas = salvar_dataframe(conn, df_resumos, "leitura_resumos", modo="replace")
-        resultado["leitura_resumos"] = linhas
-
-    return resultado
-
-
-
-# ==============================
-# PERFORMANCE V2 - NOTAS PROCESSADAS
-# ==============================
-
-def _txt(valor) -> str:
-    if pd.isna(valor):
-        return ""
-    texto = str(valor).strip()
-    if texto.endswith(".0"):
-        texto = texto[:-2]
-    return texto
-
-
-def _numero(valor, padrao=0.0) -> float:
-    try:
-        if pd.isna(valor):
-            return float(padrao)
-        if isinstance(valor, str):
-            valor = valor.replace(".", "").replace(",", ".") if "," in valor else valor
-        return float(valor)
-    except Exception:
-        return float(padrao)
-
-
-def _eh_disjuntor_jundiai(recurso) -> bool:
-    recurso_norm = _txt(recurso).upper()
-    return recurso_norm.startswith("JUN55") or recurso_norm.startswith("JUN59") or recurso_norm.startswith("SAL55")
-
-
-def _eh_disjuntor_santa_cruz(recurso) -> bool:
-    import re
-    recurso_norm = _txt(recurso).upper()
-    m = re.search(r"(\d+)", recurso_norm)
-    if not m:
-        return False
-    primeiros_numeros = m.group(1)
-    return primeiros_numeros.startswith("89") or primeiros_numeros.startswith("20")
-
-
-def criar_notas_processadas(conn: sqlite3.Connection) -> int:
-    try:
-        df = pd.read_sql_query('SELECT * FROM "notas"', conn)
-    except Exception:
-        return 0
-
-    if df.empty:
-        return 0
-    if len(df.columns) <= 1 or any(";" in str(c) for c in df.columns):
-        return 0
-
-    for col in ["ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "RECUSA", "ELETRICISTA1", "ELETRICISTA2", "DATA"]:
-        if col not in df.columns:
-            df[col] = ""
-        df[col] = df[col].apply(_txt).astype(str).str.strip()
-
-    if "QTD_EXECUTORES" not in df.columns:
-        df["QTD_EXECUTORES"] = ((df["ELETRICISTA1"] != "").astype(int) + (df["ELETRICISTA2"] != "").astype(int))
-    else:
-        df["QTD_EXECUTORES"] = pd.to_numeric(df["QTD_EXECUTORES"], errors="coerce").fillna(0).astype(int)
-
-    df["GRUPO_NOTA"] = df["GRUPO_NOTA"].astype(str).str.upper().str.strip()
-    df["RECURSO"] = df["RECURSO"].astype(str).str.upper().str.strip()
-    df["RECUSA"] = df["RECUSA"].fillna("").astype(str).str.strip()
-    df["EH_RECUSA"] = (df["RECUSA"] != "").astype(int)
-
-    tarifas = {
-        "JUNDIAI_CORTE": 13.72,
-        "JUNDIAI_RELIGUE": 27.43,
-        "SANTA_CORTE": 11.98,
-        "SANTA_RELIGUE": 23.97,
-        "STC_CORTE_MIN": 38.18,
-        "STC_RELIGUE_MIN": 36.36,
-        "STC_CORTE_MAX": 45.45,
-        "STC_RELIGUE_MAX": 50.91,
-    }
-
-    contratos, fats, fats_min, fats_max, eh_corte, eh_religue, manter = [], [], [], [], [], [], []
-    for _, row in df.iterrows():
-        recurso = row.get("RECURSO", "")
-        grupo = row.get("GRUPO_NOTA", "")
-        qtd_exec = int(_numero(row.get("QTD_EXECUTORES", 0), 0))
-        recusa = _txt(row.get("RECUSA", "")) != ""
-        contrato = ""
-        fat = fat_min = fat_max = 0.0
-        if _eh_disjuntor_jundiai(recurso):
-            contrato = "Disjuntor Jundiaí"
-            if not recusa:
-                fat = {"CORTE": tarifas["JUNDIAI_CORTE"], "RELIGUE": tarifas["JUNDIAI_RELIGUE"]}.get(grupo, 0.0)
-                fat_min = fat_max = fat
-        elif _eh_disjuntor_santa_cruz(recurso):
-            contrato = "Disjuntor Santa Cruz"
-            if not recusa:
-                fat = {"CORTE": tarifas["SANTA_CORTE"], "RELIGUE": tarifas["SANTA_RELIGUE"]}.get(grupo, 0.0)
-                fat_min = fat_max = fat
-        elif str(recurso).startswith("JUN58") and qtd_exec >= 2:
-            contrato = "STC Jundiai"
-            if not recusa:
-                fat_min = {"CORTE": tarifas["STC_CORTE_MIN"], "RELIGUE": tarifas["STC_RELIGUE_MIN"]}.get(grupo, 0.0)
-                fat_max = {"CORTE": tarifas["STC_CORTE_MAX"], "RELIGUE": tarifas["STC_RELIGUE_MAX"]}.get(grupo, 0.0)
-                fat = fat_min
-        manter.append(bool(contrato))
-        contratos.append(contrato); fats.append(fat); fats_min.append(fat_min); fats_max.append(fat_max)
-        eh_corte.append(1 if (grupo == "CORTE" and not recusa) else 0)
-        eh_religue.append(1 if (grupo == "RELIGUE" and not recusa) else 0)
-
-    out = df.loc[manter].copy()
-    if out.empty:
-        return 0
-    out["CONTRATO"] = [c for c, m in zip(contratos, manter) if m]
-    out["FATURAMENTO"] = [v for v, m in zip(fats, manter) if m]
-    out["FATURAMENTO_MIN"] = [v for v, m in zip(fats_min, manter) if m]
-    out["FATURAMENTO_MAX"] = [v for v, m in zip(fats_max, manter) if m]
-    out["EH_CORTE"] = [v for v, m in zip(eh_corte, manter) if m]
-    out["EH_RELIGUE"] = [v for v, m in zip(eh_religue, manter) if m]
-    out["DATA_DT"] = pd.to_datetime(out["DATA"], dayfirst=True, errors="coerce")
-    out = out.dropna(subset=["DATA_DT"]).copy()
-    out["DATA"] = out["DATA_DT"].dt.strftime("%d/%m/%Y")
-    out["DATA_DT"] = out["DATA_DT"].dt.strftime("%Y-%m-%d")
-    out["MES"] = pd.to_datetime(out["DATA_DT"], errors="coerce").dt.strftime("%m/%Y")
-    return salvar_dataframe(conn, out, "notas_processadas", modo="replace")
-
-
-def criar_resumos_performance(conn: sqlite3.Connection) -> dict[str, int]:
-    resultado = {"notas_processadas": criar_notas_processadas(conn)}
-    try:
-        conn.execute('DROP TABLE IF EXISTS resumo_dia_contrato')
-        conn.execute("""
-            CREATE TABLE resumo_dia_contrato AS
-            SELECT DATA, DATA_DT, CONTRATO,
-                   COUNT(DISTINCT CASE WHEN EH_RECUSA = 0 THEN ORDEM_DE_SERVICO END) AS TOTAL_NOTAS,
-                   SUM(EH_CORTE) AS CORTES,
-                   SUM(EH_RELIGUE) AS RELIGUES,
-                   SUM(CASE WHEN EH_RECUSA = 1 THEN 1 ELSE 0 END) AS RECUSAS,
-                   COUNT(DISTINCT RECURSO) AS RECURSOS_ATIVOS,
-                   SUM(FATURAMENTO) AS FATURAMENTO,
-                   SUM(FATURAMENTO_MIN) AS FATURAMENTO_MIN,
-                   SUM(FATURAMENTO_MAX) AS FATURAMENTO_MAX
-            FROM notas_processadas
-            GROUP BY DATA, DATA_DT, CONTRATO
-        """)
-        resultado["resumo_dia_contrato"] = conn.execute('SELECT COUNT(*) FROM resumo_dia_contrato').fetchone()[0]
-    except Exception:
-        resultado["resumo_dia_contrato"] = 0
-    try:
-        conn.execute('DROP TABLE IF EXISTS resumo_dia_recurso')
-        conn.execute("""
-            CREATE TABLE resumo_dia_recurso AS
-            SELECT DATA, DATA_DT, CONTRATO, RECURSO,
-                   COUNT(DISTINCT CASE WHEN EH_RECUSA = 0 THEN ORDEM_DE_SERVICO END) AS TOTAL_NOTAS,
-                   SUM(EH_CORTE) AS CORTES,
-                   SUM(EH_RELIGUE) AS RELIGUES,
-                   SUM(CASE WHEN EH_RECUSA = 1 THEN 1 ELSE 0 END) AS RECUSAS,
-                   SUM(FATURAMENTO) AS FATURAMENTO,
-                   SUM(FATURAMENTO_MIN) AS FATURAMENTO_MIN,
-                   SUM(FATURAMENTO_MAX) AS FATURAMENTO_MAX
-            FROM notas_processadas
-            GROUP BY DATA, DATA_DT, CONTRATO, RECURSO
-        """)
-        resultado["resumo_dia_recurso"] = conn.execute('SELECT COUNT(*) FROM resumo_dia_recurso').fetchone()[0]
-    except Exception:
-        resultado["resumo_dia_recurso"] = 0
-    conn.commit()
-    return resultado
+def colunas(conn: sqlite3.Connection, tabela: str) -> set[str]:
+    if not tabela_existe(conn, tabela):
+        return set()
+    return {r[1] for r in conn.execute(f'PRAGMA table_info("{tabela}")').fetchall()}
 
 
 def criar_indices(conn: sqlite3.Connection) -> None:
-    """Cria indices simples para acelerar filtros comuns. Ignora se a coluna nao existir."""
-    indices = [
-        ("notas", "CONTRATO"),
-        ("notas", "RECURSO"),
-        ("notas_processadas", "DATA"),
-        ("notas_processadas", "DATA_DT"),
-        ("notas_processadas", "CONTRATO"),
-        ("notas_processadas", "RECURSO"),
-        ("notas_processadas", "MES"),
-        ("resumo_dia_contrato", "DATA"),
-        ("resumo_dia_contrato", "CONTRATO"),
-        ("resumo_dia_recurso", "DATA"),
-        ("resumo_dia_recurso", "CONTRATO"),
-        ("resumo_dia_recurso", "RECURSO"),
-        ("faturamento_contratos", "CONTRATO"),
-        ("faturamento_dias", "CONTRATO"),
-        ("leitura_tarefas", "BASE"),
-        ("leitura_tarefas", "MUNICÍPIO"),
-        ("leitura_tarefas", "D OPERACIONAL"),
-        ("leitura_tarefas", "STATUS OPERACIONAL"),
-        ("leitura_tarefas", "_base_arquivo"),
+    specs = [
+        ('notas', 'DATA'), ('notas', 'CONTRATO'), ('notas', 'RECURSO'), ('notas', 'GRUPO_NOTA'),
+        ('faturamento_contratos', 'CONTRATO'),
+        ('faturamento_dias', 'CONTRATO'), ('faturamento_dias', 'DATA'),
+        ('faturamento_carro_dias', 'CONTRATO'), ('faturamento_carro_dias', 'DATA'),
     ]
-
-    for tabela, coluna in indices:
+    for tabela, coluna in specs:
         try:
-            nome_indice = limpar_nome_tabela(f"idx_{tabela}_{coluna}")
-            conn.execute(f'CREATE INDEX IF NOT EXISTS "{nome_indice}" ON "{tabela}" ("{coluna}")')
+            if tabela_existe(conn, tabela) and coluna in colunas(conn, tabela):
+                idx = f'idx_{tabela}_{coluna}'.replace(' ', '_').replace('.', '').replace('-', '_')
+                conn.execute(f'CREATE INDEX IF NOT EXISTS "{idx}" ON "{tabela}" ("{coluna}")')
         except Exception:
             pass
-    conn.commit()
 
 
+def criar_resumos(conn: sqlite3.Connection) -> dict[str, int]:
+    """Cria tabelas pequenas para o painel usar depois sem recalcular tudo."""
+    out = {}
+    if not tabela_existe(conn, 'notas'):
+        return out
+    cols = colunas(conn, 'notas')
 
-
-def _tabela_existe_conn(conn: sqlite3.Connection, tabela: str) -> bool:
+    # resumo_dia
     try:
-        return conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (tabela,)).fetchone() is not None
-    except Exception:
-        return False
-
-
-def _copiar_tabela_para_dashboard(conn_origem: sqlite3.Connection, conn_destino: sqlite3.Connection, tabela: str, colunas: Optional[list[str]] = None) -> int:
-    """Copia uma tabela do banco completo para o banco leve.
-
-    Quando colunas for informado, copia apenas as colunas existentes. Isso reduz muito
-    o tamanho do arquivo que vai para o GitHub/Streamlit.
-    """
-    if not _tabela_existe_conn(conn_origem, tabela):
-        return 0
-
-    try:
-        info = pd.read_sql_query(f'PRAGMA table_info("{tabela}")', conn_origem)
-        existentes = info.get("name", pd.Series(dtype=str)).astype(str).tolist()
-        if colunas:
-            escolhidas = [c for c in colunas if c in existentes]
-            if not escolhidas:
-                return 0
-            sql_cols = ", ".join([f'"{c}"' for c in escolhidas])
-            df = pd.read_sql_query(f'SELECT {sql_cols} FROM "{tabela}"', conn_origem)
-        else:
-            df = pd.read_sql_query(f'SELECT * FROM "{tabela}"', conn_origem)
-        if df.empty:
-            return 0
-        df.to_sql(tabela, conn_destino, if_exists="replace", index=False)
-        return len(df)
+        if {'DATA', 'CONTRATO'}.issubset(cols):
+            grupo = 'GRUPO_NOTA' if 'GRUPO_NOTA' in cols else None
+            recurso = 'RECURSO' if 'RECURSO' in cols else None
+            ordem = 'ORDEM_DE_SERVICO' if 'ORDEM_DE_SERVICO' in cols else None
+            expr_corte = "SUM(CASE WHEN UPPER(COALESCE(GRUPO_NOTA,'')) LIKE '%CORTE%' THEN 1 ELSE 0 END)" if grupo else '0'
+            expr_religue = "SUM(CASE WHEN UPPER(COALESCE(GRUPO_NOTA,'')) LIKE '%RELIG%' THEN 1 ELSE 0 END)" if grupo else '0'
+            expr_recursos = f'COUNT(DISTINCT "{recurso}")' if recurso else '0'
+            expr_notas = f'COUNT(DISTINCT "{ordem}")' if ordem else 'COUNT(*)'
+            conn.execute('DROP TABLE IF EXISTS resumo_dia')
+            conn.execute(f'''
+                CREATE TABLE resumo_dia AS
+                SELECT
+                    DATA,
+                    CONTRATO,
+                    {expr_notas} AS TOTAL_NOTAS,
+                    {expr_corte} AS CORTES,
+                    {expr_religue} AS RELIGUES,
+                    {expr_recursos} AS RECURSOS_ATIVOS
+                FROM notas
+                GROUP BY DATA, CONTRATO
+            ''')
+            out['resumo_dia'] = conn.execute('SELECT COUNT(*) FROM resumo_dia').fetchone()[0]
     except Exception as e:
-        print(f"Aviso: não consegui copiar {tabela} para banco leve: {e}")
-        return 0
+        out['erro_resumo_dia'] = str(e)
 
-
-def criar_banco_dashboard_leve(caminho_completo: Path | str = BANCO_PADRAO, caminho_leve: Path | str = BANCO_DASHBOARD_LEVE) -> dict[str, int]:
-    """Cria dashboard/gzus_dashboard.db, menor que o banco completo.
-
-    Este é o banco correto para subir no GitHub/Streamlit. Ele não carrega as tabelas
-    brutas enormes; mantém só o necessário para o painel abrir rápido.
-    """
-    caminho_completo = Path(caminho_completo)
-    caminho_leve = Path(caminho_leve)
-    garantir_pastas()
-    if caminho_leve.exists():
-        caminho_leve.unlink()
-
-    resultado: dict[str, int] = {}
-    conn_origem = sqlite3.connect(str(caminho_completo))
-    conn_destino = sqlite3.connect(str(caminho_leve))
-    conn_destino.execute("PRAGMA journal_mode=DELETE")
-    conn_destino.execute("PRAGMA synchronous=OFF")
-
-    colunas_notas_processadas = [
-        "ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "RECUSA",
-        "ELETRICISTA1", "ELETRICISTA2", "QTD_EXECUTORES",
-        "DATA", "DATA_DT", "MES", "CONTRATO",
-        "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX",
-        "EH_CORTE", "EH_RELIGUE", "EH_RECUSA",
-    ]
-
-    resultado["notas_processadas"] = _copiar_tabela_para_dashboard(conn_origem, conn_destino, "notas_processadas", colunas_notas_processadas)
-
-    # Tabelas pequenas que o app ainda usa diretamente.
-    for tabela in [
-        "faturamento_contratos",
-        "faturamento_dias",
-        "faturamento_carro_estimado",
-        "faturamento_carro_dias",
-        "resumo_dia_contrato",
-        "resumo_dia_recurso",
-    ]:
-        resultado[tabela] = _copiar_tabela_para_dashboard(conn_origem, conn_destino, tabela)
-
-    # Controle mínimo para auditoria do que foi gerado.
-    if _tabela_existe_conn(conn_origem, "controle_importacao"):
-        try:
-            df_ctrl = pd.read_sql_query('SELECT * FROM "controle_importacao" ORDER BY id DESC LIMIT 50', conn_origem)
-            df_ctrl.to_sql("controle_importacao", conn_destino, if_exists="replace", index=False)
-            resultado["controle_importacao"] = len(df_ctrl)
-        except Exception:
-            resultado["controle_importacao"] = 0
-
-    criar_indices(conn_destino)
+    # ranking_recursos_dia
     try:
-        conn_destino.execute("VACUUM")
-    except Exception:
-        pass
-    conn_destino.close()
-    conn_origem.close()
+        if {'DATA', 'CONTRATO', 'RECURSO'}.issubset(cols):
+            grupo = 'GRUPO_NOTA' if 'GRUPO_NOTA' in cols else None
+            ordem = 'ORDEM_DE_SERVICO' if 'ORDEM_DE_SERVICO' in cols else None
+            fat = 'FATURAMENTO' if 'FATURAMENTO' in cols else None
+            expr_corte = "SUM(CASE WHEN UPPER(COALESCE(GRUPO_NOTA,'')) LIKE '%CORTE%' THEN 1 ELSE 0 END)" if grupo else '0'
+            expr_religue = "SUM(CASE WHEN UPPER(COALESCE(GRUPO_NOTA,'')) LIKE '%RELIG%' THEN 1 ELSE 0 END)" if grupo else '0'
+            expr_notas = f'COUNT(DISTINCT "{ordem}")' if ordem else 'COUNT(*)'
+            expr_fat = f'SUM(COALESCE("{fat}",0))' if fat else '0'
+            conn.execute('DROP TABLE IF EXISTS ranking_recursos_dia')
+            conn.execute(f'''
+                CREATE TABLE ranking_recursos_dia AS
+                SELECT
+                    DATA,
+                    CONTRATO,
+                    RECURSO,
+                    {expr_notas} AS NOTAS,
+                    {expr_corte} AS CORTES,
+                    {expr_religue} AS RELIGUES,
+                    {expr_fat} AS FATURAMENTO_ATRIBUIDO
+                FROM notas
+                WHERE COALESCE(RECURSO,'') <> ''
+                GROUP BY DATA, CONTRATO, RECURSO
+            ''')
+            out['ranking_recursos_dia'] = conn.execute('SELECT COUNT(*) FROM ranking_recursos_dia').fetchone()[0]
+    except Exception as e:
+        out['erro_ranking_recursos_dia'] = str(e)
 
-    resultado["arquivo_kb"] = int(caminho_leve.stat().st_size / 1024) if caminho_leve.exists() else 0
-    return resultado
+    # meses disponíveis: tabelinha pequena para inicializar filtros sem varrer tudo no app.
+    try:
+        if 'DATA' in cols:
+            conn.execute('DROP TABLE IF EXISTS meses_notas')
+            conn.execute('''
+                CREATE TABLE meses_notas AS
+                SELECT DISTINCT substr(DATA, 4, 7) AS MES
+                FROM notas
+                WHERE DATA IS NOT NULL AND length(DATA) >= 10
+            ''')
+            out['meses_notas'] = conn.execute('SELECT COUNT(*) FROM meses_notas').fetchone()[0]
+    except Exception as e:
+        out['erro_meses_notas'] = str(e)
 
-
-def importar_tudo(caminho_banco: Path | str = BANCO_PADRAO, limite_excels: Optional[int] = None) -> dict:
-    conn = conectar(caminho_banco)
-    criar_tabela_controle(conn)
-
-    resultado = {
-        "banco": str(caminho_banco),
-        "csvs_dashboard": importar_csvs_dashboard(conn),
-        "excels_leitura": importar_excels_leitura(conn, limite_arquivos=limite_excels),
-    }
-    resultado["performance_v2"] = criar_resumos_performance(conn)
     criar_indices(conn)
+    for tabela, coluna in [('resumo_dia', 'DATA'), ('resumo_dia', 'CONTRATO'), ('ranking_recursos_dia', 'DATA'), ('ranking_recursos_dia', 'CONTRATO'), ('ranking_recursos_dia', 'RECURSO')]:
+        try:
+            if tabela_existe(conn, tabela) and coluna in colunas(conn, tabela):
+                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{tabela}_{coluna} ON {tabela} ("{coluna}")')
+        except Exception:
+            pass
+    return out
+
+
+def localizar_excels_leitura() -> list[Path]:
+    achados = {}
+    for pasta in [PASTA_LEITURA, PASTA_DASHBOARD, PASTA_ATUAL / 'leitura', PASTA_ATUAL]:
+        if not pasta.exists():
+            continue
+        for padrao in PADROES_LEITURA:
+            for c in pasta.glob(padrao):
+                if c.is_file() and c.suffix.lower() in ['.xlsx', '.xls']:
+                    achados[str(c.resolve())] = c.resolve()
+    return sorted(achados.values(), key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+
+
+def importar_leitura_completa(conn: sqlite3.Connection, limite: Optional[int] = None) -> dict[str, int]:
+    arquivos = localizar_excels_leitura()
+    if limite:
+        arquivos = arquivos[:limite]
+    tarefas, resumos = [], []
+    out = {'arquivos_lidos': 0, 'leitura_tarefas': 0, 'leitura_resumos': 0}
+    for caminho in arquivos:
+        try:
+            abas = pd.read_excel(caminho, sheet_name=None)
+        except Exception as e:
+            print(f'Aviso: não consegui ler {caminho.name}: {e}')
+            continue
+        out['arquivos_lidos'] += 1
+        for aba, df in abas.items():
+            if df is None or df.empty:
+                continue
+            df = df.copy()
+            df['_origem_arquivo'] = caminho.name
+            df['_aba_excel'] = aba
+            cols_norm = {str(c).upper().strip() for c in df.columns}
+            if 'TAREFA' in cols_norm or aba.upper().strip() == 'TAREFAS':
+                tarefas.append(df)
+            elif any(c in cols_norm for c in ['TOTAL TAREFAS', 'TOTAL TAREFA', 'FEITA', 'PENDENTE', 'PARCIAL']):
+                resumos.append(df)
+    if tarefas:
+        out['leitura_tarefas'] = salvar_df(conn, pd.concat(tarefas, ignore_index=True), 'leitura_tarefas')
+    if resumos:
+        out['leitura_resumos'] = salvar_df(conn, pd.concat(resumos, ignore_index=True), 'leitura_resumos')
+    return out
+
+
+def otimizar(conn: sqlite3.Connection) -> None:
+    conn.commit()
     try:
-        conn.execute("VACUUM")
+        conn.execute('VACUUM')
     except Exception:
         pass
-    conn.close()
 
-    # Além do banco completo local, gera um banco leve para GitHub/Streamlit.
-    try:
-        resultado["dashboard_leve"] = criar_banco_dashboard_leve(caminho_banco, BANCO_DASHBOARD_LEVE)
-        resultado["dashboard_leve_arquivo"] = str(BANCO_DASHBOARD_LEVE)
-    except Exception as e:
-        resultado["dashboard_leve_erro"] = str(e)
+
+def importar_tudo(limite_excels: Optional[int] = None) -> dict:
+    garantir_pastas()
+    resultado = {'completo': {}, 'dashboard': {}}
+
+    # Banco completo local: pode guardar leitura bruta também.
+    with conectar(BANCO_COMPLETO) as conn:
+        resultado['completo']['csvs'] = importar_csvs(conn, incluir_metadados=True)
+        resultado['completo']['resumos'] = criar_resumos(conn)
+        resultado['completo']['leitura'] = importar_leitura_completa(conn, limite=limite_excels)
+        conn.commit()
+    with conectar(BANCO_COMPLETO) as conn:
+        otimizar(conn)
+
+    # Banco leve do Streamlit: só o que o app precisa rápido.
+    with conectar(BANCO_DASHBOARD) as conn:
+        resultado['dashboard']['csvs'] = importar_csvs(conn, incluir_metadados=False)
+        resultado['dashboard']['resumos'] = criar_resumos(conn)
+        conn.commit()
+    with conectar(BANCO_DASHBOARD) as conn:
+        otimizar(conn)
+
+    resultado['arquivos'] = {
+        'gzus_db': str(BANCO_COMPLETO.resolve()),
+        'gzus_dashboard_db': str(BANCO_DASHBOARD.resolve()),
+        'tamanho_gzus_kb': round(BANCO_COMPLETO.stat().st_size / 1024, 1) if BANCO_COMPLETO.exists() else 0,
+        'tamanho_dashboard_kb': round(BANCO_DASHBOARD.stat().st_size / 1024, 1) if BANCO_DASHBOARD.exists() else 0,
+    }
     return resultado
 
 
-# ==============================
-# LEITURA PARA O DASHBOARD
-# ==============================
-
-def tabela_existe(conn: sqlite3.Connection, tabela: str) -> bool:
-    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (limpar_nome_tabela(tabela),))
-    return cur.fetchone() is not None
-
-
-def ler_tabela(tabela: str, caminho_banco: Path | str = BANCO_PADRAO, limite: Optional[int] = None) -> pd.DataFrame:
-    conn = conectar(caminho_banco)
-    tabela_limpa = limpar_nome_tabela(tabela)
-    if not tabela_existe(conn, tabela_limpa):
-        conn.close()
+def resumo_banco(caminho: Path | str) -> pd.DataFrame:
+    caminho = Path(caminho)
+    if not caminho.exists():
         return pd.DataFrame()
-    sql = f'SELECT * FROM "{tabela_limpa}"'
-    if limite:
-        sql += f" LIMIT {int(limite)}"
-    df = pd.read_sql_query(sql, conn)
-    conn.close()
-    return df
+    with sqlite3.connect(str(caminho)) as conn:
+        tabelas = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name", conn)
+        linhas = []
+        for t in tabelas['name'].tolist():
+            try:
+                qtd = conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
+            except Exception:
+                qtd = None
+            linhas.append({'banco': caminho.name, 'tabela': t, 'linhas': qtd})
+        return pd.DataFrame(linhas)
 
-
-def consulta_sql(sql: str, caminho_banco: Path | str = BANCO_PADRAO, params: Optional[tuple] = None) -> pd.DataFrame:
-    conn = conectar(caminho_banco)
-    df = pd.read_sql_query(sql, conn, params=params or ())
-    conn.close()
-    return df
-
-
-def resumo_banco(caminho_banco: Path | str = BANCO_PADRAO) -> pd.DataFrame:
-    conn = conectar(caminho_banco)
-    tabelas = pd.read_sql_query(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
-        conn,
-    )
-    linhas = []
-    for tabela in tabelas["name"].tolist():
-        try:
-            qtd = conn.execute(f'SELECT COUNT(*) FROM "{tabela}"').fetchone()[0]
-        except Exception:
-            qtd = None
-        linhas.append({"tabela": tabela, "linhas": qtd})
-    conn.close()
-    return pd.DataFrame(linhas)
-
-
-# ==============================
-# LINHA DE COMANDO
-# ==============================
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Banco SQLite do sistema G.Z.U.S.")
-    parser.add_argument("acao", choices=["importar", "resumo"], help="O que deseja fazer")
-    parser.add_argument("--banco", default=str(BANCO_PADRAO), help="Caminho do arquivo .db")
-    parser.add_argument("--limite-excels", type=int, default=None, help="Limita quantos Excels de leitura importar")
+    parser = argparse.ArgumentParser(description='Banco SQLite do sistema G.Z.U.S.')
+    parser.add_argument('acao', choices=['importar', 'resumo'], help='O que deseja fazer')
+    parser.add_argument('--limite-excels', type=int, default=None, help='Limita quantos Excels de leitura importar no banco completo')
     args = parser.parse_args()
 
-    caminho_banco = Path(args.banco)
-
-    if args.acao == "importar":
-        resultado = importar_tudo(caminho_banco, limite_excels=args.limite_excels)
-        print(json.dumps(resultado, ensure_ascii=False, indent=2))
-        print("\nImportação finalizada.")
-        print(f"Banco criado/atualizado em: {caminho_banco.resolve()}")
-
-    elif args.acao == "resumo":
-        df = resumo_banco(caminho_banco)
+    if args.acao == 'importar':
+        r = importar_tudo(limite_excels=args.limite_excels)
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        print('\nImportação finalizada.')
+        print(f'Banco completo: {BANCO_COMPLETO.resolve()}')
+        print(f'Banco leve do dashboard: {BANCO_DASHBOARD.resolve()}')
+    else:
+        dfs = [resumo_banco(BANCO_COMPLETO), resumo_banco(BANCO_DASHBOARD)]
+        df = pd.concat([d for d in dfs if not d.empty], ignore_index=True) if any(not d.empty for d in dfs) else pd.DataFrame()
         if df.empty:
-            print("Banco vazio ou ainda não criado.")
+            print('Bancos ainda não criados.')
         else:
             print(df.to_string(index=False))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
