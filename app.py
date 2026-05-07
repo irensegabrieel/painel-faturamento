@@ -427,17 +427,19 @@ ARQUIVOS = {
 # SQLITE / BANCO LOCAL OPCIONAL
 # ==============================
 # O painel continua funcionando com CSV/Excel.
-# Quando dashboard/gzus_dashboard.db existir, ele tenta ler primeiro o banco leve.
-# Se algo falhar ou o banco não tiver a tabela esperada, volta automaticamente para CSV/Excel.
+# Quando dashboard/gzus.db existir, ele tenta ler primeiro do SQLite.
+# Se algo falhar ou o banco não tiver a tabela esperada, volta automaticamente para os CSVs.
 BANCO_GZUS_CANDIDATOS = [
+    # Banco leve gerado para o Streamlit Cloud: carrega mais rápido e evita arquivo gigante.
     PASTA_DASHBOARD / "gzus_dashboard.db",
+    # Fallback local/completo, usado só se o banco leve não existir.
     PASTA_DASHBOARD / "gzus.db",
     PASTA_ATUAL / "gzus_dashboard.db",
     PASTA_ATUAL / "gzus.db",
 ]
 
 TABELAS_SQLITE_DASHBOARD = {
-    "notas": "notas_processadas",
+    "notas": "notas",
     "contratos": "faturamento_contratos",
     "dias": "faturamento_dias",
     "carro": "faturamento_carro_estimado",
@@ -480,27 +482,29 @@ ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domi
 
 # Atualização mais curta para evitar que o Streamlit fique preso em dados antigos.
 # O cache continua existindo para não pesar o app, mas agora é revalidado com frequência.
-CACHE_TTL_SEGUNDOS = int(secret_float("CACHE_TTL_SEGUNDOS", 60))
-CACHE_TTL_RANKING_SEGUNDOS = int(secret_float("CACHE_TTL_RANKING_SEGUNDOS", 300))
-GITHUB_SYNC_INTERVALO_SEGUNDOS = int(secret_float("GITHUB_SYNC_INTERVALO_SEGUNDOS", 60))
+CACHE_TTL_SEGUNDOS = int(secret_float("CACHE_TTL_SEGUNDOS", 600))
+CACHE_TTL_RANKING_SEGUNDOS = int(secret_float("CACHE_TTL_RANKING_SEGUNDOS", 900))
+GITHUB_SYNC_INTERVALO_SEGUNDOS = int(secret_float("GITHUB_SYNC_INTERVALO_SEGUNDOS", 300))
 STATUS_GITHUB_SYNC_PATH = Path(tempfile.gettempdir()) / "gzus_github_sync_status.json"
 
-# Atualiza a página automaticamente a cada 1 minuto.
-# Isso não substitui a sincronização com o GitHub: apenas faz a tela reler os dados.
-st.markdown(
-    """
-    <script>
-    setTimeout(function(){
-        window.location.reload();
-    }, 60000);
-    </script>
-    """,
-    unsafe_allow_html=True
-)
+# Auto refresh desligado por padrão para acelerar a abertura e evitar recarregamentos enquanto usa filtros.
+# Para religar pelo Streamlit Secrets: AUTO_RELOAD_PAINEL = "true".
+if str(secret_value("AUTO_RELOAD_PAINEL", "false") or "false").strip().lower() in ["1", "true", "sim", "yes", "on"]:
+    intervalo_reload_ms = int(secret_float("AUTO_RELOAD_INTERVALO_MS", 300000))
+    st.markdown(
+        f"""
+        <script>
+        setTimeout(function(){{
+            window.location.reload();
+        }}, {intervalo_reload_ms});
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
 
 
 def _github_sync_habilitado():
-    valor = str(secret_value("SINCRONIZAR_GITHUB_AUTO", "true") or "true").strip().lower()
+    valor = str(secret_value("SINCRONIZAR_GITHUB_AUTO", "false") or "false").strip().lower()
     return valor not in ["0", "false", "nao", "não", "no", "off"]
 
 
@@ -2297,33 +2301,6 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
     """
     if notas.empty:
         return pd.DataFrame()
-
-    # ATALHO DE PERFORMANCE SQLITE V2:
-    # Quando o banco_gzus.py já entrega a tabela notas_processadas, ela já vem
-    # com CONTRATO, FATURAMENTO, EH_CORTE, EH_RELIGUE e EH_RECUSA calculados.
-    # Assim evitamos varrer linha a linha quase 80 mil notas a cada troca de filtro.
-    colunas_prontas = {"CONTRATO", "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX", "EH_CORTE", "EH_RELIGUE", "EH_RECUSA"}
-    if colunas_prontas.issubset(set(notas.columns)):
-        df_pronta = notas.copy()
-        for col in ["ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "RECUSA", "ELETRICISTA1", "ELETRICISTA2", "DATA", "CONTRATO"]:
-            if col not in df_pronta.columns:
-                df_pronta[col] = ""
-            df_pronta[col] = df_pronta[col].fillna("").astype(str).str.strip()
-        for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX", "EH_CORTE", "EH_RELIGUE", "EH_RECUSA", "QTD_EXECUTORES"]:
-            if col in df_pronta.columns:
-                df_pronta[col] = pd.to_numeric(df_pronta[col], errors="coerce").fillna(0)
-        df_pronta["EH_CORTE"] = df_pronta["EH_CORTE"].astype(int)
-        df_pronta["EH_RELIGUE"] = df_pronta["EH_RELIGUE"].astype(int)
-        df_pronta["EH_RECUSA"] = df_pronta["EH_RECUSA"].astype(int)
-        if not incluir_recusas:
-            df_pronta = df_pronta[df_pronta["EH_RECUSA"] == 0].copy()
-        if "DATA_DT" in df_pronta.columns:
-            df_pronta["DATA_DT"] = pd.to_datetime(df_pronta["DATA_DT"], dayfirst=True, errors="coerce")
-        else:
-            df_pronta["DATA_DT"] = pd.to_datetime(df_pronta["DATA"], dayfirst=True, errors="coerce")
-        df_pronta = df_pronta.dropna(subset=["DATA_DT"]).copy()
-        df_pronta["DATA"] = df_pronta["DATA_DT"].dt.strftime("%d/%m/%Y")
-        return df_pronta
 
     df = notas.copy()
 
@@ -5555,7 +5532,13 @@ try:
     fontes_usadas = st.session_state.get("fontes_dados_dashboard", {})
     com_sqlite = [k for k, v in fontes_usadas.items() if v == "sqlite"]
     if com_sqlite:
-        st.sidebar.caption("🚀 SQLite V2 ativo: " + ", ".join(com_sqlite))
+        st.sidebar.caption("🗄️ SQLite ativo: " + ", ".join(com_sqlite))
+        try:
+            banco_usado = caminho_banco_gzus()
+            if banco_usado:
+                st.sidebar.caption(f"Banco: {banco_usado.name}")
+        except Exception:
+            pass
 except Exception:
     pass
 
@@ -5575,13 +5558,15 @@ notas = bases.get("notas", pd.DataFrame())
 # Perfis restritos têm telas próprias para evitar exposição acidental de dados financeiros.
 if PERFIL_ACESSO == "supervisor_leitura":
     mostrar_painel_supervisor_leitura()
-    mostrar_chatbot_popup(pd.DataFrame(), pode_ver_financeiro=False, pode_ver_express=False, modo_leitura=True)
+    if str(secret_value("ASSISTENTE_GZUS_AUTO", "false") or "false").strip().lower() in ["1", "true", "sim", "yes", "on"]:
+        mostrar_chatbot_popup(pd.DataFrame(), pode_ver_financeiro=False, pode_ver_express=False, modo_leitura=True)
     st.stop()
 
 if PERFIL_ACESSO == "supervisor_stc":
     mostrar_painel_supervisor_stc(bases)
     if not notas.empty:
-        mostrar_chatbot_popup(notas, pode_ver_financeiro=False, pode_ver_express=False)
+        if str(secret_value("ASSISTENTE_GZUS_AUTO", "false") or "false").strip().lower() in ["1", "true", "sim", "yes", "on"]:
+            mostrar_chatbot_popup(notas, pode_ver_financeiro=False, pode_ver_express=False)
     st.stop()
 
 st.title("🤖 G.Z.U.S. — Gestão Inteligente de Serviços")
@@ -5597,8 +5582,10 @@ if st.session_state.pop("github_dados_atualizados_sem_recarregar", False):
 if faltando:
     st.warning("Arquivos não encontrados: " + ", ".join(faltando))
 
-# Popup do assistente: usa os mesmos dados do painel, sem depender de API externa.
-if PERFIL_ACESSO == "gerente" and not notas.empty:
+# Popup do assistente desligado por padrão para acelerar a primeira carga.
+# Para carregar automaticamente pelo Secrets: ASSISTENTE_GZUS_AUTO = "true".
+ASSISTENTE_GZUS_AUTO = str(secret_value("ASSISTENTE_GZUS_AUTO", "false") or "false").strip().lower() in ["1", "true", "sim", "yes", "on"]
+if PERFIL_ACESSO == "gerente" and not notas.empty and ASSISTENTE_GZUS_AUTO:
     mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True)
 
 # ==============================
@@ -5606,6 +5593,14 @@ if PERFIL_ACESSO == "gerente" and not notas.empty:
 # ==============================
 
 st.sidebar.header("Filtros")
+
+if PERFIL_ACESSO == "gerente" and not ASSISTENTE_GZUS_AUTO:
+    if "assistente_gzus_carregado" not in st.session_state:
+        st.session_state.assistente_gzus_carregado = False
+    if st.sidebar.button("🤖 Carregar assistente", use_container_width=True):
+        st.session_state.assistente_gzus_carregado = True
+    if st.session_state.get("assistente_gzus_carregado") and not notas.empty:
+        mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True)
 
 if st.sidebar.button("🔄 Atualizar dados", use_container_width=True):
     status_manual = sincronizar_github_se_preciso(forcar=True)
