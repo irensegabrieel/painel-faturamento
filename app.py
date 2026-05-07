@@ -383,6 +383,12 @@ if "nome_acesso" not in st.session_state:
     st.session_state.nome_acesso = ""
 
 if not st.session_state.autenticado:
+    st.markdown("""
+    <style>
+    section[data-testid="stSidebar"] {display: none !important;}
+    .main .block-container {max-width: 760px; padding-top: 7rem;}
+    </style>
+    """, unsafe_allow_html=True)
     st.title("🔒 Acesso restrito")
     st.caption("Entre com o perfil autorizado para acessar o painel.")
 
@@ -489,18 +495,8 @@ GITHUB_SYNC_INTERVALO_SEGUNDOS = int(secret_float("GITHUB_SYNC_INTERVALO_SEGUNDO
 STATUS_GITHUB_SYNC_PATH = Path(tempfile.gettempdir()) / "gzus_github_sync_status.json"
 LEITURA_HABILITADA = False  # Removido temporariamente para deixar o painel principal mais leve.
 
-# Atualiza a página automaticamente a cada 1 minuto.
-# Isso não substitui a sincronização com o GitHub: apenas faz a tela reler os dados.
-st.markdown(
-    """
-    <script>
-    setTimeout(function(){
-        window.location.reload();
-    }, 300000);
-    </script>
-    """,
-    unsafe_allow_html=True
-)
+# Recarregamento automático por JavaScript removido para evitar travamentos e tela piscando.
+# Use o botão "Atualizar dados" quando quiser puxar o GitHub manualmente.
 
 
 def _github_sync_habilitado():
@@ -2253,6 +2249,136 @@ def carregar_bases():
 
 
 # ==============================
+# CARREGAMENTO RÁPIDO POR SQL
+# ==============================
+# Esta parte evita carregar a tabela grande de notas no pós-login.
+# O app carrega primeiro só as tabelas pequenas e, depois, busca notas do período escolhido.
+
+COLUNAS_NOTAS_MINIMAS = [
+    "ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "RECUSA",
+    "ELETRICISTA1", "ELETRICISTA2", "DATA", "DATA_ENCERRAMENTO",
+    "QTD_EXECUTORES", "CONTRATO", "MUNICIPIO", "BAIRRO", "STATUS",
+]
+
+
+def carregar_bases_leves():
+    bases = {}
+    faltando = []
+    fontes = {}
+    for chave, nome in ARQUIVOS.items():
+        if chave == "notas":
+            continue
+        df, fonte = ler_base_dashboard(chave, nome)
+        if not df.empty:
+            bases[chave] = df
+            fontes[chave] = fonte
+        else:
+            faltando.append(nome)
+            fontes[chave] = fonte
+    st.session_state["fontes_dados_dashboard"] = fontes
+    return bases, faltando
+
+
+def _sqlite_colunas(caminho_banco_str, tabela):
+    try:
+        with sqlite3.connect(caminho_banco_str) as conn:
+            return [r[1] for r in conn.execute(f'PRAGMA table_info("{tabela}")').fetchall()]
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def meses_disponiveis_sql_cache(caminho_banco_str, tabela, mtime_banco):
+    del mtime_banco
+    cols = _sqlite_colunas(caminho_banco_str, tabela)
+    col_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in cols else ("DATA" if "DATA" in cols else "")
+    if not col_data:
+        return pd.DataFrame(columns=["MES", "PERIODO"])
+    with sqlite3.connect(caminho_banco_str) as conn:
+        df = pd.read_sql_query(f'SELECT DISTINCT "{col_data}" AS DATA_REF FROM "{tabela}" WHERE "{col_data}" IS NOT NULL', conn)
+    if df.empty:
+        return pd.DataFrame(columns=["MES", "PERIODO"])
+    datas = pd.to_datetime(df["DATA_REF"], dayfirst=True, errors="coerce")
+    meses = pd.DataFrame({"PERIODO": datas.dt.to_period("M")}).dropna().drop_duplicates().sort_values("PERIODO", ascending=False)
+    if meses.empty:
+        return pd.DataFrame(columns=["MES", "PERIODO"])
+    meses["MES"] = meses["PERIODO"].dt.strftime("%m/%Y")
+    return meses[["MES", "PERIODO"]].reset_index(drop=True)
+
+
+def meses_disponiveis_rapido():
+    caminho = caminho_banco_gzus()
+    tabela = TABELAS_SQLITE_DASHBOARD.get("notas")
+    if sqlite_ativado() and caminho and tabela and _sqlite_tabela_existe(caminho, tabela):
+        try:
+            return meses_disponiveis_sql_cache(str(caminho), tabela, caminho.stat().st_mtime)
+        except Exception:
+            pass
+    df, _ = ler_base_dashboard("notas", ARQUIVOS["notas"])
+    return meses_disponiveis_da_base(df)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def ler_notas_sql_periodo_cache(caminho_banco_str, tabela, meses, mtime_banco):
+    del mtime_banco
+    cols = _sqlite_colunas(caminho_banco_str, tabela)
+    if not cols:
+        return pd.DataFrame()
+    colunas = [c for c in COLUNAS_NOTAS_MINIMAS if c in cols]
+    if not colunas:
+        colunas = cols
+    select_cols = ", ".join([f'"{c}"' for c in colunas])
+    where = []
+    params = []
+    meses = list(meses or [])
+    col_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in cols else ("DATA" if "DATA" in cols else "")
+    if meses and col_data:
+        partes = []
+        for mes in meses:
+            try:
+                mm, aa = str(mes).split("/")
+                partes.append(f'"{col_data}" LIKE ?')
+                params.append(f"%/{mm}/{aa}")
+                partes.append(f'"{col_data}" LIKE ?')
+                params.append(f"{aa}-{mm}%")
+            except Exception:
+                pass
+        if partes:
+            where.append("(" + " OR ".join(partes) + ")")
+    sql = f'SELECT {select_cols} FROM "{tabela}"'
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    with sqlite3.connect(caminho_banco_str) as conn:
+        df = pd.read_sql_query(sql, conn, params=params)
+    return _normalizar_df_dashboard(df)
+
+
+def carregar_notas_rapido(meses=None):
+    caminho = caminho_banco_gzus()
+    tabela = TABELAS_SQLITE_DASHBOARD.get("notas")
+    if sqlite_ativado() and caminho and tabela and _sqlite_tabela_existe(caminho, tabela):
+        try:
+            df = ler_notas_sql_periodo_cache(str(caminho), tabela, tuple(meses or []), caminho.stat().st_mtime)
+            if _sqlite_tabela_parece_valida(df):
+                fontes = st.session_state.get("fontes_dados_dashboard", {})
+                fontes["notas"] = "sqlite_filtrado"
+                st.session_state["fontes_dados_dashboard"] = fontes
+                return df
+        except Exception:
+            pass
+    df, fonte = ler_base_dashboard("notas", ARQUIVOS["notas"])
+    if meses and not df.empty:
+        col_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in df.columns else "DATA"
+        if col_data in df.columns:
+            datas = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
+            df = df[datas.dt.strftime("%m/%Y").isin(list(meses))].copy()
+    fontes = st.session_state.get("fontes_dados_dashboard", {})
+    fontes["notas"] = fonte
+    st.session_state["fontes_dados_dashboard"] = fontes
+    return df
+
+
+# ==============================
 # REGRAS DE CONTRATO / FATURAMENTO
 # Usadas na aba "Parcial do dia"
 # ==============================
@@ -2684,7 +2810,7 @@ def resumo_por_periodo(notas, meses_escolhidos, contrato_escolhido="Todos"):
         return pd.DataFrame(), pd.DataFrame()
 
     if not meses_escolhidos:
-        meses_base = meses_disponiveis_da_base(notas)
+        meses_base = meses_disponiveis_rapido()
         if meses_base.empty:
             return pd.DataFrame(), pd.DataFrame()
         meses_escolhidos = [meses_base.iloc[0]["MES"]]
@@ -5518,34 +5644,18 @@ def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True
 
 # Antes de carregar os CSV/Excel, o app PODE puxar do GitHub a versão mais recente.
 # Ajuste de velocidade:
-# - no primeiro carregamento após login, NÃO fazemos git fetch/reset automaticamente,
-#   porque essa etapa pode demorar 10-15s no Streamlit Cloud;
-# - depois do painel aberto, a sincronização automática continua disponível, mas
-#   respeitando GITHUB_SYNC_INTERVALO_SEGUNDOS;
-# - o botão "Atualizar dados" continua forçando a checagem quando você quiser.
-if "gzus_primeiro_carregamento_pos_login" not in st.session_state:
-    st.session_state["gzus_primeiro_carregamento_pos_login"] = False
-    _status_sync_github = _ler_status_github_sync() or {
-        "ok": True,
-        "changed": False,
-        "skipped": True,
-        "message": "Checagem GitHub pulada no primeiro carregamento para abrir mais rápido.",
-        "quando": datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M:%S"),
-    }
-else:
-    _status_sync_github = sincronizar_github_se_preciso()
+# Não fazemos mais git fetch/reset automático durante a navegação.
+# Isso era o principal candidato aos 10-15 segundos de espera no Streamlit Cloud.
+# A atualização continua existindo pelo botão "Atualizar dados".
+_status_sync_github = _ler_status_github_sync() or {
+    "ok": True,
+    "changed": False,
+    "skipped": True,
+    "message": "GitHub em modo manual para abrir mais rápido.",
+    "quando": datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M:%S"),
+}
 
-if _status_sync_github.get("changed"):
-    # Quando o extrator sobe gzus_dashboard.db/CSVs no GitHub, o Streamlit precisa
-    # reler o checkout atualizado e reconstruir os caches.
-    st.session_state["github_dados_atualizados_sem_recarregar"] = True
-    st.cache_data.clear()
-    try:
-        st.rerun()
-    except Exception:
-        pass
-
-bases, faltando = carregar_bases()
+bases, faltando = carregar_bases_leves()
 
 # Diagnóstico discreto da fonte usada. Se aparecer, o painel já está lendo o gzus.db.
 try:
@@ -5567,7 +5677,7 @@ contratos_original = bases.get("contratos", pd.DataFrame())
 carro_original = bases.get("carro", pd.DataFrame())
 dias_original = bases.get("dias", pd.DataFrame())
 carro_dias_original = bases.get("carro_dias", pd.DataFrame())
-notas = bases.get("notas", pd.DataFrame())
+notas = pd.DataFrame()  # carregada sob demanda por SQL filtrado
 
 # Perfis restritos têm telas próprias para evitar exposição acidental de dados financeiros.
 if PERFIL_ACESSO == "supervisor_leitura":
@@ -5655,8 +5765,8 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("**Tela selecionada:**")
 st.sidebar.info(contrato_escolhido)
 
-if modo_painel == "corte" and not notas.empty:
-    mostrar_status_atualizacao(notas, contrato_escolhido)
+# Status detalhado depende da tabela grande de notas; fica fora do pós-login para acelerar.
+# Ele pode voltar depois em versão SQL agregada, sem carregar notas brutas.
 
 # Este período vale para a tela inicial "Resumo".
 # Por padrão, fica só no mês mais recente da base, para não somar março + abril sem querer.
@@ -5725,6 +5835,18 @@ tela_escolhida = st.radio(
     label_visibility="collapsed",
     key="tela_principal_gzus",
 )
+
+# Agora sim carregamos notas, mas somente do(s) mês(es) selecionado(s).
+# Isso é o ponto principal: evita SELECT * na tabela grande logo após login.
+notas = carregar_notas_rapido(meses_escolhidos_resumo)
+
+try:
+    fontes_usadas = st.session_state.get("fontes_dados_dashboard", {})
+    fonte_notas = fontes_usadas.get("notas", "")
+    if fonte_notas:
+        st.sidebar.caption(f"Notas: {fonte_notas}")
+except Exception:
+    pass
 
 # ==============================
 # ABA RESUMO
