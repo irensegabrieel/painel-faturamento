@@ -480,9 +480,12 @@ ORDEM_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domi
 
 # Atualização mais curta para evitar que o Streamlit fique preso em dados antigos.
 # O cache continua existindo para não pesar o app, mas agora é revalidado com frequência.
-CACHE_TTL_SEGUNDOS = int(secret_float("CACHE_TTL_SEGUNDOS", 60))
-CACHE_TTL_RANKING_SEGUNDOS = int(secret_float("CACHE_TTL_RANKING_SEGUNDOS", 300))
-GITHUB_SYNC_INTERVALO_SEGUNDOS = int(secret_float("GITHUB_SYNC_INTERVALO_SEGUNDOS", 60))
+CACHE_TTL_SEGUNDOS = int(secret_float("CACHE_TTL_SEGUNDOS", 180))
+CACHE_TTL_RANKING_SEGUNDOS = int(secret_float("CACHE_TTL_RANKING_SEGUNDOS", 600))
+# Antes estava em 60s. Isso deixava o pós-login e cada rerun mais sujeito a
+# esperar git fetch. Para operação, 5 minutos costuma ser um equilíbrio melhor:
+# rápido para atualizar, mas sem travar a navegação o tempo todo.
+GITHUB_SYNC_INTERVALO_SEGUNDOS = int(secret_float("GITHUB_SYNC_INTERVALO_SEGUNDOS", 300))
 STATUS_GITHUB_SYNC_PATH = Path(tempfile.gettempdir()) / "gzus_github_sync_status.json"
 LEITURA_HABILITADA = False  # Removido temporariamente para deixar o painel principal mais leve.
 
@@ -493,7 +496,7 @@ st.markdown(
     <script>
     setTimeout(function(){
         window.location.reload();
-    }, 60000);
+    }, 300000);
     </script>
     """,
     unsafe_allow_html=True
@@ -5513,16 +5516,28 @@ def mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True
 
 
 
-# Antes de carregar os CSV/Excel, tenta puxar do GitHub a versão mais recente.
-# UX ajustada: quando encontra dados novos, NÃO força st.rerun().
-# O rerun imediato deixava o painel com aparência de travado/inutilizado.
-# Agora o app sincroniza, limpa o cache dentro de sincronizar_github_se_preciso(),
-# continua a execução normal e carrega os arquivos novos neste mesmo ciclo.
-_status_sync_github = sincronizar_github_se_preciso()
+# Antes de carregar os CSV/Excel, o app PODE puxar do GitHub a versão mais recente.
+# Ajuste de velocidade:
+# - no primeiro carregamento após login, NÃO fazemos git fetch/reset automaticamente,
+#   porque essa etapa pode demorar 10-15s no Streamlit Cloud;
+# - depois do painel aberto, a sincronização automática continua disponível, mas
+#   respeitando GITHUB_SYNC_INTERVALO_SEGUNDOS;
+# - o botão "Atualizar dados" continua forçando a checagem quando você quiser.
+if "gzus_primeiro_carregamento_pos_login" not in st.session_state:
+    st.session_state["gzus_primeiro_carregamento_pos_login"] = False
+    _status_sync_github = _ler_status_github_sync() or {
+        "ok": True,
+        "changed": False,
+        "skipped": True,
+        "message": "Checagem GitHub pulada no primeiro carregamento para abrir mais rápido.",
+        "quando": datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M:%S"),
+    }
+else:
+    _status_sync_github = sincronizar_github_se_preciso()
+
 if _status_sync_github.get("changed"):
     # Quando o extrator sobe gzus_dashboard.db/CSVs no GitHub, o Streamlit precisa
-    # reler o checkout atualizado e reconstruir os caches. Sem este rerun, a tela
-    # pode continuar mostrando o banco/CSV antigo até reboot manual.
+    # reler o checkout atualizado e reconstruir os caches.
     st.session_state["github_dados_atualizados_sem_recarregar"] = True
     st.cache_data.clear()
     try:
@@ -5579,8 +5594,10 @@ if st.session_state.pop("github_dados_atualizados_sem_recarregar", False):
 if faltando:
     st.warning("Arquivos não encontrados: " + ", ".join(faltando))
 
-# Popup do assistente: usa os mesmos dados do painel, sem depender de API externa.
-if PERFIL_ACESSO == "gerente" and not notas.empty:
+# Popup do assistente: por padrão fica desligado no carregamento inicial para deixar
+# o pós-login mais rápido. Para religar, coloque ASSISTENTE_GZUS_AUTO = "true" nos Secrets.
+ASSISTENTE_GZUS_AUTO = str(secret_value("ASSISTENTE_GZUS_AUTO", "false") or "false").strip().lower() in ["1", "true", "sim", "s", "yes", "on"]
+if ASSISTENTE_GZUS_AUTO and PERFIL_ACESSO == "gerente" and not notas.empty:
     mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True)
 
 # ==============================
