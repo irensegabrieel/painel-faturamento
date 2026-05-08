@@ -2424,6 +2424,49 @@ def _filtrar_df_por_meses_coluna_data(df, meses):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def resumo_operacional_dia_cache(caminho_banco_str, meses_escolhidos, mtime_banco):
+    """Lê resumo_dia do SQLite para recuperar CORTES/RELIGUES/RECUSAS da Home.
+
+    A tabela faturamento_dias é leve e rápida, mas não guarda cortes/religues.
+    Esses números ficam em resumo_dia, que é pequena e já existe no banco leve.
+    """
+    del mtime_banco
+    if not caminho_banco_str:
+        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "RECUSAS"])
+    try:
+        with sqlite3.connect(caminho_banco_str) as conn:
+            if not _sqlite_tabela_existe(caminho_banco_str, "resumo_dia"):
+                return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "RECUSAS"])
+            df = pd.read_sql_query('SELECT DATA, CONTRATO, TOTAL_NOTAS, CORTES, RELIGUES, RECUSAS FROM resumo_dia', conn)
+    except Exception:
+        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "RECUSAS"])
+
+    if df.empty:
+        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "RECUSAS"])
+
+    datas = pd.to_datetime(df["DATA"], dayfirst=True, errors="coerce")
+    meses = list(meses_escolhidos or [])
+    if meses:
+        df = df[datas.dt.strftime("%m/%Y").isin(meses)].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "RECUSAS"])
+
+    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    return (
+        df.groupby("CONTRATO", dropna=False)
+        .agg(
+            TOTAL_NOTAS_OP=("TOTAL_NOTAS", "sum"),
+            CORTES=("CORTES", "sum"),
+            RELIGUES=("RELIGUES", "sum"),
+            RECUSAS=("RECUSAS", "sum"),
+        )
+        .reset_index()
+    )
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def resumo_home_leve_cache(dias_df, carro_dias_df, meses_escolhidos, contrato_escolhido):
     dias_base = _filtrar_df_por_meses_coluna_data(dias_df, tuple(meses_escolhidos or []))
     carro_base = _filtrar_df_por_meses_coluna_data(carro_dias_df, tuple(meses_escolhidos or []))
@@ -2486,6 +2529,25 @@ def resumo_home_leve_cache(dias_df, carro_dias_df, meses_escolhidos, contrato_es
         if col not in resumo_contrato.columns:
             resumo_contrato[col] = 0.0
         resumo_contrato[col] = pd.to_numeric(resumo_contrato[col], errors="coerce").fillna(0.0)
+
+    # Recupera cortes/religues/recusas do resumo_dia para a Home.
+    # Isso corrige o detalhamento por contrato no Resumo, que usa faturamento_dias
+    # para ser rápido, mas precisa do resumo_dia para os contadores operacionais.
+    try:
+        caminho = caminho_banco_gzus()
+        if sqlite_ativado() and caminho and _sqlite_tabela_existe(caminho, "resumo_dia"):
+            resumo_ops = resumo_operacional_dia_cache(str(caminho), tuple(meses_escolhidos or []), caminho.stat().st_mtime)
+            if not resumo_ops.empty:
+                resumo_contrato = resumo_contrato.merge(resumo_ops, on="CONTRATO", how="left", suffixes=("", "_OP"))
+                for col in ["CORTES", "RELIGUES", "RECUSAS"]:
+                    op_col = f"{col}_OP"
+                    if op_col in resumo_contrato.columns:
+                        resumo_contrato[col] = pd.to_numeric(resumo_contrato[op_col], errors="coerce").fillna(resumo_contrato[col]).fillna(0).astype(int)
+                        resumo_contrato = resumo_contrato.drop(columns=[op_col])
+                if "TOTAL_NOTAS_OP" in resumo_contrato.columns:
+                    resumo_contrato = resumo_contrato.drop(columns=["TOTAL_NOTAS_OP"])
+    except Exception:
+        pass
 
     resumo_contrato = resumo_contrato.sort_values(["FATURAMENTO", "FATURAMENTO_MAX"], ascending=False).reset_index(drop=True)
     resumo_grupo = pd.DataFrame()
@@ -6718,9 +6780,17 @@ def _data_hora_txt_supervisao(row):
 
 
 def _status_txt_supervisao(row):
+    """Status no formato do TXT operacional: FINALIZADA ou REJEITADA.
+
+    Alguns CSVs/bancos trazem STATUS vazio ou com outro texto interno.
+    Para o TXT dos supervisores, a regra mais estável é:
+    - se há RECUSA/observação de recusa => REJEITADA
+    - senão => FINALIZADA
+    Se o STATUS já vier FINALIZADA/REJEITADA, preserva.
+    """
     status = _valor_txt_supervisao(row.get("STATUS", "")).upper()
     recusa = _valor_txt_supervisao(row.get("RECUSA", ""))
-    if status:
+    if status in ["FINALIZADA", "REJEITADA"]:
         return status
     return "REJEITADA" if recusa else "FINALIZADA"
 
