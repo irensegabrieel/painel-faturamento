@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Segunda a sexta, 07:00 até 18:30 no horário de Brasília (UTC-3)
+    # Segunda a sexta — 07:00 às 18:30 (Brasil)
     - cron: "0,15,30,45 10-20 * * 1-5"
     - cron: "0,15,30 21 * * 1-5"
 
-    # Sábado, 07:00 até 12:00 no horário de Brasília (UTC-3)
+    # Sábado — 07:00 às 12:00 (Brasil)
     - cron: "0,15,30,45 10-14 * * 6"
     - cron: "0 15 * * 6"
 
