@@ -4,11 +4,13 @@ from collections.abc import Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import json
+import html
 import tempfile
 import sqlite3
 import pandas as pd
 import streamlit as st
 import altair as alt
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="G.Z.U.S. | Gestão Inteligente de Serviços", page_icon="🤖", layout="wide")
 
@@ -5940,7 +5942,7 @@ mostrar_aba_carro = (contrato_escolhido == "Todos") or (contrato_filtro_notas ==
 nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana"]
 if mostrar_aba_carro:
     nomes_abas.append("STC")
-nomes_abas += ["Notas", "Downloads"]
+nomes_abas += ["Notas", "TXT Supervisão", "Downloads"]
 
 # Mais leve que st.tabs: no Streamlit, todas as abas executam ao mesmo tempo.
 # Com radio, só a tela escolhida roda, reduzindo carregamento após login e troca de filtros.
@@ -6666,6 +6668,255 @@ if tela_escolhida == "Notas":
             st.caption("As notas não são carregadas automaticamente para deixar o painel mais rápido.")
     else:
         st.info("Base de notas não encontrada.")
+
+
+# ==============================
+# TXT SUPERVISÃO
+# ==============================
+
+def _valor_txt_supervisao(valor):
+    """Formata célula para TXT tabulado, preservando vazio como vazio."""
+    if valor is None:
+        return ""
+    try:
+        if pd.isna(valor):
+            return ""
+    except Exception:
+        pass
+    texto = str(valor).strip()
+    if texto.endswith(".0") and texto[:-2].isdigit():
+        texto = texto[:-2]
+    # Evita quebrar a estrutura de colunas do TXT.
+    texto = texto.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+    return texto
+
+
+def _data_hora_txt_supervisao(row):
+    """Usa DATA_ENCERRAMENTO quando existir; senão usa DATA."""
+    valor = row.get("DATA_ENCERRAMENTO", "")
+    if _valor_txt_supervisao(valor) == "":
+        valor = row.get("DATA", "")
+
+    dt = pd.to_datetime(valor, dayfirst=True, errors="coerce")
+    if pd.notna(dt):
+        # Se houver hora, mantém dd/mm/aaaa hh:mm. Se não houver, mantém só a data.
+        if dt.hour or dt.minute or dt.second:
+            return dt.strftime("%d/%m/%Y %H:%M")
+        return dt.strftime("%d/%m/%Y")
+
+    return _valor_txt_supervisao(valor)
+
+
+def _status_txt_supervisao(row):
+    status = _valor_txt_supervisao(row.get("STATUS", "")).upper()
+    recusa = _valor_txt_supervisao(row.get("RECUSA", ""))
+    if status:
+        return status
+    return "REJEITADA" if recusa else "FINALIZADA"
+
+
+def gerar_txt_supervisao(notas, data_escolhida=None, contrato_filtro="Todos", grupo_filtro="Todos"):
+    """Gera TXT no formato operacional usado para colar no Excel.
+
+    Formato sem cabeçalho e separado por TAB:
+    OS | TIPO | RECURSO | STATUS | DATA/HORA | ELETRICISTA1 | ELETRICISTA2 | RECUSA
+    """
+    if notas is None or notas.empty:
+        return "", pd.DataFrame()
+
+    df = notas.copy()
+
+    # Garante colunas esperadas sem quebrar caso o banco leve mude.
+    for col in [
+        "ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "STATUS", "RECUSA",
+        "ELETRICISTA1", "ELETRICISTA2", "DATA", "DATA_ENCERRAMENTO",
+    ]:
+        if col not in df.columns:
+            df[col] = ""
+
+    # Usa a parcial apenas para descobrir o contrato operacional, mas mantém as colunas originais
+    # para o TXT sair igual ao material que era copiado do extrator/local.
+    parcial = preparar_parcial_do_dia(df, incluir_recusas=True)
+    if not parcial.empty and "ORDEM_DE_SERVICO" in parcial.columns:
+        mapa_contrato = (
+            parcial[["ORDEM_DE_SERVICO", "CONTRATO"]]
+            .drop_duplicates(subset=["ORDEM_DE_SERVICO"], keep="last")
+        )
+        mapa_contrato["ORDEM_DE_SERVICO"] = mapa_contrato["ORDEM_DE_SERVICO"].astype(str)
+        df["ORDEM_DE_SERVICO"] = df["ORDEM_DE_SERVICO"].astype(str)
+        df = df.merge(mapa_contrato, on="ORDEM_DE_SERVICO", how="left")
+    else:
+        df["CONTRATO"] = ""
+
+    if contrato_filtro and contrato_filtro != "Todos" and "CONTRATO" in df.columns:
+        df = df[df["CONTRATO"] == contrato_filtro].copy()
+
+    if grupo_filtro and grupo_filtro != "Todos" and "GRUPO_NOTA" in df.columns:
+        df = df[df["GRUPO_NOTA"].fillna("").astype(str).str.upper() == str(grupo_filtro).upper()].copy()
+
+    df["DATA_HORA_TXT"] = df.apply(_data_hora_txt_supervisao, axis=1)
+    df["DATA_TXT_DT"] = pd.to_datetime(df["DATA_HORA_TXT"], dayfirst=True, errors="coerce")
+
+    if data_escolhida:
+        data_ref = pd.to_datetime(data_escolhida, dayfirst=True, errors="coerce")
+        if pd.notna(data_ref):
+            df = df[df["DATA_TXT_DT"].dt.strftime("%d/%m/%Y") == data_ref.strftime("%d/%m/%Y")].copy()
+
+    if df.empty:
+        return "", df
+
+    df["STATUS_TXT"] = df.apply(_status_txt_supervisao, axis=1)
+
+    # Ordena por data/hora e recurso para ficar estável para o Excel.
+    df = df.sort_values(["DATA_TXT_DT", "RECURSO", "ORDEM_DE_SERVICO"], na_position="last").copy()
+
+    linhas = []
+    for _, row in df.iterrows():
+        campos = [
+            _valor_txt_supervisao(row.get("ORDEM_DE_SERVICO", "")),
+            _valor_txt_supervisao(row.get("GRUPO_NOTA", "")).upper(),
+            _valor_txt_supervisao(row.get("RECURSO", "")).upper(),
+            _valor_txt_supervisao(row.get("STATUS_TXT", "")).upper(),
+            _valor_txt_supervisao(row.get("DATA_HORA_TXT", "")),
+            _valor_txt_supervisao(row.get("ELETRICISTA1", "")),
+            _valor_txt_supervisao(row.get("ELETRICISTA2", "")),
+            _valor_txt_supervisao(row.get("RECUSA", "")),
+        ]
+        linhas.append("\t".join(campos))
+
+    return "\n".join(linhas), df
+
+
+def mostrar_copiador_txt_supervisao(texto_txt):
+    """Mostra botão de copiar via navegador e uma área de texto como plano B."""
+    texto_js = json.dumps(texto_txt)
+    texto_html = html.escape(texto_txt)
+    components.html(
+        f"""
+        <div style="font-family: system-ui, -apple-system, Segoe UI, sans-serif;">
+          <button id="btn-copy-gzus" style="
+              border: 0;
+              border-radius: 12px;
+              padding: 10px 16px;
+              font-weight: 800;
+              cursor: pointer;
+              background: #1d4ed8;
+              color: white;
+              margin-bottom: 8px;">
+            📋 Copiar TXT para a área de transferência
+          </button>
+          <span id="copy-status-gzus" style="margin-left: 10px; font-size: 14px; color: #166534;"></span>
+          <textarea id="txt-gzus" style="
+              width: 100%;
+              height: 260px;
+              margin-top: 8px;
+              box-sizing: border-box;
+              font-family: Consolas, monospace;
+              font-size: 12px;
+              white-space: pre;
+              border: 1px solid #cbd5e1;
+              border-radius: 12px;
+              padding: 10px;">{texto_html}</textarea>
+        </div>
+        <script>
+          const textoGzus = {texto_js};
+          const btn = document.getElementById('btn-copy-gzus');
+          const status = document.getElementById('copy-status-gzus');
+          const area = document.getElementById('txt-gzus');
+          btn.addEventListener('click', async () => {{
+            try {{
+              await navigator.clipboard.writeText(textoGzus);
+              status.textContent = 'Copiado!';
+            }} catch (e) {{
+              area.focus();
+              area.select();
+              document.execCommand('copy');
+              status.textContent = 'Copiado pelo modo compatível!';
+            }}
+          }});
+        </script>
+        """,
+        height=340,
+    )
+
+
+# ==============================
+# ABA TXT SUPERVISÃO
+# ==============================
+
+if tela_escolhida == "TXT Supervisão":
+    st.subheader("TXT Supervisão")
+    st.caption("Gera o TXT tabulado no mesmo formato operacional para colar no Excel dos supervisores.")
+
+    notas_txt = carregar_notas_rapido(meses_escolhidos_resumo)
+
+    if notas_txt.empty:
+        st.info("Base de notas não encontrada para gerar o TXT.")
+    else:
+        base_datas_txt = notas_txt.copy()
+        col_data_txt = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in base_datas_txt.columns else "DATA"
+        datas_txt = pd.to_datetime(base_datas_txt.get(col_data_txt, pd.Series(dtype=str)), dayfirst=True, errors="coerce")
+        datas_disponiveis_txt = (
+            pd.DataFrame({"DATA_DT": datas_txt})
+            .dropna()
+            .drop_duplicates()
+            .sort_values("DATA_DT", ascending=False)
+        )
+        datas_disponiveis_txt["DATA"] = datas_disponiveis_txt["DATA_DT"].dt.strftime("%d/%m/%Y")
+        opcoes_datas_txt = datas_disponiveis_txt["DATA"].drop_duplicates().tolist()
+
+        if not opcoes_datas_txt:
+            st.info("Não encontrei datas na base de notas para gerar o TXT.")
+        else:
+            c1, c2, c3 = st.columns([1.2, 1.2, 1.2])
+            data_txt = c1.selectbox("Dia do TXT", opcoes_datas_txt, index=0, key="txt_supervisao_data")
+
+            contratos_txt = ["Todos"]
+            try:
+                parcial_txt_filtro = preparar_parcial_do_dia(notas_txt, incluir_recusas=True)
+                if not parcial_txt_filtro.empty and "CONTRATO" in parcial_txt_filtro.columns:
+                    contratos_txt += sorted(parcial_txt_filtro["CONTRATO"].dropna().astype(str).unique().tolist())
+            except Exception:
+                pass
+
+            contrato_default_idx = 0
+            if contrato_filtro_notas in contratos_txt:
+                contrato_default_idx = contratos_txt.index(contrato_filtro_notas)
+            contrato_txt = c2.selectbox("Contrato", contratos_txt, index=contrato_default_idx, key="txt_supervisao_contrato")
+
+            grupos_txt = ["Todos"] + sorted(
+                notas_txt.get("GRUPO_NOTA", pd.Series(dtype=str)).dropna().astype(str).str.upper().unique().tolist()
+            )
+            grupo_txt = c3.selectbox("Tipo", grupos_txt, index=0, key="txt_supervisao_grupo")
+
+            texto_txt, df_txt = gerar_txt_supervisao(
+                notas_txt,
+                data_escolhida=data_txt,
+                contrato_filtro=contrato_txt,
+                grupo_filtro=grupo_txt,
+            )
+
+            if not texto_txt:
+                st.warning("Nenhuma linha encontrada para os filtros escolhidos.")
+            else:
+                st.success(f"TXT gerado com {numero(len(df_txt))} linhas. Use o botão copiar ou baixe o arquivo.")
+                mostrar_copiador_txt_supervisao(texto_txt)
+                nome_data = data_txt.replace("/", "-")
+                st.download_button(
+                    "⬇️ Baixar TXT",
+                    texto_txt.encode("utf-8"),
+                    file_name=f"txt_supervisao_{nome_data}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+
+                with st.expander("Prévia em tabela", expanded=False):
+                    colunas_previas = [
+                        "ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "STATUS_TXT",
+                        "DATA_HORA_TXT", "ELETRICISTA1", "ELETRICISTA2", "RECUSA",
+                    ]
+                    colunas_previas = [c for c in colunas_previas if c in df_txt.columns]
+                    st.dataframe(df_txt[colunas_previas].head(500), use_container_width=True, hide_index=True)
 
 # ==============================
 # ABA DOWNLOAD
