@@ -45,4 +45,3 @@ jobs:
       - name: Executar extrator
         run: |
           python run_extrator_cloud.py
-```
