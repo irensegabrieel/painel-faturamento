@@ -13,12 +13,12 @@ on:
 permissions:
   contents: write
 
-env:
+  env:
   HEADLESS: "1"
   MATRICULA: ${{ secrets.MATRICULA }}
   SENHA: ${{ secrets.SENHA }}
-  GITHUB_DASHBOARD_TOKEN: ${{ secrets.GZUS_DASHBOARD_TOKEN }}
-  GITHUB_DASHBOARD_REPO: ${{ secrets.GITHUB_DASHBOARD_REPO }}
+  GITHUB_DASHBOARD_TOKEN: ${{ secrets.DASHBOARD_TOKEN }}
+  GITHUB_DASHBOARD_REPO: ${{ secrets.DASHBOARD_REPO }}
   GITHUB_DASHBOARD_BRANCH: "main"
   GITHUB_DASHBOARD_REMOTE_DIR: "dashboard"
   GZUS_POS_EXTRATOR_AUTO: "true"
