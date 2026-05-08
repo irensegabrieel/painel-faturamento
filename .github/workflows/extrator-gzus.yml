@@ -3,6 +3,15 @@ name: Extrator G.Z.U.S.
 on:
   workflow_dispatch:
 
+  schedule:
+    # Segunda a sexta — 07:00 às 18:30 (Brasil / UTC-3)
+    - cron: "0,15,30,45 10-20 * * 1-5"
+    - cron: "0,15,30 21 * * 1-5"
+
+    # Sábado — 07:00 às 12:00 (Brasil / UTC-3)
+    - cron: "0,15,30,45 10-14 * * 6"
+    - cron: "0 15 * * 6"
+
 permissions:
   contents: write
 
