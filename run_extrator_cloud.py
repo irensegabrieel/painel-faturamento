@@ -1,18 +1,26 @@
 """
 Runner cloud para o Extrator G.Z.U.S.
 
-Versão ajustada para GitHub Actions:
+Versão cloud segura:
 - carrega o extrator .pyw sem abrir Tkinter;
-- força Selenium em modo headless;
-- aumenta janela/zoom para reduzir diferença entre PC local e nuvem;
-- reforça a etapa de exportação, que no headless pode demorar ou ficar fora da área visível;
-- roda processamento e deixa o extrator gerar/enviar o SQLite.
+- força Selenium headless;
+- antes de extrair, copia o histórico já existente em dashboard/*.csv do repositório
+  para output/dashboard, que é onde o extrator procura o histórico acumulado;
+- mantém os ajustes de tela/zoom para exportação no GitHub Actions;
+- roda processamento, recria gzus_dashboard.db e envia para o GitHub.
+
+IMPORTANTE:
+O banco leve gzus_dashboard.db remove a tabela notas de propósito.
+O histórico verdadeiro usado para recalcular o dashboard vem dos CSVs acumulados:
+dashboard/notas_dashboard.csv e demais arquivos em dashboard/.
 """
+
 from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -52,6 +60,50 @@ def importar_extrator(caminho: Path):
     return modulo, caminho
 
 
+def semear_historico_dashboard_no_output(modulo) -> None:
+    """Copia dashboard/*.csv do repositório para output/dashboard.
+
+    Por que isso é essencial:
+    - Localmente, o extrator acha o histórico acumulado em output/dashboard.
+    - No GitHub Actions, a máquina nasce limpa.
+    - O histórico confiável está versionado no repositório em dashboard/*.csv.
+    - Se não copiarmos esses CSVs antes da extração, o extrator recria tudo só com o dia atual.
+    """
+    repo_dashboard = BASE_DIR / "dashboard"
+
+    process_output = getattr(modulo, "PROCESS_OUTPUT_FOLDER", None)
+    if process_output:
+        output_dashboard = Path(process_output) / "dashboard"
+    else:
+        output_dashboard = BASE_DIR / "output" / "dashboard"
+
+    output_dashboard.mkdir(parents=True, exist_ok=True)
+
+    arquivos_criticos = [
+        "notas_dashboard.csv",
+        "faturamento_contratos_dashboard.csv",
+        "faturamento_dias_dashboard.csv",
+        "faturamento_carro_estimado_dashboard.csv",
+        "faturamento_carro_dias_dashboard.csv",
+    ]
+
+    copiados = 0
+    for nome in arquivos_criticos:
+        origem = repo_dashboard / nome
+        destino = output_dashboard / nome
+        if origem.exists():
+            shutil.copy2(origem, destino)
+            copiados += 1
+            log(f"🌱 Histórico semeado no output/dashboard: {nome} ({origem.stat().st_size/1024:,.1f} KB)")
+        else:
+            log(f"⚠️ Histórico não encontrado no repositório: dashboard/{nome}")
+
+    if copiados == 0:
+        log("🚨 ATENÇÃO: nenhum CSV histórico foi semeado. O dashboard pode ficar só com a extração atual.")
+    else:
+        log(f"✅ Histórico cloud preparado: {copiados} arquivo(s) copiado(s) para {output_dashboard}")
+
+
 def aplicar_ajustes_cloud(modulo):
     """Aplica pequenos ajustes sem alterar o extrator original."""
     from selenium.webdriver.common.by import By
@@ -66,8 +118,6 @@ def aplicar_ajustes_cloud(modulo):
     def preparar_cloud(self):
         preparar_original(self)
 
-        # No GitHub Actions o Chrome headless pode abrir com viewport diferente do PC.
-        # Forçamos uma área grande e um zoom menor para o botão "Ações" não sumir.
         try:
             self.driver.set_window_size(1920, 1200)
             self.driver.execute_script("document.body.style.zoom='80%'")
@@ -75,7 +125,6 @@ def aplicar_ajustes_cloud(modulo):
         except Exception as e:
             log(f"⚠️ Não consegui ajustar viewport/zoom: {e}")
 
-        # O wait original é 25s. Na nuvem algumas telas demoram mais.
         try:
             self.wait = WebDriverWait(self.driver, 60)
             log("⏱️ Timeout Selenium ampliado para 60s.")
@@ -98,7 +147,6 @@ def aplicar_ajustes_cloud(modulo):
     def exportar_cloud(self):
         log("💾 Exportando...")
 
-        # Garante que nenhum menu/popup esteja bloqueando a tela.
         try:
             self.fechar_menu_exibir_se_aberto()
             time.sleep(0.6)
@@ -112,7 +160,6 @@ def aplicar_ajustes_cloud(modulo):
         except Exception:
             pass
 
-        # Reforça viewport/zoom também no momento da exportação.
         try:
             self.driver.set_window_size(1920, 1200)
             self.driver.execute_script("document.body.style.zoom='80%'")
@@ -146,7 +193,7 @@ def aplicar_ajustes_cloud(modulo):
                 acoes_btn = None
 
         if acoes_btn is None:
-            log("⚠️ Não encontrei o botão Ações com os seletores reforçados. Tentando exportação original...")
+            log("⚠️ Não encontrei o botão Ações com seletores reforçados. Tentando exportação original...")
             try:
                 return exportar_original(self)
             except Exception:
@@ -204,7 +251,6 @@ def aplicar_ajustes_cloud(modulo):
 def main() -> int:
     load_dotenv(BASE_DIR / ".env", override=True)
 
-    # Execução em nuvem, sem tela.
     os.environ["HEADLESS"] = "1"
     os.environ.setdefault("GZUS_POS_EXTRATOR_AUTO", "true")
     os.environ.setdefault("GITHUB_DASHBOARD_REMOTE_DIR", "dashboard")
@@ -214,6 +260,7 @@ def main() -> int:
     modulo, caminho_usado = importar_extrator(caminho)
     log(f"🚀 Extrator carregado: {caminho_usado.name}")
 
+    semear_historico_dashboard_no_output(modulo)
     aplicar_ajustes_cloud(modulo)
 
     eas_env = os.getenv("EAS_SELECIONADAS", "").strip()
