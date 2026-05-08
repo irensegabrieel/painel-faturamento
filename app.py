@@ -5931,7 +5931,13 @@ if contrato_escolhido != "Todos":
         carro = carro[carro["CONTRATO"] == contrato_escolhido]
 
     if not carro_dias.empty and "CONTRATO" in carro_dias.columns:
-        carro_dias = carro_dias[carro_dias["CONTRATO"] == contrato_escolhido]
+        # Para STC, o faturamento estimado pode estar registrado como
+        # "Contrato Carro STC estimado". Mantemos as duas visões juntas
+        # para a Home/Resumo conseguir exibir mínimo e máximo do STC.
+        if contrato_escolhido in ["STC Jundiai", "Contrato Carro STC estimado"]:
+            carro_dias = carro_dias[carro_dias["CONTRATO"].isin(["STC Jundiai", "Contrato Carro STC estimado"])]
+        else:
+            carro_dias = carro_dias[carro_dias["CONTRATO"] == contrato_escolhido]
 
 mostrar_carro = not carro.empty
 
@@ -5978,7 +5984,7 @@ if tela_escolhida == "Resumo":
         qtd_notas = int(resumo_contrato_periodo["TOTAL_NOTAS"].sum())
 
         carro_periodo = resumo_contrato_periodo[
-            resumo_contrato_periodo["CONTRATO"] == "STC Jundiai"
+            resumo_contrato_periodo["CONTRATO"].isin(["STC Jundiai", "Contrato Carro STC estimado"])
         ].copy()
 
         mostrar_carro_periodo = not carro_periodo.empty
@@ -6667,11 +6673,112 @@ if tela_escolhida == "Notas":
     else:
         st.info("Base de notas não encontrada.")
 
+
+# ==============================
+# TXT SUPERVISÃO / TXT DO DIA
+# ==============================
+
+def _serie_texto_segura(df, col, padrao=""):
+    if col in df.columns:
+        return df[col].fillna(padrao).astype(str)
+    return pd.Series([padrao] * len(df), index=df.index, dtype="object")
+
+
+def gerar_txt_supervisao_do_dia(notas_df, data_escolhida=None):
+    """Gera TXT tabulado no mesmo padrão operacional do resultado_final.txt.
+
+    Formato sem cabeçalho:
+    ORDEM_DE_SERVICO\tGRUPO_NOTA\tRECURSO\tSTATUS\tDATA_ENCERRAMENTO\tELETRICISTA1\tELETRICISTA2\tRECUSA
+    """
+    if notas_df is None or notas_df.empty:
+        return "", pd.DataFrame(), []
+
+    df = notas_df.copy()
+    col_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in df.columns else ("DATA" if "DATA" in df.columns else "")
+    if not col_data:
+        return "", pd.DataFrame(), []
+
+    datas_dt = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
+    df = df[pd.notna(datas_dt)].copy()
+    datas_dt = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
+    if df.empty:
+        return "", pd.DataFrame(), []
+
+    df["_DATA_TXT_DIA"] = datas_dt.dt.strftime("%d/%m/%Y")
+    datas_disponiveis = sorted(df["_DATA_TXT_DIA"].dropna().unique().tolist(), key=lambda d: pd.to_datetime(d, dayfirst=True), reverse=True)
+    if not data_escolhida:
+        data_escolhida = datas_disponiveis[0] if datas_disponiveis else ""
+
+    if data_escolhida:
+        df = df[df["_DATA_TXT_DIA"] == data_escolhida].copy()
+
+    if df.empty:
+        return "", df, datas_disponiveis
+
+    datas_dt = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
+    df["_DATA_TXT_COMPLETA"] = datas_dt.dt.strftime("%d/%m/%Y %H:%M")
+
+    # Colunas no mesmo padrão do TXT local enviado pelo extrator.
+    colunas = {
+        "ORDEM_DE_SERVICO": _serie_texto_segura(df, "ORDEM_DE_SERVICO"),
+        "GRUPO_NOTA": _serie_texto_segura(df, "GRUPO_NOTA"),
+        "RECURSO": _serie_texto_segura(df, "RECURSO"),
+        "STATUS": _serie_texto_segura(df, "STATUS"),
+        "DATA_ENCERRAMENTO": df["_DATA_TXT_COMPLETA"].fillna(""),
+        "ELETRICISTA1": _serie_texto_segura(df, "ELETRICISTA1"),
+        "ELETRICISTA2": _serie_texto_segura(df, "ELETRICISTA2"),
+        "RECUSA": _serie_texto_segura(df, "RECUSA"),
+    }
+    out = pd.DataFrame(colunas)
+
+    # Limpa .0 de códigos numéricos que podem vir do CSV/SQLite.
+    for col in ["ORDEM_DE_SERVICO", "ELETRICISTA1", "ELETRICISTA2"]:
+        out[col] = out[col].astype(str).str.replace(r"\.0$", "", regex=True).replace("nan", "")
+
+    out = out.sort_values(["RECURSO", "DATA_ENCERRAMENTO", "ORDEM_DE_SERVICO"], kind="stable")
+    linhas = out.astype(str).apply(lambda r: "\t".join(r.tolist()), axis=1).tolist()
+    return "\n".join(linhas), out, datas_disponiveis
+
 # ==============================
 # ABA DOWNLOAD
 # ==============================
 
 if tela_escolhida == "Downloads":
+    st.subheader("TXT do dia")
+    st.caption("Gera o TXT tabulado no padrão do extrator local, pronto para copiar/colar no Excel.")
+
+    meses_txt = meses_escolhidos_resumo or [mes_mais_recente]
+    notas_txt = carregar_notas_rapido(meses_txt)
+    txt_previo, df_txt_previo, datas_txt = gerar_txt_supervisao_do_dia(notas_txt)
+
+    if datas_txt:
+        data_txt_escolhida = st.selectbox("Dia do TXT", datas_txt, index=0, key="download_txt_dia")
+        txt_supervisao, df_txt, _ = gerar_txt_supervisao_do_dia(notas_txt, data_txt_escolhida)
+        st.caption(f"Linhas no TXT: {numero(len(df_txt))}")
+
+        c_txt1, c_txt2 = st.columns([1, 1])
+        with c_txt1:
+            st.download_button(
+                "⬇️ Baixar TXT do dia",
+                txt_supervisao.encode("utf-8"),
+                file_name=f"resultado_final_{data_txt_escolhida.replace('/', '-')}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+        with c_txt2:
+            st.download_button(
+                "⬇️ Baixar CSV auxiliar",
+                df_txt.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig"),
+                file_name=f"resultado_final_{data_txt_escolhida.replace('/', '-')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        st.text_area("Copiar TXT", txt_supervisao, height=260, help="Clique dentro da caixa, use Ctrl+A e Ctrl+C para copiar.")
+    else:
+        st.warning("Não encontrei notas para gerar o TXT do dia.")
+
+    st.divider()
     st.subheader("Arquivos carregados")
 
     banco_atual = caminho_banco_gzus()
