@@ -2390,111 +2390,6 @@ def carregar_notas_rapido(meses=None):
 
 
 # ==============================
-# HOME ULTRARRÁPIDA SEM NOTAS BRUTAS
-# ==============================
-# A tela inicial não deve depender da tabela grande de notas. Ela usa as tabelas
-# já pré-processadas pelo extrator: faturamento_dias e faturamento_carro_dias.
-# Isso faz o primeiro painel aparecer rápido e deixa a tabela grande só para as
-# telas que realmente precisam dela.
-
-def meses_disponiveis_leves(dias_df, carro_dias_df=None):
-    partes = []
-    for df in [dias_df, carro_dias_df if carro_dias_df is not None else pd.DataFrame()]:
-        if df is None or df.empty or "DATA" not in df.columns:
-            continue
-        datas = pd.to_datetime(df["DATA"], dayfirst=True, errors="coerce")
-        parte = pd.DataFrame({"PERIODO": datas.dt.to_period("M")}).dropna()
-        if not parte.empty:
-            partes.append(parte)
-    if not partes:
-        return meses_disponiveis_rapido()
-    meses = pd.concat(partes, ignore_index=True).drop_duplicates().sort_values("PERIODO", ascending=False)
-    meses["MES"] = meses["PERIODO"].dt.strftime("%m/%Y")
-    return meses[["MES", "PERIODO"]].reset_index(drop=True)
-
-
-def _filtrar_df_por_meses_coluna_data(df, meses):
-    if df is None or df.empty or not meses or "DATA" not in df.columns:
-        return df.copy() if df is not None else pd.DataFrame()
-    out = df.copy()
-    datas = pd.to_datetime(out["DATA"], dayfirst=True, errors="coerce")
-    return out[datas.dt.strftime("%m/%Y").isin(list(meses))].copy()
-
-
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
-def resumo_home_leve_cache(dias_df, carro_dias_df, meses_escolhidos, contrato_escolhido):
-    dias_base = _filtrar_df_por_meses_coluna_data(dias_df, tuple(meses_escolhidos or []))
-    carro_base = _filtrar_df_por_meses_coluna_data(carro_dias_df, tuple(meses_escolhidos or []))
-
-    if contrato_escolhido != "Todos" and not dias_base.empty and "CONTRATO" in dias_base.columns:
-        dias_base = dias_base[dias_base["CONTRATO"] == contrato_escolhido]
-    if contrato_escolhido != "Todos" and not carro_base.empty and "CONTRATO" in carro_base.columns:
-        # Quando o usuário escolhe STC Jundiai, o carro estimado continua sendo útil.
-        if contrato_escolhido in ["STC Jundiai", "Contrato Carro STC estimado"]:
-            pass
-        else:
-            carro_base = carro_base.iloc[0:0]
-
-    resumo_contrato = pd.DataFrame()
-    if not dias_base.empty:
-        for col in ["QTD_NOTAS", "FATURAMENTO"]:
-            if col not in dias_base.columns:
-                dias_base[col] = 0
-            dias_base[col] = pd.to_numeric(dias_base[col], errors="coerce").fillna(0)
-        resumo_contrato = (
-            dias_base.groupby("CONTRATO", dropna=False)
-            .agg(TOTAL_NOTAS=("QTD_NOTAS", "sum"), FATURAMENTO=("FATURAMENTO", "sum"))
-            .reset_index()
-        )
-        resumo_contrato["CORTES"] = 0
-        resumo_contrato["RELIGUES"] = 0
-        resumo_contrato["FATURAMENTO_MIN"] = 0.0
-        resumo_contrato["FATURAMENTO_MAX"] = 0.0
-
-    if not carro_base.empty:
-        for col in ["QTD_NOTAS", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
-            if col not in carro_base.columns:
-                carro_base[col] = 0
-            carro_base[col] = pd.to_numeric(carro_base[col], errors="coerce").fillna(0)
-        carro_resumo = (
-            carro_base.groupby("CONTRATO", dropna=False)
-            .agg(
-                TOTAL_NOTAS=("QTD_NOTAS", "sum"),
-                FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
-                FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
-            )
-            .reset_index()
-        )
-        carro_resumo["FATURAMENTO"] = 0.0
-        carro_resumo["CORTES"] = 0
-        carro_resumo["RELIGUES"] = 0
-        if resumo_contrato.empty:
-            resumo_contrato = carro_resumo
-        else:
-            resumo_contrato = pd.concat([resumo_contrato, carro_resumo], ignore_index=True, sort=False)
-
-    if resumo_contrato.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES"]:
-        if col not in resumo_contrato.columns:
-            resumo_contrato[col] = 0
-        resumo_contrato[col] = pd.to_numeric(resumo_contrato[col], errors="coerce").fillna(0).astype(int)
-    for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
-        if col not in resumo_contrato.columns:
-            resumo_contrato[col] = 0.0
-        resumo_contrato[col] = pd.to_numeric(resumo_contrato[col], errors="coerce").fillna(0.0)
-
-    resumo_contrato = resumo_contrato.sort_values(["FATURAMENTO", "FATURAMENTO_MAX"], ascending=False).reset_index(drop=True)
-    resumo_grupo = pd.DataFrame()
-    return resumo_contrato, resumo_grupo
-
-
-def resumo_home_leve(dias_df, carro_dias_df, meses_escolhidos, contrato_escolhido):
-    return resumo_home_leve_cache(dias_df, carro_dias_df, tuple(meses_escolhidos or []), contrato_escolhido)
-
-
-# ==============================
 # REGRAS DE CONTRATO / FATURAMENTO
 # Usadas na aba "Parcial do dia"
 # ==============================
@@ -5886,7 +5781,7 @@ st.sidebar.info(contrato_escolhido)
 
 # Este período vale para a tela inicial "Resumo".
 # Por padrão, fica só no mês mais recente da base, para não somar março + abril sem querer.
-meses_base = meses_disponiveis_leves(dias_original, carro_dias_original)
+meses_base = meses_disponiveis_da_base(notas)
 meses_escolhidos_resumo = []
 
 if not meses_base.empty:
@@ -5952,20 +5847,27 @@ tela_escolhida = st.radio(
     key="tela_principal_gzus",
 )
 
-# A tabela grande de notas NÃO é mais carregada aqui.
-# Cada tela pesada carrega somente quando for aberta.
-notas = pd.DataFrame()
+# Agora sim carregamos notas, mas somente do(s) mês(es) selecionado(s).
+# Isso é o ponto principal: evita SELECT * na tabela grande logo após login.
+notas = carregar_notas_rapido(meses_escolhidos_resumo)
+
+try:
+    fontes_usadas = st.session_state.get("fontes_dados_dashboard", {})
+    fonte_notas = fontes_usadas.get("notas", "")
+    if fonte_notas:
+        st.sidebar.caption(f"Notas: {fonte_notas}")
+except Exception:
+    pass
 
 # ==============================
 # ABA RESUMO
 # ==============================
 
 if tela_escolhida == "Resumo":
-    resumo_contrato_periodo, resumo_grupo_periodo = resumo_home_leve(
-        dias,
-        carro_dias,
+    resumo_contrato_periodo, resumo_grupo_periodo = resumo_por_periodo(
+        notas,
         meses_escolhidos_resumo,
-        contrato_escolhido,
+        contrato_filtro_notas,
     )
 
     periodo_texto = ", ".join(meses_escolhidos_resumo) if meses_escolhidos_resumo else "mês mais recente"
@@ -5997,8 +5899,11 @@ if tela_escolhida == "Resumo":
             c1.metric("Faturamento contratos", dinheiro(total_contratos))
             c2.metric("Notas únicas", numero(qtd_notas))
 
-        # Para manter a abertura inicial rápida, a meta CPFL detalhada fica nas telas
-        # Parcial / Ranking, que carregam notas sob demanda.
+        if contrato_filtro_notas == "STC Jundiai":
+            meta_cpfl_mes = meta_cpfl_stc_meses_ate_momento(meses_escolhidos_resumo)
+            cortes_cpfl_mes = contar_cortes_cpfl_stc_meses_ate_momento(notas, meses_escolhidos_resumo, "STC Jundiai")
+            express_cpfl_mes = contar_express_cpfl_stc_meses_ate_momento(notas, meses_escolhidos_resumo, "STC Jundiai")
+            render_meta_cpfl_stc("Meta CPFL acumulada no mês", meta_cpfl_mes, cortes_cpfl_mes, express_cpfl_mes)
 
         st.subheader("Faturamento por contrato")
 
@@ -6007,9 +5912,7 @@ if tela_escolhida == "Resumo":
 
         st.markdown("**Resumo com corte + religue**")
 
-        if resumo_grupo_periodo.empty:
-            st.caption("Nesta versão rápida, o detalhamento corte/religue da Home fica fora do carregamento inicial. Use Parcial, Ranking ou Notas para detalhes operacionais.")
-        else:
+        if not resumo_grupo_periodo.empty:
             tabela_resumo = resumo_grupo_periodo.pivot_table(
                 index="CONTRATO",
                 columns="GRUPO_NOTA",
@@ -6044,7 +5947,6 @@ if tela_escolhida == "Resumo":
 # ==============================
 
 if tela_escolhida == "Parcial do dia":
-    notas = carregar_notas_rapido(meses_escolhidos_resumo)
     st.subheader("Parcial do dia por recurso")
     if contrato_escolhido != contrato_filtro_notas:
         st.caption(f"Exibindo a base operacional de notas: {contrato_filtro_notas}.")
@@ -6206,7 +6108,6 @@ if tela_escolhida == "Parcial do dia":
 # ==============================
 
 if tela_escolhida == "Ranking de recursos":
-    notas = carregar_notas_rapido(meses_escolhidos_resumo)
     st.subheader("🏆 Ranking de recursos")
     st.caption("Ranking por RECURSO/equipe, usando o código operacional da equipe, como SAL5539-EMP.")
     st.markdown(
@@ -6471,8 +6372,6 @@ if tela_escolhida == "Ranking de recursos":
 # ==============================
 
 if tela_escolhida == "Comparativo mensal":
-    # Comparativo precisa enxergar meses diferentes; carrega notas somente ao abrir esta tela.
-    notas = carregar_notas_rapido(None)
     st.subheader("Comparativo mensal")
     st.caption("Compara o mês escolhido com o mês anterior, somando Pagamento Express pelo mês de referência.")
 
@@ -6625,7 +6524,6 @@ if mostrar_aba_carro and tela_escolhida == "STC":
 # ==============================
 
 if tela_escolhida == "Notas":
-    notas = carregar_notas_rapido(meses_escolhidos_resumo)
     st.subheader("Consulta de notas")
 
     if not notas.empty:
