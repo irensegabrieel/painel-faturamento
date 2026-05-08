@@ -4,13 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Segunda a sexta — 07:00 às 18:45 (Brasil / UTC-3)
-    # GitHub Actions usa UTC: 10:00 às 21:45 UTC
-    - cron: "0,15,30,45 10-21 * * 1-5"
-
-    # Sábado — 07:00 às 12:45 (Brasil / UTC-3)
-    # GitHub Actions usa UTC: 10:00 às 15:45 UTC
-    - cron: "0,15,30,45 10-15 * * 6"
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
