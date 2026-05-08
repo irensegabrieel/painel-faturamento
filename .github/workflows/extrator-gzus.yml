@@ -1,64 +1,46 @@
+```yaml
 name: Extrator G.Z.U.S.
 
 on:
   workflow_dispatch:
-  schedule:
-    # GitHub Actions usa UTC.
-    # São Paulo/BRT = UTC-3.
-    # Segunda a sexta: 08:00 até 18:30 BRT, a cada 30 minutos.
-    - cron: "0,30 11-21 * * 1-5"
-    # Sábado: 08:00, 10:00, 12:00 e 14:00 BRT.
-    - cron: "0 11,13,15,17 * * 6"
 
 permissions:
   contents: write
 
-  env:
-  HEADLESS: "1"
-  MATRICULA: ${{ secrets.MATRICULA }}
-  SENHA: ${{ secrets.SENHA }}
-  GITHUB_DASHBOARD_TOKEN: ${{ secrets.DASHBOARD_TOKEN }}
-  GITHUB_DASHBOARD_REPO: ${{ secrets.DASHBOARD_REPO }}
-  GITHUB_DASHBOARD_BRANCH: "main"
-  GITHUB_DASHBOARD_REMOTE_DIR: "dashboard"
-  GZUS_POS_EXTRATOR_AUTO: "true"
-  GZUS_PROJETO_PAINEL_DIR: ${{ github.workspace }}
-  EXTRATOR_ARQUIVO: "Extrator_19_EAs_SAO_MIGUEL_TRATAMENTO_CORRIGIDO_GITHUB_502_CORRIGIDO.pyw"
-
-concurrency:
-  group: extrator-gzus
-  cancel-in-progress: false
-
 jobs:
   executar-extrator:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+
+    env:
+      HEADLESS: "1"
+      MATRICULA: ${{ secrets.MATRICULA }}
+      SENHA: ${{ secrets.SENHA }}
+      GITHUB_DASHBOARD_TOKEN: ${{ secrets.DASHBOARD_TOKEN }}
+      GITHUB_DASHBOARD_REPO: ${{ secrets.DASHBOARD_REPO }}
+      GITHUB_DASHBOARD_BRANCH: "main"
+      GITHUB_DASHBOARD_REMOTE_DIR: "dashboard"
+      GZUS_POS_EXTRATOR_AUTO: "true"
+      GZUS_PROJETO_PAINEL_DIR: ${{ github.workspace }}
+      EXTRATOR_ARQUIVO: "Extrator_19_EAs_SAO_MIGUEL_TRATAMENTO_CORRIGIDO_GITHUB_502_CORRIGIDO.pyw"
 
     steps:
-      - name: Baixar repositório
+      - name: Checkout repositório
         uses: actions/checkout@v4
 
-      - name: Preparar Python
+      - name: Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
-      - name: Preparar Chrome e ChromeDriver
+      - name: Instalar Google Chrome
         uses: browser-actions/setup-chrome@v1
-        with:
-          chrome-version: stable
-          install-chromedriver: true
 
-      - name: Instalar bibliotecas do sistema
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-tk
-
-      - name: Instalar dependências Python
+      - name: Instalar dependências
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-github-actions.txt
 
-      - name: Rodar extrator
-        run: python run_extrator_cloud.py
+      - name: Executar extrator
+        run: |
+          python run_extrator_cloud.py
+```
