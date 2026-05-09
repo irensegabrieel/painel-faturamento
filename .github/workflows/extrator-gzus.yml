@@ -3,9 +3,6 @@ name: Extrator G.Z.U.S.
 on:
   workflow_dispatch:
 
-  schedule:
-    - cron: "*/5 * * * *"
-
 permissions:
   contents: write
 
@@ -14,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      TZ: "America/Sao_Paulo"
       HEADLESS: "1"
       MATRICULA: ${{ secrets.MATRICULA }}
       SENHA: ${{ secrets.SENHA }}
