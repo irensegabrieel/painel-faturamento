@@ -1,4 +1,4 @@
-from pathlib import Path
+afrom pathlib import Path
 import os
 from collections.abc import Mapping
 from datetime import datetime
@@ -1988,28 +1988,7 @@ def ler_sqlite_dashboard(chave):
 
 
 def ler_base_dashboard(chave, nome_arquivo):
-    """Fonte única de leitura.
-
-    Regra importante:
-    - Para tabelas pequenas/resumidas, usa SQLite primeiro e CSV como plano B.
-    - Para NOTAS, força CSV primeiro.
-
-    Motivo: o gzus_dashboard.db é um banco leve do painel e pode não conter o
-    histórico completo de notas. Ranking, parcial do dia e meses anteriores
-    dependem do dashboard/notas_dashboard.csv acumulado.
-    """
-    if chave == "notas":
-        caminho = caminho_arquivo(nome_arquivo)
-        if caminho:
-            return ler_csv(str(caminho)), "csv_notas_historico"
-
-        # Fallback local: só usa SQLite se o CSV realmente não existir.
-        df_sqlite = ler_sqlite_dashboard(chave)
-        if not df_sqlite.empty:
-            return df_sqlite, "sqlite_fallback_notas"
-
-        return pd.DataFrame(), "faltando"
-
+    """Fonte única de leitura: SQLite primeiro, CSV como plano B."""
     df_sqlite = ler_sqlite_dashboard(chave)
     if not df_sqlite.empty:
         return df_sqlite, "sqlite"
@@ -2341,11 +2320,13 @@ def meses_disponiveis_sql_cache(caminho_banco_str, tabela, mtime_banco):
 
 
 def meses_disponiveis_rapido():
-    """Lista meses disponíveis usando o CSV histórico de notas.
-
-    Não usa o SQLite leve para notas, porque esse banco pode não carregar o
-    histórico completo necessário para ranking/parciais antigas.
-    """
+    caminho = caminho_banco_gzus()
+    tabela = TABELAS_SQLITE_DASHBOARD.get("notas")
+    if sqlite_ativado() and caminho and tabela and _sqlite_tabela_existe(caminho, tabela):
+        try:
+            return meses_disponiveis_sql_cache(str(caminho), tabela, caminho.stat().st_mtime)
+        except Exception:
+            pass
     df, _ = ler_base_dashboard("notas", ARQUIVOS["notas"])
     return meses_disponiveis_da_base(df)
 
@@ -2386,12 +2367,18 @@ def ler_notas_sql_periodo_cache(caminho_banco_str, tabela, meses, mtime_banco):
 
 
 def carregar_notas_rapido(meses=None):
-    """Carrega notas para ranking/parciais sempre a partir do CSV histórico.
-
-    O SQLite continua sendo usado para bases pequenas de faturamento, mas as
-    notas completas ficam no dashboard/notas_dashboard.csv. Isso preserva os
-    meses anteriores no ranking e na parcial do dia.
-    """
+    caminho = caminho_banco_gzus()
+    tabela = TABELAS_SQLITE_DASHBOARD.get("notas")
+    if sqlite_ativado() and caminho and tabela and _sqlite_tabela_existe(caminho, tabela):
+        try:
+            df = ler_notas_sql_periodo_cache(str(caminho), tabela, tuple(meses or []), caminho.stat().st_mtime)
+            if _sqlite_tabela_parece_valida(df):
+                fontes = st.session_state.get("fontes_dados_dashboard", {})
+                fontes["notas"] = "sqlite_filtrado"
+                st.session_state["fontes_dados_dashboard"] = fontes
+                return df
+        except Exception:
+            pass
     df, fonte = ler_base_dashboard("notas", ARQUIVOS["notas"])
     if meses and not df.empty:
         col_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in df.columns else "DATA"
@@ -6122,432 +6109,187 @@ if tela_escolhida == "Resumo":
             hide_index=True,
         )
 
+
+
+# ==============================
+# CONSULTAS INSTANTÂNEAS PRÉ-CALCULADAS
+# ==============================
+def _instant_db_path():
+    candidatos = [PASTA_DASHBOARD / "gzus_dashboard.db", PASTA_ATUAL / "gzus_dashboard.db", PASTA_DASHBOARD / "gzus.db", PASTA_ATUAL / "gzus.db"]
+    for c in candidatos:
+        try:
+            if c.exists():
+                return c
+        except Exception:
+            pass
+    return None
+
+def _instant_tabela_existe(tabela):
+    caminho = _instant_db_path()
+    if not caminho:
+        return False
+    try:
+        with sqlite3.connect(str(caminho)) as conn:
+            return conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (tabela,)).fetchone() is not None
+    except Exception:
+        return False
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _instant_query_cache(caminho_db, tabela, where_sql="", params_tuple=(), mtime=0):
+    del mtime
+    try:
+        sql = f'SELECT * FROM "{tabela}"'
+        if where_sql:
+            sql += " WHERE " + where_sql
+        with sqlite3.connect(caminho_db) as conn:
+            return pd.read_sql_query(sql, conn, params=list(params_tuple))
+    except Exception:
+        return pd.DataFrame()
+
+def instant_query(tabela, where_sql="", params=()):
+    caminho = _instant_db_path()
+    if not caminho or not _instant_tabela_existe(tabela):
+        return pd.DataFrame()
+    try:
+        mtime = caminho.stat().st_mtime
+    except Exception:
+        mtime = 0
+    return _instant_query_cache(str(caminho), tabela, where_sql, tuple(params or ()), mtime)
+
+def instant_opcoes(chave):
+    df = instant_query("instant_opcoes", "CHAVE = ?", (chave,))
+    if df.empty or "VALOR" not in df.columns:
+        return []
+    if "ORDEM" in df.columns:
+        df["ORDEM"] = pd.to_numeric(df["ORDEM"], errors="coerce").fillna(999999)
+        df = df.sort_values(["ORDEM", "VALOR"])
+    return df["VALOR"].dropna().astype(str).tolist()
+
+def instant_disponivel():
+    return _instant_tabela_existe("instant_parcial_recurso") and _instant_tabela_existe("instant_ranking")
+
+
 # ==============================
 # ABA PARCIAL DO DIA
 # ==============================
 
 if tela_escolhida == "Parcial do dia":
-    notas = carregar_notas_rapido(meses_escolhidos_resumo)
     st.subheader("Parcial do dia por recurso")
     if contrato_escolhido != contrato_filtro_notas:
         st.caption(f"Exibindo a base operacional de notas: {contrato_filtro_notas}.")
 
-    # Base com recusas para mostrar na parcial.
-    parcial_com_recusas = preparar_parcial_do_dia(notas, incluir_recusas=True)
-
-    if parcial_com_recusas.empty:
-        st.info("Ainda não há dados suficientes para montar a parcial do dia.")
+    if not instant_disponivel():
+        st.warning("Tabelas instantâneas ainda não encontradas. Rode o GitHub Actions uma vez após subir o precalcular_dashboard.py.")
     else:
-        if contrato_filtro_notas != "Todos" and "CONTRATO" in parcial_com_recusas.columns:
-            parcial_com_recusas = parcial_com_recusas[parcial_com_recusas["CONTRATO"] == contrato_filtro_notas]
-
-        datas_disponiveis = (
-            parcial_com_recusas[["DATA", "DATA_DT"]]
-            .drop_duplicates()
-            .sort_values("DATA_DT", ascending=False)
-        )
-
-        if datas_disponiveis.empty:
-            st.info("Nenhuma data encontrada na base de notas para este contrato/filtro.")
+        contrato_sql = contrato_filtro_notas if contrato_filtro_notas else "Todos"
+        datas = instant_opcoes(f"datas_parcial::{contrato_sql}")
+        if not datas and contrato_sql != "Todos":
+            datas = instant_opcoes("datas_parcial::Todos")
+        if not datas:
+            st.info("Nenhuma data encontrada nas tabelas instantâneas.")
         else:
-            opcoes_datas = datas_disponiveis["DATA"].tolist()
-            data_escolhida = st.selectbox("Escolha o dia", opcoes_datas, index=0)
-
-            dados_dia_cache = calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida)
-            parcial_dia_tudo = dados_dia_cache["parcial_dia_tudo"].copy()
-            parcial_dia = dados_dia_cache["parcial_dia"].copy()
-            recusas_dia = dados_dia_cache["recusas_dia"].copy()
-            totais_dia = dados_dia_cache["totais"]
-
-            if parcial_dia_tudo.empty:
+            data_escolhida = st.selectbox("Escolha o dia", datas, index=0)
+            where = "DATA = ?"
+            params = [data_escolhida]
+            if contrato_sql != "Todos":
+                where += " AND CONTRATO = ?"
+                params.append(contrato_sql)
+            resumo_recurso = instant_query("instant_parcial_recurso", where, params)
+            detalhe = instant_query("instant_parcial_detalhe", where, params)
+            if resumo_recurso.empty:
                 st.info("Nenhuma nota encontrada para esse dia.")
             else:
-                total_notas = int(totais_dia.get("total_notas", 0))
-                total_recursos_ativos = int(totais_dia.get("total_recursos_ativos", 0))
-                total_cortes = int(totais_dia.get("total_cortes", 0))
-                total_religues = int(totais_dia.get("total_religues", 0))
-                total_recusas = int(totais_dia.get("total_recusas", 0))
-                total_faturamento = float(totais_dia.get("total_faturamento", 0.0))
-                total_faturamento_min = float(totais_dia.get("total_faturamento_min", 0.0))
-                total_faturamento_max = float(totais_dia.get("total_faturamento_max", 0.0))
-
+                for col in ["NOTAS", "CORTES", "RELIGUES", "RECUSAS"]:
+                    if col not in resumo_recurso.columns:
+                        resumo_recurso[col] = 0
+                    resumo_recurso[col] = pd.to_numeric(resumo_recurso[col], errors="coerce").fillna(0).astype(int)
+                for col in ["FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]:
+                    if col not in resumo_recurso.columns:
+                        resumo_recurso[col] = 0.0
+                    resumo_recurso[col] = pd.to_numeric(resumo_recurso[col], errors="coerce").fillna(0.0)
+                total_recursos_ativos = int((resumo_recurso["NOTAS"] > 0).sum())
+                total_notas = int(resumo_recurso["NOTAS"].sum())
+                total_cortes = int(resumo_recurso["CORTES"].sum())
+                total_religues = int(resumo_recurso["RELIGUES"].sum())
+                total_recusas = int(resumo_recurso["RECUSAS"].sum())
+                total_faturamento = float(resumo_recurso["FATURAMENTO"].sum())
+                total_faturamento_min = float(resumo_recurso["FATURAMENTO_MIN"].sum())
+                total_faturamento_max = float(resumo_recurso["FATURAMENTO_MAX"].sum())
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Recursos ativos", numero(total_recursos_ativos))
                 c2.metric("Notas feitas", numero(total_notas))
                 c3.metric("Cortes", numero(total_cortes))
                 c4.metric("Religues", numero(total_religues))
                 c5.metric("Recusas", numero(total_recusas))
-
-                if contrato_filtro_notas == "STC Jundiai":
-                    data_meta_inicio, data_meta_fim = _periodo_datas_cpfl("Dia", data_escolhida)
-                    meta_cpfl = meta_cpfl_stc_periodo(data_meta_inicio, data_meta_fim)
-                    express_cpfl = contar_express_cpfl_periodo(notas, "STC Jundiai", data_meta_inicio, data_meta_fim)
-                    render_meta_cpfl_stc("Meta CPFL do dia", meta_cpfl, total_cortes, express_cpfl)
-
-                tem_carro_no_dia = "CONTRATO" in parcial_dia.columns and (
-                    parcial_dia["CONTRATO"] == "STC Jundiai"
-                ).any()
-
-                if tem_carro_no_dia:
+                if total_faturamento_min != total_faturamento_max:
                     st.metric("Faturamento estimado", f"{dinheiro(total_faturamento_min)} a {dinheiro(total_faturamento_max)}")
                 else:
                     st.metric("Faturamento", dinheiro(total_faturamento))
-
                 st.markdown('<div class="section-title">Ranking do dia por produção</div>', unsafe_allow_html=True)
-
-                resumo_equipe = dados_dia_cache["resumo_equipe"].copy()
-
-                if resumo_equipe.empty:
-                    st.info("Nenhuma nota ou recusa encontrada para esse dia.")
-                else:
-                    resumo_equipe.insert(0, "POSIÇÃO", range(1, len(resumo_equipe) + 1))
-
-                    recursos_sem_movimento = dados_dia_cache["recursos_sem_movimento"].copy()
-                    render_alerta_recursos_sem_movimento(
-                        recursos_sem_movimento,
-                        contrato_unico=(contrato_escolhido != "Todos"),
-                    )
-
-                    top10_dia = resumo_equipe.head(10).copy()
-
-                    grafico_parcial = (
-                        alt.Chart(top10_dia)
-                        .mark_bar(
-                            cornerRadiusTopLeft=8,
-                            cornerRadiusTopRight=8,
-                        )
-                        .encode(
-                            x=alt.X(
-                                "RECURSO:N",
-                                sort=alt.SortField(field="TOTAL_NOTAS", order="descending"),
-                                title="Recurso",
-                                axis=alt.Axis(labelAngle=-90),
-                            ),
-                            y=alt.Y("TOTAL_NOTAS:Q", title="Notas feitas"),
-                            tooltip=[
-                                alt.Tooltip("POSIÇÃO:Q", title="Posição"),
-                                alt.Tooltip("RECURSO:N", title="Recurso"),
-                                alt.Tooltip("TOTAL_NOTAS:Q", title="Notas feitas"),
-                                alt.Tooltip("CORTES:Q", title="Cortes"),
-                                alt.Tooltip("RELIGUES:Q", title="Religues"),
-                                alt.Tooltip("RECUSAS:Q", title="Recusas"),
-                                alt.Tooltip("FATURAMENTO:Q", title="Faturamento", format=",.2f"),
-                            ],
-                        )
-                        .properties(height=330)
-                    )
-
-                    st.altair_chart(grafico_parcial, use_container_width=True)
-
-                    def faturamento_linha_equipe(row):
-                        if row.get("CONTRATO") == "STC Jundiai":
-                            return f"{dinheiro(row.get('FATURAMENTO_MIN', 0))} a {dinheiro(row.get('FATURAMENTO_MAX', 0))}"
-                        return dinheiro(row.get("FATURAMENTO", 0))
-
-                    tabela_equipe = resumo_equipe.copy()
-                    tabela_equipe["FATURAMENTO"] = tabela_equipe.apply(faturamento_linha_equipe, axis=1)
-                    tabela_equipe = tabela_equipe[[
-                        "POSIÇÃO", "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS", "FATURAMENTO"
-                    ]]
-
-                    st.dataframe(formatar_tabela(tabela_equipe), use_container_width=True, hide_index=True)
-
-                st.markdown('<div class="section-title">Recusas do dia</div>', unsafe_allow_html=True)
-
-                if recusas_dia.empty:
-                    st.success("Nenhuma recusa encontrada para esse dia.")
-                else:
-                    with st.expander("Ver detalhes das recusas", expanded=True):
-                        colunas_recusa = [
-                            "ORDEM_DE_SERVICO", "RECURSO", "CONTRATO", "GRUPO_NOTA",
-                            "RECUSA", "DATA", "ELETRICISTA1", "ELETRICISTA2"
-                        ]
-                        colunas_recusa = [c for c in colunas_recusa if c in recusas_dia.columns]
-                        st.dataframe(
-                            recusas_dia[colunas_recusa].sort_values(["RECURSO", "ORDEM_DE_SERVICO"]),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-
+                ranking_dia = resumo_recurso.sort_values(["NOTAS", "FATURAMENTO"], ascending=[False, False]).reset_index(drop=True)
+                ranking_dia.insert(0, "POSIÇÃO", range(1, len(ranking_dia) + 1))
+                cols = [c for c in ["POSIÇÃO", "RECURSO", "CONTRATO", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"] if c in ranking_dia.columns]
+                st.dataframe(formatar_tabela(ranking_dia[cols]), use_container_width=True, hide_index=True)
                 st.markdown('<div class="section-title">Detalhamento das notas feitas no dia</div>', unsafe_allow_html=True)
-                colunas_detalhe = [
-                    "ORDEM_DE_SERVICO", "RECURSO", "CONTRATO", "GRUPO_NOTA", "DATA", "ELETRICISTA1", "ELETRICISTA2"
-                ]
-                colunas_detalhe = [c for c in colunas_detalhe if c in parcial_dia.columns]
-                if parcial_dia.empty:
+                if detalhe.empty:
                     st.info("Nenhuma nota feita para detalhar.")
                 else:
-                    st.dataframe(
-                        parcial_dia[colunas_detalhe].sort_values(["RECURSO", "ORDEM_DE_SERVICO"]),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
+                    colunas_detalhe = [c for c in ["ORDEM_DE_SERVICO", "RECURSO", "CONTRATO", "GRUPO_NOTA", "DATA", "ELETRICISTA1", "ELETRICISTA2", "RECUSA"] if c in detalhe.columns]
+                    st.dataframe(detalhe[colunas_detalhe].sort_values([c for c in ["RECURSO", "ORDEM_DE_SERVICO"] if c in colunas_detalhe]), use_container_width=True, hide_index=True)
 
 # ==============================
 # ABA RANKING DE RECURSOS
 # ==============================
 
 if tela_escolhida == "Ranking de recursos":
-    notas = carregar_notas_rapido(meses_escolhidos_resumo)
     st.subheader("🏆 Ranking de recursos")
-    st.caption("Ranking por RECURSO/equipe, usando o código operacional da equipe, como SAL5539-EMP.")
-    st.markdown(
-        '<div class="soft-note">⚡ Otimizado com cache: dias anteriores ficam reaproveitados, então alternar filtros tende a ficar mais rápido após o primeiro carregamento.</div>',
-        unsafe_allow_html=True,
-    )
-
-    base_exec = montar_base_executores(notas)
-
-    if base_exec.empty:
-        st.info("Ainda não há dados suficientes de eletricistas/executores para montar o ranking.")
+    st.caption("Ranking por RECURSO/equipe, usando dados pré-calculados pelo GitHub Actions.")
+    st.markdown('<div class="soft-note">⚡ Modo instantâneo: ranking já vem pronto do SQLite; trocar contrato/período vira só consulta rápida.</div>', unsafe_allow_html=True)
+    if not instant_disponivel():
+        st.warning("Tabelas instantâneas ainda não encontradas. Rode o GitHub Actions uma vez após subir o precalcular_dashboard.py.")
     else:
+        contratos_exec = instant_opcoes("contratos_ranking") or ["Todos"]
+        if "Todos" not in contratos_exec:
+            contratos_exec = ["Todos"] + contratos_exec
         col_f1, col_f2, col_f3, col_f4 = st.columns([1.2, 1.1, 1.2, 1.1])
-
-        dias_ranking, semanas_ranking, meses_ranking = opcoes_periodo_ranking(base_exec)
-        contratos_exec = ["Todos"] + sorted(base_exec["CONTRATO"].dropna().unique().tolist())
-        contrato_ranking = col_f1.selectbox(
-            "Contrato",
-            contratos_exec,
-            index=contratos_exec.index(contrato_filtro_notas) if contrato_filtro_notas in contratos_exec else 0,
-            key="ranking_contrato",
-        )
-
-        tipo_periodo = col_f2.selectbox(
-            "Período",
-            ["Total", "Dia", "Semana", "Mês"],
-            index=3,
-            key="ranking_tipo_periodo",
-        )
-
-        valor_periodo = None
+        contrato_default = contrato_filtro_notas if contrato_filtro_notas in contratos_exec else "Todos"
+        contrato_ranking = col_f1.selectbox("Contrato", contratos_exec, index=contratos_exec.index(contrato_default), key="ranking_contrato_instant")
+        tipo_periodo = col_f2.selectbox("Período", ["Total", "Dia", "Semana", "Mês"], index=3, key="ranking_tipo_periodo_instant")
+        valor_periodo = "Total"
         if tipo_periodo == "Dia":
-            valor_periodo = col_f3.selectbox("Dia", dias_ranking, key="ranking_dia")
+            opcoes = instant_opcoes(f"ranking_dias::{contrato_ranking}") or instant_opcoes("ranking_dias::Todos")
+            valor_periodo = col_f3.selectbox("Dia", opcoes, key="ranking_dia_instant") if opcoes else ""
         elif tipo_periodo == "Semana":
-            valor_periodo = col_f3.selectbox("Semana iniciada em", semanas_ranking, key="ranking_semana")
+            opcoes = instant_opcoes(f"ranking_semanas::{contrato_ranking}") or instant_opcoes("ranking_semanas::Todos")
+            valor_periodo = col_f3.selectbox("Semana iniciada em", opcoes, key="ranking_semana_instant") if opcoes else ""
         elif tipo_periodo == "Mês":
-            valor_periodo = col_f3.selectbox("Mês", meses_ranking, key="ranking_mes")
+            opcoes = instant_opcoes(f"ranking_meses::{contrato_ranking}") or instant_opcoes("ranking_meses::Todos")
+            valor_periodo = col_f3.selectbox("Mês", opcoes, key="ranking_mes_instant") if opcoes else ""
         else:
             col_f3.info("Considerando toda a base")
-
-        criterio = col_f4.selectbox("Ordenar por", ["Notas", "Faturamento"], key="ranking_criterio")
-
-        base_filtrada_exec, ranking_exec = ranking_recursos_cacheado(
-            base_exec, contrato_ranking, tipo_periodo, valor_periodo, criterio
-        )
-
-        express_data_max = ""
-        express_resumo_recurso = pd.DataFrame()
-        express_sem_vinculo = pd.DataFrame()
-        express_caminho = ""
-        total_express_mensal = 0
-        fat_express_mensal = 0.0
-
-        if tipo_periodo == "Mês" and valor_periodo:
-            (
-                ranking_exec,
-                express_resumo_recurso,
-                express_data_max,
-                express_sem_vinculo,
-                express_caminho,
-                total_express_mensal,
-                fat_express_mensal,
-            ) = aplicar_express_no_ranking_mensal(
-                ranking_exec,
-                notas,
-                valor_periodo,
-                contrato_ranking,
-            )
-
-        if ranking_exec.empty:
-            st.info("Nenhum recurso encontrado para os filtros selecionados.")
+        criterio = col_f4.selectbox("Ordenar por", ["Notas", "Faturamento"], key="ranking_criterio_instant")
+        if not valor_periodo:
+            st.info("Sem períodos disponíveis para esse filtro.")
         else:
-            total_notas_exec = int(ranking_exec["NOTAS"].sum()) if "NOTAS" in ranking_exec.columns else int(base_filtrada_exec["ORDEM_DE_SERVICO"].nunique())
-            total_executores = int(ranking_exec["RECURSO"].nunique())
-            total_fat_atribuido = float(ranking_exec["FATURAMENTO_ATRIBUÍDO"].sum())
-
-            media_notas_executor = total_notas_exec / total_executores if total_executores else 0
-
-            lider = ranking_exec.iloc[0]
-
-            st.markdown(
-                f"""
-                <div class="executive-card">
-                    <h3>Resumo executivo do ranking</h3>
-                    <div>🥇 Líder: <b>{lider['RECURSO']}</b> • {numero(lider['NOTAS'])} notas • {dinheiro(lider['FATURAMENTO_ATRIBUÍDO'])} em faturamento atribuído</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Recursos ativos", numero(total_executores))
-            m2.metric("Notas únicas", numero(total_notas_exec))
-            m3.metric("Faturamento atribuído", dinheiro(total_fat_atribuido))
-            if tipo_periodo == "Mês" and valor_periodo:
-                m4.metric("Express", numero(total_express_mensal))
+            ranking_exec = instant_query("instant_ranking", "CONTRATO = ? AND TIPO_PERIODO = ? AND VALOR_PERIODO = ?", (contrato_ranking, tipo_periodo, valor_periodo))
+            if ranking_exec.empty:
+                st.info("Sem dados para o filtro selecionado.")
             else:
-                m4.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
-
-            if contrato_ranking == "STC Jundiai" and tipo_periodo in ["Dia", "Semana", "Mês"] and valor_periodo:
-                meta_inicio, meta_fim = _periodo_datas_cpfl(tipo_periodo, valor_periodo)
-                meta_cpfl = meta_cpfl_stc_periodo(meta_inicio, meta_fim)
-                cortes_cpfl = int(base_filtrada_exec.loc[
-                    pd.to_numeric(base_filtrada_exec.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0,
-                    "EH_CORTE"
-                ].sum()) if not base_filtrada_exec.empty and "EH_CORTE" in base_filtrada_exec.columns else 0
-                express_cpfl = contar_express_cpfl_periodo(notas, "STC Jundiai", meta_inicio, meta_fim)
-                titulo_meta = "Meta CPFL da semana" if tipo_periodo == "Semana" else ("Meta CPFL do mês" if tipo_periodo == "Mês" else "Meta CPFL do dia")
-                render_meta_cpfl_stc(titulo_meta, meta_cpfl, cortes_cpfl, express_cpfl)
-
-            if tipo_periodo == "Mês" and valor_periodo and not express_sem_vinculo.empty:
-                with st.expander("Ver Express sem vínculo de Ordem de Serviço"):
-                    cols_sem_vinculo = [
-                        "NOTA", "NOTA_NORM", "DATA_EXPRESS_DT", "VALIDAÇÃO", "VALIDACAO",
-                        "NOME_EXECUTOR_01", "NOME_EXECUTOR_02", "NOME_EXECUTOR", "EXECUTOR"
-                    ]
-                    cols_sem_vinculo = [c for c in cols_sem_vinculo if c in express_sem_vinculo.columns]
-                    st.dataframe(
-                        express_sem_vinculo[cols_sem_vinculo],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-            st.markdown('<div class="section-title">Top 10 recursos</div>', unsafe_allow_html=True)
-            top10 = ranking_exec.head(10).copy()
-            coluna_grafico = "NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO"
-            titulo_eixo_y = "Notas" if criterio == "Notas" else "Faturamento atribuído"
-
-            grafico_top10 = (
-                alt.Chart(top10)
-                .mark_bar(
-                    cornerRadiusTopLeft=8,
-                    cornerRadiusTopRight=8,
-                )
-                .encode(
-                    x=alt.X(
-                        "RECURSO:N",
-                        sort=alt.SortField(field=coluna_grafico, order="descending"),
-                        title="Recurso",
-                        axis=alt.Axis(labelAngle=-90),
-                    ),
-                    y=alt.Y(
-                        f"{coluna_grafico}:Q",
-                        title=titulo_eixo_y,
-                    ),
-                    tooltip=[
-                        alt.Tooltip("POSIÇÃO:Q", title="Posição"),
-                        alt.Tooltip("RECURSO:N", title="Recurso"),
-                        alt.Tooltip("NOTAS:Q", title="Notas"),
-                        alt.Tooltip("FATURAMENTO_ATRIBUÍDO:Q", title="Faturamento atribuído", format=",.2f"),
-                    ],
-                )
-                .properties(height=360)
-            )
-
-            st.altair_chart(grafico_top10, use_container_width=True)
-
-            st.markdown('<div class="section-title">Pódio</div>', unsafe_allow_html=True)
-            mostrar_podio_ranking(ranking_exec, nome_coluna="RECURSO")
-
-            st.markdown('<div class="section-title">Ranking detalhado</div>', unsafe_allow_html=True)
-            colunas_ranking = [
-                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "EXPRESS", "RECUSAS", "DIAS_ATIVOS",
-                "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
-                "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE", "QTD_EQUIPES"
-            ]
-            colunas_ranking = [c for c in colunas_ranking if c in ranking_exec.columns]
-            st.dataframe(
-                preparar_tabela_ranking(ranking_exec[colunas_ranking]),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            with st.expander("Ver notas consideradas no ranking"):
-                detalhe_cols = [
-                    "DATA", "RECURSO", "CONTRATO", "ORDEM_DE_SERVICO",
-                    "GRUPO_NOTA", "FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"
-                ]
-                detalhe_cols = [c for c in detalhe_cols if c in base_filtrada_exec.columns]
-                detalhe_base = base_filtrada_exec.copy()
-                if "EH_RECUSA" in detalhe_base.columns:
-                    detalhe_base = detalhe_base[pd.to_numeric(detalhe_base["EH_RECUSA"], errors="coerce").fillna(0).astype(int) == 0].copy()
-                detalhe = detalhe_base[detalhe_cols].sort_values(["DATA", "RECURSO"], ascending=[False, True])
-                st.dataframe(
-                    preparar_tabela_ranking(detalhe, colunas_moeda=["FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            if tipo_periodo == "Mês" and valor_periodo and not express_resumo_recurso.empty:
-                st.markdown('<div class="section-title">Pagamento Express conciliado por recurso</div>', unsafe_allow_html=True)
-                tabela_express_recurso = express_resumo_recurso.copy().sort_values(
-                    ["EXPRESS", "FATURAMENTO_EXPRESS"], ascending=False
-                )
-                st.dataframe(
-                    formatar_tabela(tabela_express_recurso[["RECURSO", "CONTRATO", "EXPRESS", "FATURAMENTO_EXPRESS"]]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            st.markdown('<div class="section-title">Resumo de recusas</div>', unsafe_allow_html=True)
-            recusas_tipo = calcular_recusas_por_tipo(base_filtrada_exec)
-            if recusas_tipo.empty:
-                st.success("Nenhuma recusa encontrada para os filtros selecionados.")
-            else:
-                total_recusas_periodo = int(recusas_tipo["QTD_RECUSAS"].sum())
-                st.caption(f"Total de recusas no período filtrado: {numero(total_recusas_periodo)}")
-
-                st.markdown("**Total por tipo de recusa**")
-                total_por_tipo = (
-                    recusas_tipo.groupby("RECUSA", dropna=False)
-                    .agg(QTD_RECUSAS=("QTD_RECUSAS", "sum"))
-                    .reset_index()
-                    .sort_values(["QTD_RECUSAS", "RECUSA"], ascending=[False, True])
-                )
-                st.dataframe(
-                    preparar_tabela_ranking(total_por_tipo),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                st.markdown("**Total por contrato e tipo de recusa**")
-                total_por_contrato = (
-                    recusas_tipo.groupby(["CONTRATO", "RECUSA"], dropna=False)
-                    .agg(QTD_RECUSAS=("QTD_RECUSAS", "sum"))
-                    .reset_index()
-                    .sort_values(["CONTRATO", "QTD_RECUSAS", "RECUSA"], ascending=[True, False, True])
-                )
-                st.dataframe(
-                    preparar_tabela_ranking(total_por_contrato),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                st.markdown("**Detalhamento por equipe, contrato e tipo de recusa**")
-                recusas_tipo = recusas_tipo.sort_values(
-                    ["RECURSO", "CONTRATO", "QTD_RECUSAS", "RECUSA"],
-                    ascending=[True, True, False, True],
-                )
-                st.dataframe(
-                    preparar_tabela_ranking(recusas_tipo),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            render_auditoria_express_ranking(
-                tipo_periodo, valor_periodo, express_caminho, express_data_max, express_sem_vinculo,
-                express_resumo_recurso, total_express_mensal
-            )
-
-            csv_ranking = ranking_exec.to_csv(index=False, sep=";", encoding="utf-8-sig")
-            st.download_button(
-                "Baixar ranking de recursos em CSV",
-                csv_ranking,
-                file_name="ranking_recursos.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+                pos_col = "POSICAO_FATURAMENTO" if criterio == "Faturamento" else "POSICAO_NOTAS"
+                sort_col = "FATURAMENTO_ATRIBUÍDO" if criterio == "Faturamento" else "NOTAS"
+                if pos_col in ranking_exec.columns:
+                    ranking_exec = ranking_exec.sort_values(pos_col)
+                else:
+                    ranking_exec = ranking_exec.sort_values(sort_col, ascending=False)
+                ranking_exec = ranking_exec.reset_index(drop=True)
+                ranking_exec["POSIÇÃO"] = range(1, len(ranking_exec) + 1)
+                total_notas = int(pd.to_numeric(ranking_exec.get("NOTAS", 0), errors="coerce").fillna(0).sum())
+                total_recursos = int((pd.to_numeric(ranking_exec.get("NOTAS", 0), errors="coerce").fillna(0) > 0).sum())
+                total_faturamento = float(pd.to_numeric(ranking_exec.get("FATURAMENTO_ATRIBUÍDO", 0), errors="coerce").fillna(0).sum())
+                st.markdown(f'<div class="executive-card"><h3>Resumo executivo do ranking</h3><p><b>{numero(total_recursos)}</b> recursos ativos • <b>{numero(total_notas)}</b> notas • <b>{dinheiro(total_faturamento)}</b> em faturamento atribuído</p></div>', unsafe_allow_html=True)
+                mostrar_podio_ranking(ranking_exec, "RECURSO")
+                colunas = [c for c in ["POSIÇÃO", "RECURSO", "CONTRATO", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "FATURAMENTO_ATRIBUÍDO", "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "DIAS_ATIVOS", "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO"] if c in ranking_exec.columns]
+                st.dataframe(preparar_tabela_ranking(ranking_exec[colunas], colunas_moeda=["FATURAMENTO_ATRIBUÍDO", "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "TICKET_MÉDIO"]), use_container_width=True, hide_index=True)
 
 # ==============================
 # ABA COMPARATIVO MENSAL
