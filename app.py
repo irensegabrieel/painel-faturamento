@@ -1988,7 +1988,28 @@ def ler_sqlite_dashboard(chave):
 
 
 def ler_base_dashboard(chave, nome_arquivo):
-    """Fonte única de leitura: SQLite primeiro, CSV como plano B."""
+    """Fonte única de leitura.
+
+    Regra importante:
+    - Para tabelas pequenas/resumidas, usa SQLite primeiro e CSV como plano B.
+    - Para NOTAS, força CSV primeiro.
+
+    Motivo: o gzus_dashboard.db é um banco leve do painel e pode não conter o
+    histórico completo de notas. Ranking, parcial do dia e meses anteriores
+    dependem do dashboard/notas_dashboard.csv acumulado.
+    """
+    if chave == "notas":
+        caminho = caminho_arquivo(nome_arquivo)
+        if caminho:
+            return ler_csv(str(caminho)), "csv_notas_historico"
+
+        # Fallback local: só usa SQLite se o CSV realmente não existir.
+        df_sqlite = ler_sqlite_dashboard(chave)
+        if not df_sqlite.empty:
+            return df_sqlite, "sqlite_fallback_notas"
+
+        return pd.DataFrame(), "faltando"
+
     df_sqlite = ler_sqlite_dashboard(chave)
     if not df_sqlite.empty:
         return df_sqlite, "sqlite"
@@ -2320,13 +2341,11 @@ def meses_disponiveis_sql_cache(caminho_banco_str, tabela, mtime_banco):
 
 
 def meses_disponiveis_rapido():
-    caminho = caminho_banco_gzus()
-    tabela = TABELAS_SQLITE_DASHBOARD.get("notas")
-    if sqlite_ativado() and caminho and tabela and _sqlite_tabela_existe(caminho, tabela):
-        try:
-            return meses_disponiveis_sql_cache(str(caminho), tabela, caminho.stat().st_mtime)
-        except Exception:
-            pass
+    """Lista meses disponíveis usando o CSV histórico de notas.
+
+    Não usa o SQLite leve para notas, porque esse banco pode não carregar o
+    histórico completo necessário para ranking/parciais antigas.
+    """
     df, _ = ler_base_dashboard("notas", ARQUIVOS["notas"])
     return meses_disponiveis_da_base(df)
 
@@ -2367,18 +2386,12 @@ def ler_notas_sql_periodo_cache(caminho_banco_str, tabela, meses, mtime_banco):
 
 
 def carregar_notas_rapido(meses=None):
-    caminho = caminho_banco_gzus()
-    tabela = TABELAS_SQLITE_DASHBOARD.get("notas")
-    if sqlite_ativado() and caminho and tabela and _sqlite_tabela_existe(caminho, tabela):
-        try:
-            df = ler_notas_sql_periodo_cache(str(caminho), tabela, tuple(meses or []), caminho.stat().st_mtime)
-            if _sqlite_tabela_parece_valida(df):
-                fontes = st.session_state.get("fontes_dados_dashboard", {})
-                fontes["notas"] = "sqlite_filtrado"
-                st.session_state["fontes_dados_dashboard"] = fontes
-                return df
-        except Exception:
-            pass
+    """Carrega notas para ranking/parciais sempre a partir do CSV histórico.
+
+    O SQLite continua sendo usado para bases pequenas de faturamento, mas as
+    notas completas ficam no dashboard/notas_dashboard.csv. Isso preserva os
+    meses anteriores no ranking e na parcial do dia.
+    """
     df, fonte = ler_base_dashboard("notas", ARQUIVOS["notas"])
     if meses and not df.empty:
         col_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in df.columns else "DATA"
