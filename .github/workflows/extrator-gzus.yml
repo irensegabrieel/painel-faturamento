@@ -73,14 +73,27 @@ jobs:
           for tentativa in 1 2 3; do
             echo "Tentativa de push: $tentativa"
 
-            git pull --rebase origin main
-
             if git push origin main; then
               echo "Push concluído."
               exit 0
             fi
 
-            echo "Push falhou. Aguardando antes de tentar de novo..."
+            echo "Push recusado. Atualizando base sem tentar mesclar SQLite binário..."
+            git fetch origin main
+
+            git reset --soft origin/main
+
+            git add dashboard/gzus_dashboard.db
+            git add dashboard/*.csv
+            git add dashboard/*.xlsx
+
+            if git diff --cached --quiet; then
+              echo "Após atualizar a base, não há nada para commitar."
+              exit 0
+            fi
+
+            git commit -m "Atualiza dashboard automático"
+
             sleep 10
           done
 
