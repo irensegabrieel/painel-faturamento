@@ -2291,7 +2291,7 @@ def carregar_bases():
 COLUNAS_NOTAS_MINIMAS = [
     "ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "RECUSA",
     "ELETRICISTA1", "ELETRICISTA2", "DATA", "DATA_ENCERRAMENTO",
-    "QTD_EXECUTORES", "CONTRATO", "MUNICIPIO", "BAIRRO", "STATUS",
+    "QTD_EXECUTORES", "CONTRATO", "MUNICIPIO", "BAIRRO", "STATUS", "EH_VERIFICACAO",
 ]
 
 
@@ -2685,6 +2685,7 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
             item["FATURAMENTO_MAX"] = faturamento_max
             item["EH_CORTE"] = 1 if (grupo == "CORTE" and not eh_recusa) else 0
             item["EH_RELIGUE"] = 1 if (grupo == "RELIGUE" and not eh_recusa) else 0
+            item["EH_VERIFICACAO"] = 1 if (grupo == "VERIFICACAO" and contrato == "Disjuntor Santa Cruz" and not eh_recusa) else 0
             item["EH_RECUSA"] = 1 if eh_recusa else 0
             linhas.append(item)
 
@@ -2692,6 +2693,8 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
         return pd.DataFrame()
 
     parcial = pd.DataFrame(linhas)
+    if "EH_VERIFICACAO" not in parcial.columns:
+        parcial["EH_VERIFICACAO"] = 0
     parcial["DATA_DT"] = pd.to_datetime(parcial["DATA"], dayfirst=True, errors="coerce")
     parcial = parcial.dropna(subset=["DATA_DT"])
     parcial["DATA"] = parcial["DATA_DT"].dt.strftime("%d/%m/%Y")
@@ -2812,7 +2815,7 @@ def calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida):
         for col in ["ORDEM_DE_SERVICO", "RECURSO", "CONTRATO"]:
             if col not in df_tmp.columns:
                 df_tmp[col] = ""
-        for col in ["EH_CORTE", "EH_RELIGUE"]:
+        for col in ["EH_CORTE", "EH_RELIGUE", "EH_VERIFICACAO"]:
             if col not in df_tmp.columns:
                 df_tmp[col] = 0
             df_tmp[col] = pd.to_numeric(df_tmp[col], errors="coerce").fillna(0).astype(int)
@@ -2826,6 +2829,7 @@ def calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida):
         "total_recursos_ativos": parcial_dia["RECURSO"].nunique() if not parcial_dia.empty else 0,
         "total_cortes": int(parcial_dia["EH_CORTE"].sum()) if not parcial_dia.empty else 0,
         "total_religues": int(parcial_dia["EH_RELIGUE"].sum()) if not parcial_dia.empty else 0,
+        "total_verificacoes": int(parcial_dia["EH_VERIFICACAO"].sum()) if not parcial_dia.empty and "EH_VERIFICACAO" in parcial_dia.columns else 0,
         "total_recusas": recusas_dia["ORDEM_DE_SERVICO"].nunique() if not recusas_dia.empty else 0,
         "total_faturamento": float(parcial_dia["FATURAMENTO"].sum()) if not parcial_dia.empty else 0.0,
         "total_faturamento_min": float(parcial_dia["FATURAMENTO_MIN"].sum()) if not parcial_dia.empty else 0.0,
@@ -2838,6 +2842,7 @@ def calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida):
             TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
             CORTES=("EH_CORTE", "sum"),
             RELIGUES=("EH_RELIGUE", "sum"),
+            VERIFICACOES=("EH_VERIFICACAO", "sum"),
             FATURAMENTO=("FATURAMENTO", "sum"),
             FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
             FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
@@ -2845,7 +2850,7 @@ def calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida):
         .reset_index()
         if not parcial_dia.empty
         else pd.DataFrame(columns=[
-            "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES",
+            "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "VERIFICACOES",
             "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
         ])
     )
@@ -3023,6 +3028,7 @@ def resumo_por_periodo(notas, meses_escolhidos, contrato_escolhido="Todos"):
             TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
             CORTES=("EH_CORTE", "sum"),
             RELIGUES=("EH_RELIGUE", "sum"),
+            VERIFICACOES=("EH_VERIFICACAO", "sum"),
             FATURAMENTO=("FATURAMENTO", "sum"),
             FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
             FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
@@ -4256,6 +4262,7 @@ def resumo_parcial_mais_recente(notas, contrato_escolhido="Todos"):
         "notas": 0,
         "cortes": 0,
         "religues": 0,
+        "verificacoes": 0,
         "por_contrato": {},
     }
 
@@ -4267,8 +4274,11 @@ def resumo_parcial_mais_recente(notas, contrato_escolhido="Todos"):
 
     resumo["data"] = ultima_data_dt.strftime("%d/%m/%Y")
     resumo["notas"] = int(parcial_dia["ORDEM_DE_SERVICO"].nunique())
+    if "EH_VERIFICACAO" not in parcial_dia.columns:
+        parcial_dia["EH_VERIFICACAO"] = 0
     resumo["cortes"] = int(parcial_dia["EH_CORTE"].sum())
     resumo["religues"] = int(parcial_dia["EH_RELIGUE"].sum())
+    resumo["verificacoes"] = int(parcial_dia["EH_VERIFICACAO"].sum())
 
     for contrato, df_contrato in parcial_dia.groupby("CONTRATO", dropna=False):
         contrato = str(contrato)
@@ -4276,6 +4286,7 @@ def resumo_parcial_mais_recente(notas, contrato_escolhido="Todos"):
             "notas": int(df_contrato["ORDEM_DE_SERVICO"].nunique()),
             "cortes": int(df_contrato["EH_CORTE"].sum()),
             "religues": int(df_contrato["EH_RELIGUE"].sum()),
+            "verificacoes": int(df_contrato["EH_VERIFICACAO"].sum()) if "EH_VERIFICACAO" in df_contrato.columns else 0,
         }
 
     return resumo
@@ -4604,7 +4615,7 @@ def mostrar_painel_supervisor_stc(bases):
             if not pagaveis.empty:
                 resumo_contrato = (
                     pagaveis.groupby("CONTRATO", dropna=False)
-                    .agg(TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"), CORTES=("EH_CORTE", "sum"), RELIGUES=("EH_RELIGUE", "sum"), RECURSOS_ATIVOS=("RECURSO", "nunique"))
+                    .agg(TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"), CORTES=("EH_CORTE", "sum"), RELIGUES=("EH_RELIGUE", "sum"), VERIFICACOES=("EH_VERIFICACAO", "sum"), RECURSOS_ATIVOS=("RECURSO", "nunique"))
                     .reset_index()
                     .sort_values("TOTAL_NOTAS", ascending=False)
                 )
@@ -4623,17 +4634,20 @@ def mostrar_painel_supervisor_stc(bases):
             pagaveis = dia[pd.to_numeric(dia.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy()
             recusas = dia[pd.to_numeric(dia.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 1].copy()
 
-            c1, c2, c3, c4, c5 = st.columns(5)
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            if "EH_VERIFICACAO" not in pagaveis.columns:
+                pagaveis["EH_VERIFICACAO"] = 0
             c1.metric("Notas feitas", numero(pagaveis["ORDEM_DE_SERVICO"].nunique() if not pagaveis.empty else 0))
             c2.metric("Cortes", numero(int(pagaveis["EH_CORTE"].sum()) if not pagaveis.empty else 0))
             c3.metric("Religues", numero(int(pagaveis["EH_RELIGUE"].sum()) if not pagaveis.empty else 0))
-            c4.metric("Recusas", numero(recusas["ORDEM_DE_SERVICO"].nunique() if not recusas.empty else 0))
-            c5.metric("Recursos", numero(pagaveis["RECURSO"].nunique() if not pagaveis.empty else 0))
+            c4.metric("Verificações", numero(int(pagaveis["EH_VERIFICACAO"].sum()) if not pagaveis.empty else 0))
+            c5.metric("Recusas", numero(recusas["ORDEM_DE_SERVICO"].nunique() if not recusas.empty else 0))
+            c6.metric("Recursos", numero(pagaveis["RECURSO"].nunique() if not pagaveis.empty else 0))
 
             if not pagaveis.empty:
                 resumo = (
                     pagaveis.groupby(["RECURSO", "CONTRATO"], dropna=False)
-                    .agg(TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"), CORTES=("EH_CORTE", "sum"), RELIGUES=("EH_RELIGUE", "sum"))
+                    .agg(TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"), CORTES=("EH_CORTE", "sum"), RELIGUES=("EH_RELIGUE", "sum"), VERIFICACOES=("EH_VERIFICACAO", "sum"))
                     .reset_index()
                     .sort_values("TOTAL_NOTAS", ascending=False)
                 )
@@ -6452,7 +6466,7 @@ if tela_escolhida == "Ranking de recursos":
 
             st.markdown('<div class="section-title">Ranking detalhado</div>', unsafe_allow_html=True)
             colunas_ranking = [
-                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "EXPRESS", "RECUSAS", "DIAS_ATIVOS",
+                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "EXPRESS", "RECUSAS", "DIAS_ATIVOS",
                 "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
                 "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE", "QTD_EQUIPES"
             ]
