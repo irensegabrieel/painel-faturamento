@@ -28,7 +28,7 @@ def preparar_notas_processadas(notas):
     df['GRUPO_NOTA']=df['GRUPO_NOTA'].str.upper(); df['RECURSO']=df['RECURSO'].str.upper(); df['EH_RECUSA']=(df['RECUSA']!='').astype(int)
     data_raw=df['DATA'] if 'DATA' in df.columns and not (df['DATA'].fillna('').astype(str).str.strip()=='').all() else df['DATA_ENCERRAMENTO']
     df['DATA_DT']=pd.to_datetime(data_raw, dayfirst=True, errors='coerce'); df['DATA']=df['DATA_DT'].dt.strftime('%d/%m/%Y').fillna(''); df=df[df['DATA']!=''].copy()
-    tjc=env_float('TARIFA_DISJUNTOR_JUNDIAI_CORTE',13.72); tjr=env_float('TARIFA_DISJUNTOR_JUNDIAI_RELIGUE',27.43); tsc=env_float('TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE',11.98); tsr=env_float('TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE',23.97)
+    tjc=env_float('TARIFA_DISJUNTOR_JUNDIAI_CORTE',13.72); tjr=env_float('TARIFA_DISJUNTOR_JUNDIAI_RELIGUE',27.43); tsc=env_float('TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE',11.98); tsr=env_float('TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE',23.97); tsv=env_float('TARIFA_DISJUNTOR_SANTA_CRUZ_VERIFICACAO',23.97)
     def classificar(row):
         recurso=row['RECURSO']; grupo=row['GRUPO_NOTA']; rec=int(row['EH_RECUSA'])==1; qtd=int(row.get('QTD_EXECUTORES',0) or 0)
         contrato=''; fat=fmin=fmax=0.0
@@ -37,25 +37,25 @@ def preparar_notas_processadas(notas):
             if not rec: fat={'CORTE':tjc,'RELIGUE':tjr}.get(grupo,0.0); fmin=fmax=fat
         elif eh_disjuntor_santa_cruz(recurso):
             contrato='Disjuntor Santa Cruz';
-            if not rec: fat={'CORTE':tsc,'RELIGUE':tsr}.get(grupo,0.0); fmin=fmax=fat
+            if not rec: fat={'CORTE':tsc,'RELIGUE':tsr,'VERIFICACAO':tsv}.get(grupo,0.0); fmin=fmax=fat
         elif recurso.startswith('JUN58') and qtd>=2:
             contrato='STC Jundiai';
             if not rec: fmin={'CORTE':38.18,'RELIGUE':36.36}.get(grupo,0.0); fmax={'CORTE':45.45,'RELIGUE':50.91}.get(grupo,0.0); fat=fmin
         elif recurso.startswith('JUN') or recurso.startswith('SAL'):
             contrato='STC Jundiai'
-        return pd.Series({'CONTRATO':contrato,'FATURAMENTO':fat,'FATURAMENTO_MIN':fmin,'FATURAMENTO_MAX':fmax,'EH_CORTE':1 if grupo=='CORTE' and not rec else 0,'EH_RELIGUE':1 if grupo=='RELIGUE' and not rec else 0})
+        return pd.Series({'CONTRATO':contrato,'FATURAMENTO':fat,'FATURAMENTO_MIN':fmin,'FATURAMENTO_MAX':fmax,'EH_CORTE':1 if grupo=='CORTE' and not rec else 0,'EH_RELIGUE':1 if grupo=='RELIGUE' and not rec else 0,'EH_VERIFICACAO':1 if grupo=='VERIFICACAO' and contrato=='Disjuntor Santa Cruz' and not rec else 0})
     df=pd.concat([df.reset_index(drop=True), df.apply(classificar, axis=1).reset_index(drop=True)], axis=1); df=df[df['CONTRATO'].fillna('').astype(str).str.strip()!=''].copy()
     df['ORDEM_SERVICO_PAGAVEL']=df['ORDEM_DE_SERVICO'].where(df['EH_RECUSA']==0, pd.NA); df['ORDEM_SERVICO_RECUSA']=df['ORDEM_DE_SERVICO'].where(df['EH_RECUSA']==1, pd.NA); df['DATA_PAGAVEL']=df['DATA'].where(df['EH_RECUSA']==0, pd.NA)
     df['MES']=df['DATA_DT'].dt.strftime('%m/%Y'); df['SEMANA_INICIO_DT']=df['DATA_DT']-pd.to_timedelta(df['DATA_DT'].dt.weekday, unit='D'); df['SEMANA']=df['SEMANA_INICIO_DT'].dt.strftime('%d/%m/%Y')
     return df
 def gerar_parcial(df):
-    detalhe_cols=['DATA','CONTRATO','ORDEM_DE_SERVICO','GRUPO_NOTA','RECURSO','RECUSA','ELETRICISTA1','ELETRICISTA2','QTD_EXECUTORES','EH_RECUSA','EH_CORTE','EH_RELIGUE','FATURAMENTO','FATURAMENTO_MIN','FATURAMENTO_MAX']
+    detalhe_cols=['DATA','CONTRATO','ORDEM_DE_SERVICO','GRUPO_NOTA','RECURSO','RECUSA','ELETRICISTA1','ELETRICISTA2','QTD_EXECUTORES','EH_RECUSA','EH_CORTE','EH_RELIGUE','EH_VERIFICACAO','FATURAMENTO','FATURAMENTO_MIN','FATURAMENTO_MAX']
     detalhe=df[[c for c in detalhe_cols if c in df.columns]].copy()
-    parcial=df.groupby(['DATA','CONTRATO','RECURSO'], dropna=False).agg(NOTAS=('ORDEM_SERVICO_PAGAVEL','nunique'),CORTES=('EH_CORTE','sum'),RELIGUES=('EH_RELIGUE','sum'),RECUSAS=('ORDEM_SERVICO_RECUSA','nunique'),FATURAMENTO=('FATURAMENTO','sum'),FATURAMENTO_MIN=('FATURAMENTO_MIN','sum'),FATURAMENTO_MAX=('FATURAMENTO_MAX','sum')).reset_index()
+    parcial=df.groupby(['DATA','CONTRATO','RECURSO'], dropna=False).agg(NOTAS=('ORDEM_SERVICO_PAGAVEL','nunique'),CORTES=('EH_CORTE','sum'),RELIGUES=('EH_RELIGUE','sum'),VERIFICACOES=('EH_VERIFICACAO','sum'),RECUSAS=('ORDEM_SERVICO_RECUSA','nunique'),FATURAMENTO=('FATURAMENTO','sum'),FATURAMENTO_MIN=('FATURAMENTO_MIN','sum'),FATURAMENTO_MAX=('FATURAMENTO_MAX','sum')).reset_index()
     return parcial, detalhe
 def calcular_ranking(base):
     if base.empty: return pd.DataFrame()
-    r=base.groupby('RECURSO', dropna=False).agg(NOTAS=('ORDEM_SERVICO_PAGAVEL','nunique'),CORTES=('EH_CORTE','sum'),RELIGUES=('EH_RELIGUE','sum'),RECUSAS=('ORDEM_SERVICO_RECUSA','nunique'),FATURAMENTO_ATRIBUÍDO=('FATURAMENTO','sum'),FATURAMENTO_MIN_ATRIBUÍDO=('FATURAMENTO_MIN','sum'),FATURAMENTO_MAX_ATRIBUÍDO=('FATURAMENTO_MAX','sum'),DIAS_ATIVOS=('DATA_PAGAVEL','nunique')).reset_index()
+    r=base.groupby('RECURSO', dropna=False).agg(NOTAS=('ORDEM_SERVICO_PAGAVEL','nunique'),CORTES=('EH_CORTE','sum'),RELIGUES=('EH_RELIGUE','sum'),VERIFICACOES=('EH_VERIFICACAO','sum'),RECUSAS=('ORDEM_SERVICO_RECUSA','nunique'),FATURAMENTO_ATRIBUÍDO=('FATURAMENTO','sum'),FATURAMENTO_MIN_ATRIBUÍDO=('FATURAMENTO_MIN','sum'),FATURAMENTO_MAX_ATRIBUÍDO=('FATURAMENTO_MAX','sum'),DIAS_ATIVOS=('DATA_PAGAVEL','nunique')).reset_index()
     r['MÉDIA_NOTAS_DIA']=(r['NOTAS']/r['DIAS_ATIVOS'].replace(0,pd.NA)).fillna(0).round(2); r['TICKET_MÉDIO']=(r['FATURAMENTO_ATRIBUÍDO']/r['NOTAS'].replace(0,pd.NA)).fillna(0).round(2)
     r=r.sort_values(['NOTAS','FATURAMENTO_ATRIBUÍDO'], ascending=[False,False]).reset_index(drop=True); r['POSICAO_NOTAS']=range(1,len(r)+1)
     r=r.sort_values(['FATURAMENTO_ATRIBUÍDO','NOTAS'], ascending=[False,False]).reset_index(drop=True); r['POSICAO_FATURAMENTO']=range(1,len(r)+1)
