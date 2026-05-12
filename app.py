@@ -2659,42 +2659,22 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
         if eh_disjuntor_jundiai(recurso):
             contrato = "Disjuntor Jundiaí"
             if not eh_recusa:
-                # VERIFICACAO existe para separar "Verificar instalação auto religada".
-                # Em Jundiaí, preserva a regra antiga: paga como corte.
-                faturamento = {
-                    "CORTE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_CORTE", 13.72),
-                    "VERIFICACAO": secret_float("TARIFA_DISJUNTOR_JUNDIAI_CORTE", 13.72),
-                    "RELIGUE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_RELIGUE", 27.43),
-                }.get(grupo, 0.0)
+                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_CORTE", 13.72), "RELIGUE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_RELIGUE", 27.43)}.get(grupo, 0.0)
                 faturamento_min = faturamento
                 faturamento_max = faturamento
 
         elif eh_disjuntor_santa_cruz(recurso):
             contrato = "Disjuntor Santa Cruz"
             if not eh_recusa:
-                # Regra especial: VERIFICACAO em Santa Cruz paga o valor de religa.
-                faturamento = {
-                    "CORTE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE", 11.98),
-                    "VERIFICACAO": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_VERIFICACAO", 23.97),
-                    "RELIGUE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE", 23.97),
-                }.get(grupo, 0.0)
+                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE", 11.98), "RELIGUE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE", 23.97)}.get(grupo, 0.0)
                 faturamento_min = faturamento
                 faturamento_max = faturamento
 
         elif str(recurso).startswith("JUN58") and qtd_exec >= 2:
             contrato = "STC Jundiai"
             if not eh_recusa:
-                # Em STC, preserva a regra antiga: verificação paga como corte.
-                faturamento_min = {
-                    "CORTE": secret_float("TARIFA_STC_JUNDIAI_CORTE_MIN", 38.18),
-                    "VERIFICACAO": secret_float("TARIFA_STC_JUNDIAI_CORTE_MIN", 38.18),
-                    "RELIGUE": secret_float("TARIFA_STC_JUNDIAI_RELIGUE_MIN", 36.36),
-                }.get(grupo, 0.0)
-                faturamento_max = {
-                    "CORTE": secret_float("TARIFA_STC_JUNDIAI_CORTE_MAX", 45.45),
-                    "VERIFICACAO": secret_float("TARIFA_STC_JUNDIAI_CORTE_MAX", 45.45),
-                    "RELIGUE": secret_float("TARIFA_STC_JUNDIAI_RELIGUE_MAX", 50.91),
-                }.get(grupo, 0.0)
+                faturamento_min = {"CORTE": secret_float("TARIFA_STC_JUNDIAI_CORTE_MIN", 38.18), "RELIGUE": secret_float("TARIFA_STC_JUNDIAI_RELIGUE_MIN", 36.36)}.get(grupo, 0.0)
+                faturamento_max = {"CORTE": secret_float("TARIFA_STC_JUNDIAI_CORTE_MAX", 45.45), "RELIGUE": secret_float("TARIFA_STC_JUNDIAI_RELIGUE_MAX", 50.91)}.get(grupo, 0.0)
                 faturamento = faturamento_min
 
         if contrato:
@@ -2704,7 +2684,6 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
             item["FATURAMENTO_MIN"] = faturamento_min
             item["FATURAMENTO_MAX"] = faturamento_max
             item["EH_CORTE"] = 1 if (grupo == "CORTE" and not eh_recusa) else 0
-            item["EH_VERIFICACAO"] = 1 if (grupo == "VERIFICACAO" and not eh_recusa) else 0
             item["EH_RELIGUE"] = 1 if (grupo == "RELIGUE" and not eh_recusa) else 0
             item["EH_RECUSA"] = 1 if eh_recusa else 0
             linhas.append(item)
