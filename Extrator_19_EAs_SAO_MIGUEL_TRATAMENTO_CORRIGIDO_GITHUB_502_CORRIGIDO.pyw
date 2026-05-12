@@ -376,7 +376,7 @@ def gerar_bases_dashboard(final, tipo_periodo, data_inicio, data_fim, logger=Non
 
     contratos_precos = [
         {"CONTRATO": "Disjuntor Jundiaí", "filtro": eh_disjuntor_jundiai, "CORTE": 13.72, "RELIGUE": 27.43},
-        {"CONTRATO": "Disjuntor Santa Cruz", "filtro": eh_disjuntor_santa_cruz, "CORTE": 11.98, "RELIGUE": 23.97},
+        {"CONTRATO": "Disjuntor Santa Cruz", "filtro": eh_disjuntor_santa_cruz, "CORTE": 11.98, "RELIGUE": 23.97, "VERIFICACAO": 23.97},
     ]
 
     df_pagavel = df[df["RECUSA"] == ""].copy()
@@ -387,7 +387,7 @@ def gerar_bases_dashboard(final, tipo_periodo, data_inicio, data_fim, logger=Non
         if parte.empty:
             continue
         parte["CONTRATO"] = contrato["CONTRATO"]
-        parte["VALOR"] = parte["GRUPO_NOTA"].map({"CORTE": contrato["CORTE"], "RELIGUE": contrato["RELIGUE"]}).fillna(0)
+        parte["VALOR"] = parte["GRUPO_NOTA"].map({"CORTE": contrato["CORTE"], "RELIGUE": contrato["RELIGUE"], "VERIFICACAO": contrato.get("VERIFICACAO", 0)}).fillna(0)
         partes_contratos.append(parte)
 
     df_contratos = pd.concat(partes_contratos, ignore_index=True) if partes_contratos else pd.DataFrame()
@@ -834,6 +834,7 @@ def gerar_planilha_medicao_disjuntor_jundiai(df_final, caminho_saida, periodo_in
             "filtro": eh_disjuntor_santa_cruz,
             "preco_corte": 11.98,
             "preco_religue": 23.97,
+            "preco_verificacao": 23.97,
         },
     ]
 
@@ -867,6 +868,7 @@ def gerar_planilha_medicao_disjuntor_jundiai(df_final, caminho_saida, periodo_in
         df_med["VALOR_FATURAMENTO"] = df_med["GRUPO_NOTA"].map({
             "CORTE": contrato["preco_corte"],
             "RELIGUE": contrato["preco_religue"],
+            "VERIFICACAO": contrato.get("preco_verificacao", 0),
         }).fillna(0)
         if not df_med.empty:
             registros_faturamento_dia_semana.append(
@@ -1479,6 +1481,9 @@ def processar_arquivos_por_periodo(tipo_periodo="dia", eas_list=None, logger=Non
 
         s = str(v).strip().lower()
 
+        if "verificar instalacao auto" in s or "verificar instalação auto" in s or "auto-religada" in s or "auto religada" in s:
+            return "VERIFICACAO"
+
         if any(
             k in s
             for k in [
@@ -1486,8 +1491,6 @@ def processar_arquivos_por_periodo(tipo_periodo="dia", eas_list=None, logger=Non
                 "progressivo",
                 "perdas",
                 "inativo",
-                "auto-religada",
-                "verificar instalacao auto",
                 "leitura progressiva",
             ]
         ):
