@@ -199,39 +199,8 @@ def criar_notas_processadas(conn: sqlite3.Connection) -> dict[str, int | str]:
     df['CONTRATO'] = df['CONTRATO_DERIVADO']
 
     df['EH_RECUSA'] = (df['RECUSA'] != '').astype(int)
-
-    # VERIFICAR INSTALAÇÃO AUTO RELIGADA:
-    # - operacionalmente era misturada em CORTE;
-    # - a partir de agora deve ficar separada como VERIFICACAO;
-    # - regra financeira válida apenas para Disjuntor Santa Cruz.
-    #
-    # Este teste aceita tanto dados novos já vindo como VERIFICACAO quanto
-    # variações antigas que possam carregar AUTO/VERIFIC no GRUPO_NOTA.
-    eh_verificacao_base = (
-        df['GRUPO_NOTA'].str.contains('VERIFIC', na=False)
-        | df['GRUPO_NOTA'].str.contains('AUTO', na=False)
-    )
-
-    df['EH_VERIFICACAO'] = (
-        eh_verificacao_base
-        & (df['EH_RECUSA'] == 0)
-        & (df['CONTRATO'] == 'Disjuntor Santa Cruz')
-    ).astype(int)
-
-    df['EH_CORTE'] = (
-        (df['GRUPO_NOTA'] == 'CORTE')
-        & (df['EH_VERIFICACAO'] == 0)
-        & (df['EH_RECUSA'] == 0)
-        & (df['CONTRATO'] != '')
-    ).astype(int)
-
-    df['EH_RELIGUE'] = (
-        df['GRUPO_NOTA'].str.contains('RELIG', na=False)
-        & (df['EH_VERIFICACAO'] == 0)
-        & (df['EH_RECUSA'] == 0)
-        & (df['CONTRATO'] != '')
-    ).astype(int)
-
+    df['EH_CORTE'] = ((df['GRUPO_NOTA'] == 'CORTE') & (df['EH_RECUSA'] == 0) & (df['CONTRATO'] != '')).astype(int)
+    df['EH_RELIGUE'] = ((df['GRUPO_NOTA'].str.contains('RELIG', na=False)) & (df['EH_RECUSA'] == 0) & (df['CONTRATO'] != '')).astype(int)
     df['EH_NOTA_VALIDA'] = ((df['EH_RECUSA'] == 0) & (df['CONTRATO'] != '')).astype(int)
 
     data_dt = pd.to_datetime(df['DATA'], dayfirst=True, errors='coerce')
@@ -286,7 +255,6 @@ def criar_resumos(conn: sqlite3.Connection) -> dict[str, int | str]:
                 COUNT(DISTINCT CASE WHEN EH_NOTA_VALIDA = 1 THEN ORDEM_DE_SERVICO END) AS TOTAL_NOTAS,
                 SUM(EH_CORTE) AS CORTES,
                 SUM(EH_RELIGUE) AS RELIGUES,
-                SUM(EH_VERIFICACAO) AS VERIFICACOES,
                 SUM(EH_RECUSA) AS RECUSAS,
                 COUNT(DISTINCT CASE WHEN CONTRATO <> '' THEN RECURSO END) AS RECURSOS_ATIVOS
             FROM notas_processadas
@@ -308,7 +276,6 @@ def criar_resumos(conn: sqlite3.Connection) -> dict[str, int | str]:
                 SUM(TOTAL_NOTAS) AS TOTAL_NOTAS,
                 SUM(CORTES) AS CORTES,
                 SUM(RELIGUES) AS RELIGUES,
-                SUM(VERIFICACOES) AS VERIFICACOES,
                 SUM(RECUSAS) AS RECUSAS,
                 SUM(RECURSOS_ATIVOS) AS RECURSOS_ATIVOS
             FROM resumo_dia
@@ -330,7 +297,6 @@ def criar_resumos(conn: sqlite3.Connection) -> dict[str, int | str]:
                 COUNT(DISTINCT CASE WHEN EH_NOTA_VALIDA = 1 THEN ORDEM_DE_SERVICO END) AS NOTAS,
                 SUM(EH_CORTE) AS CORTES,
                 SUM(EH_RELIGUE) AS RELIGUES,
-                SUM(EH_VERIFICACAO) AS VERIFICACOES,
                 SUM(EH_RECUSA) AS RECUSAS
             FROM notas_processadas
             WHERE COALESCE(CONTRATO,'') <> '' AND COALESCE(RECURSO,'') <> ''
