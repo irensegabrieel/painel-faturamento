@@ -4600,7 +4600,7 @@ def mostrar_painel_supervisor_stc(bases):
     - não permite Disjuntor Jundiaí;
     - no TXT, VERIFICACAO continua saindo como CORTE.
     """
-    st.title("Acesso Supervisor STC/Santa Cruz")
+    st.title("📄 G.Z.U.S. — TXT Supervisor STC")
     st.caption("Arquivos TXT para Disjuntor Santa Cruz e STC • Atualizações disponíveis em média a cada 15 minutos.")
 
     st.sidebar.header("Supervisor STC")
