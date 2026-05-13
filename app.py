@@ -4611,12 +4611,21 @@ def mostrar_painel_supervisor_stc(bases):
         st.rerun()
 
     notas_stc = bases.get("notas", pd.DataFrame()).copy()
-    if notas_stc.empty:
-        st.info("Nenhuma nota disponível para STC Jundiai ou Disjuntor Santa Cruz.")
-        return
 
     contratos_permitidos = list(CONTRATOS_SUPERVISOR_STC)
     contratos_permitidos = [c for c in contratos_permitidos if c != "Disjuntor Jundiaí"]
+
+    # Fallback de segurança: alguns ambientes podem zerar o filtro anterior.
+    # Se vier vazio, tenta recarregar direto da base completa.
+    if notas_stc.empty:
+        try:
+            notas_stc = carregar_notas_rapido(None).copy()
+        except Exception:
+            notas_stc = pd.DataFrame()
+
+    if notas_stc.empty:
+        st.info("Nenhuma nota disponível para STC Jundiai ou Disjuntor Santa Cruz.")
+        return
 
     # Reclassifica as notas para garantir que o filtro por contrato seja aplicado
     # mesmo quando a base bruta de notas não tem coluna CONTRATO.
