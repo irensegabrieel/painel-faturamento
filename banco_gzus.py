@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import unicodedata
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -142,6 +143,25 @@ def colunas(conn: sqlite3.Connection, tabela: str) -> set[str]:
     return {r[1] for r in conn.execute(f'PRAGMA table_info("{tabela}")').fetchall()}
 
 
+
+def normalizar_grupo_nota(valor: str) -> str:
+    texto = str(valor or '').strip().upper()
+    texto = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('ascii')
+    if 'VERIFIC' in texto:
+        return 'VERIFICACAO'
+    if 'RELIG' in texto:
+        return 'RELIGUE'
+    if 'CORTE' in texto:
+        return 'CORTE'
+    return texto
+
+
+def tarifa_float(nome: str, padrao: float) -> float:
+    try:
+        return float(os.getenv(nome, padrao))
+    except Exception:
+        return float(padrao)
+
 def _eh_disjuntor_jundiai(recurso: str) -> bool:
     r = str(recurso or '').strip().upper()
     return r.startswith('JUN55') or r.startswith('JUN59') or r.startswith('SAL55')
@@ -191,7 +211,7 @@ def criar_notas_processadas(conn: sqlite3.Connection) -> dict[str, int | str]:
     else:
         df['QTD_EXECUTORES'] = pd.to_numeric(df['QTD_EXECUTORES'], errors='coerce').fillna(0).astype(int)
 
-    df['GRUPO_NOTA'] = df['GRUPO_NOTA'].astype(str).str.upper().str.strip()
+    df['GRUPO_NOTA'] = df['GRUPO_NOTA'].apply(normalizar_grupo_nota)
     df['RECURSO'] = df['RECURSO'].astype(str).str.upper().str.strip()
     df['RECUSA'] = df['RECUSA'].fillna('').astype(str).str.strip()
 
@@ -199,8 +219,28 @@ def criar_notas_processadas(conn: sqlite3.Connection) -> dict[str, int | str]:
     df['CONTRATO'] = df['CONTRATO_DERIVADO']
 
     df['EH_RECUSA'] = (df['RECUSA'] != '').astype(int)
-    df['EH_CORTE'] = ((df['GRUPO_NOTA'] == 'CORTE') & (df['EH_RECUSA'] == 0) & (df['CONTRATO'] != '')).astype(int)
+    df['EH_VERIFICACAO'] = ((df['GRUPO_NOTA'] == 'VERIFICACAO') & (df['CONTRATO'] == 'Disjuntor Santa Cruz') & (df['EH_RECUSA'] == 0)).astype(int)
+    df['EH_CORTE'] = (((df['GRUPO_NOTA'] == 'CORTE') | ((df['GRUPO_NOTA'] == 'VERIFICACAO') & (df['CONTRATO'] == 'Disjuntor Jundiaí'))) & (df['EH_RECUSA'] == 0) & (df['CONTRATO'] != '')).astype(int)
     df['EH_RELIGUE'] = ((df['GRUPO_NOTA'].str.contains('RELIG', na=False)) & (df['EH_RECUSA'] == 0) & (df['CONTRATO'] != '')).astype(int)
+
+    tjc = tarifa_float('TARIFA_DISJUNTOR_JUNDIAI_CORTE', 13.72)
+    tjr = tarifa_float('TARIFA_DISJUNTOR_JUNDIAI_RELIGUE', 27.43)
+    tsc = tarifa_float('TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE', 11.98)
+    tsr = tarifa_float('TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE', 23.97)
+    tsv = tarifa_float('TARIFA_DISJUNTOR_SANTA_CRUZ_VERIFICACAO', 23.97)
+
+    def _faturamento_linha(row):
+        if int(row.get('EH_RECUSA', 0) or 0) == 1:
+            return 0.0
+        contrato = str(row.get('CONTRATO', ''))
+        grupo = str(row.get('GRUPO_NOTA', ''))
+        if contrato == 'Disjuntor Jundiaí':
+            return {'CORTE': tjc, 'VERIFICACAO': tjc, 'RELIGUE': tjr}.get(grupo, 0.0)
+        if contrato == 'Disjuntor Santa Cruz':
+            return {'CORTE': tsc, 'VERIFICACAO': tsv, 'RELIGUE': tsr}.get(grupo, 0.0)
+        return 0.0
+
+    df['FATURAMENTO'] = df.apply(_faturamento_linha, axis=1)
     df['EH_NOTA_VALIDA'] = ((df['EH_RECUSA'] == 0) & (df['CONTRATO'] != '')).astype(int)
 
     data_dt = pd.to_datetime(df['DATA'], dayfirst=True, errors='coerce')
@@ -255,6 +295,7 @@ def criar_resumos(conn: sqlite3.Connection) -> dict[str, int | str]:
                 COUNT(DISTINCT CASE WHEN EH_NOTA_VALIDA = 1 THEN ORDEM_DE_SERVICO END) AS TOTAL_NOTAS,
                 SUM(EH_CORTE) AS CORTES,
                 SUM(EH_RELIGUE) AS RELIGUES,
+                SUM(EH_VERIFICACAO) AS VERIFICACOES,
                 SUM(EH_RECUSA) AS RECUSAS,
                 COUNT(DISTINCT CASE WHEN CONTRATO <> '' THEN RECURSO END) AS RECURSOS_ATIVOS
             FROM notas_processadas
@@ -276,6 +317,7 @@ def criar_resumos(conn: sqlite3.Connection) -> dict[str, int | str]:
                 SUM(TOTAL_NOTAS) AS TOTAL_NOTAS,
                 SUM(CORTES) AS CORTES,
                 SUM(RELIGUES) AS RELIGUES,
+                SUM(VERIFICACOES) AS VERIFICACOES,
                 SUM(RECUSAS) AS RECUSAS,
                 SUM(RECURSOS_ATIVOS) AS RECURSOS_ATIVOS
             FROM resumo_dia
@@ -297,6 +339,7 @@ def criar_resumos(conn: sqlite3.Connection) -> dict[str, int | str]:
                 COUNT(DISTINCT CASE WHEN EH_NOTA_VALIDA = 1 THEN ORDEM_DE_SERVICO END) AS NOTAS,
                 SUM(EH_CORTE) AS CORTES,
                 SUM(EH_RELIGUE) AS RELIGUES,
+                SUM(EH_VERIFICACAO) AS VERIFICACOES,
                 SUM(EH_RECUSA) AS RECUSAS
             FROM notas_processadas
             WHERE COALESCE(CONTRATO,'') <> '' AND COALESCE(RECURSO,'') <> ''
