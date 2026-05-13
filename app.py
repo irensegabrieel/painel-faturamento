@@ -4600,11 +4600,21 @@ def mostrar_painel_supervisor_stc(bases):
     - não permite Disjuntor Jundiaí;
     - no TXT, VERIFICACAO continua saindo como CORTE.
     """
-    st.title("📄 G.Z.U.S. — TXT Supervisor STC")
+    st.title("Acesso Supervisor STC/Santa Cruz")
     st.caption("Arquivos TXT para Disjuntor Santa Cruz e STC • Atualizações disponíveis em média a cada 15 minutos.")
 
     st.sidebar.header("Supervisor STC")
     st.sidebar.info("Acesso liberado somente ao TXT STC/Santa Cruz.")
+
+    try:
+        caminho_notas_status = caminho_arquivo(ARQUIVOS["notas"])
+        if caminho_notas_status.exists():
+            import datetime as _dt
+            mtime = caminho_notas_status.stat().st_mtime
+            atualizado = _dt.datetime.fromtimestamp(mtime).strftime("%d/%m/%Y %H:%M:%S")
+            st.sidebar.caption(f"Última atualização: {atualizado}")
+    except Exception:
+        pass
 
     if st.sidebar.button("🔄 Atualizar dados", use_container_width=True, key="stc_txt_atualizar"):
         st.cache_data.clear()
