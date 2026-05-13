@@ -4592,241 +4592,254 @@ def mostrar_painel_supervisor_leitura():
 
 
 def mostrar_painel_supervisor_stc(bases):
-    """Painel operacional STC/Santa Cruz sem qualquer métrica financeira."""
-    st.title("🤖 G.Z.U.S. — Supervisor STC")
-    st.caption("Acompanhamento operacional STC")
+    """Perfil Supervisor STC: acesso SOMENTE ao TXT de STC/Santa Cruz.
 
-    notas_stc = bases.get("notas", pd.DataFrame())
+    Regras de segurança:
+    - não mostra dashboards, rankings, notas ou valores;
+    - permite somente STC Jundiai e Disjuntor Santa Cruz;
+    - não permite Disjuntor Jundiaí;
+    - no TXT, VERIFICACAO continua saindo como CORTE.
+    """
+    st.title("📄 G.Z.U.S. — TXT Supervisor STC")
+    st.caption("Acesso restrito: somente geração do TXT para STC Jundiai e Disjuntor Santa Cruz.")
+
+    st.sidebar.header("Supervisor STC")
+    st.sidebar.info("Acesso liberado somente ao TXT STC/Santa Cruz.")
+
+    if st.sidebar.button("🔄 Atualizar dados", use_container_width=True, key="stc_txt_atualizar"):
+        st.cache_data.clear()
+        st.rerun()
+
+    notas_stc = bases.get("notas", pd.DataFrame()).copy()
     if notas_stc.empty:
         st.info("Nenhuma nota disponível para STC Jundiai ou Disjuntor Santa Cruz.")
         return
 
-    st.sidebar.header("Filtros")
-    if st.sidebar.button("🔄 Atualizar dados", use_container_width=True, key="stc_atualizar"):
-        st.cache_data.clear()
-        st.rerun()
+    contratos_permitidos = list(CONTRATOS_SUPERVISOR_STC)
+    contratos_permitidos = [c for c in contratos_permitidos if c != "Disjuntor Jundiaí"]
 
-    contrato_escolhido = _contrato_operacional_sidebar("supervisor_stc")
+    # Reclassifica as notas para garantir que o filtro por contrato seja aplicado
+    # mesmo quando a base bruta de notas não tem coluna CONTRATO.
+    parcial = preparar_parcial_do_dia(notas_stc, incluir_recusas=True)
+    if parcial.empty or "ORDEM_DE_SERVICO" not in parcial.columns or "CONTRATO" not in parcial.columns:
+        st.warning("Não consegui classificar as notas para montar o TXT com segurança.")
+        return
 
-    meses_base = meses_disponiveis_da_base(notas_stc)
-    meses_escolhidos = []
-    if not meses_base.empty:
-        opcoes_meses = meses_base["MES"].tolist()
-        mes_padrao = opcoes_meses[0]
-        meses_escolhidos = st.sidebar.multiselect(
-            "Meses do resumo",
-            opcoes_meses,
-            default=[mes_padrao],
-            key="stc_meses_resumo",
-        ) or [mes_padrao]
+    mapa_contrato = (
+        parcial[["ORDEM_DE_SERVICO", "CONTRATO"]]
+        .drop_duplicates(subset=["ORDEM_DE_SERVICO"], keep="last")
+        .copy()
+    )
+    mapa_contrato["ORDEM_DE_SERVICO"] = mapa_contrato["ORDEM_DE_SERVICO"].astype(str)
 
-    parcial_com_recusas = preparar_parcial_do_dia(notas_stc, incluir_recusas=True)
-    if contrato_escolhido != "Todos" and not parcial_com_recusas.empty:
-        parcial_com_recusas = parcial_com_recusas[parcial_com_recusas["CONTRATO"] == contrato_escolhido].copy()
+    notas_stc["ORDEM_DE_SERVICO"] = notas_stc.get("ORDEM_DE_SERVICO", "").astype(str)
+    notas_stc = notas_stc.merge(mapa_contrato, on="ORDEM_DE_SERVICO", how="left")
 
-    abas = st.tabs(["Resumo operacional", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana", "Notas"])
+    # Barreira final: remove qualquer coisa fora de STC/Santa Cruz.
+    notas_stc = notas_stc[notas_stc["CONTRATO"].isin(contratos_permitidos)].copy()
 
-    with abas[0]:
-        st.subheader("Resumo operacional")
-        if parcial_com_recusas.empty:
-            st.info("Sem dados operacionais para o filtro selecionado.")
-        else:
-            df_periodo = parcial_com_recusas.copy()
-            if meses_escolhidos:
-                df_periodo["MES"] = df_periodo["DATA_DT"].dt.strftime("%m/%Y")
-                df_periodo = df_periodo[df_periodo["MES"].isin(meses_escolhidos)].copy()
+    if notas_stc.empty:
+        st.info("Nenhuma nota STC/Santa Cruz encontrada após o filtro de segurança.")
+        return
 
-            pagaveis = df_periodo[pd.to_numeric(df_periodo.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy()
-            recusas = df_periodo[pd.to_numeric(df_periodo.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 1].copy()
+    for col in [
+        "ORDEM_DE_SERVICO", "GRUPO_NOTA", "RECURSO", "STATUS", "RECUSA",
+        "ELETRICISTA1", "ELETRICISTA2", "DATA", "DATA_ENCERRAMENTO",
+    ]:
+        if col not in notas_stc.columns:
+            notas_stc[col] = ""
 
-            total_notas = int(pagaveis["ORDEM_DE_SERVICO"].nunique()) if not pagaveis.empty else 0
-            total_cortes = int(pagaveis["EH_CORTE"].sum()) if not pagaveis.empty else 0
-            total_religues = int(pagaveis["EH_RELIGUE"].sum()) if not pagaveis.empty else 0
-            total_recusas = int(recusas["ORDEM_DE_SERVICO"].nunique()) if not recusas.empty else 0
-            recursos_ativos = int(pagaveis["RECURSO"].nunique()) if not pagaveis.empty else 0
+    def _txt_valor(valor):
+        if valor is None:
+            return ""
+        try:
+            if pd.isna(valor):
+                return ""
+        except Exception:
+            pass
+        texto = str(valor).strip()
+        if texto.endswith(".0") and texto[:-2].isdigit():
+            texto = texto[:-2]
+        return texto.replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Notas feitas", numero(total_notas))
-            c2.metric("Cortes", numero(total_cortes))
-            c3.metric("Religues", numero(total_religues))
-            c4.metric("Recusas", numero(total_recusas))
-            st.metric("Recursos ativos", numero(recursos_ativos))
+    def _txt_data_hora(row):
+        valor = row.get("DATA_ENCERRAMENTO", "")
+        if _txt_valor(valor) == "":
+            valor = row.get("DATA", "")
+        dt = pd.to_datetime(valor, dayfirst=True, errors="coerce")
+        if pd.notna(dt):
+            if dt.hour or dt.minute or dt.second:
+                return dt.strftime("%d/%m/%Y %H:%M")
+            return dt.strftime("%d/%m/%Y")
+        return _txt_valor(valor)
 
-            if not pagaveis.empty:
-                resumo_contrato = (
-                    pagaveis.groupby("CONTRATO", dropna=False)
-                    .agg(TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"), CORTES=("EH_CORTE", "sum"), RELIGUES=("EH_RELIGUE", "sum"), VERIFICACOES=("EH_VERIFICACAO", "sum"), RECURSOS_ATIVOS=("RECURSO", "nunique"))
-                    .reset_index()
-                    .sort_values("TOTAL_NOTAS", ascending=False)
-                )
-                st.markdown("**Produção por contrato**")
-                st.dataframe(resumo_contrato, use_container_width=True, hide_index=True)
-                st.bar_chart(resumo_contrato, x="CONTRATO", y="TOTAL_NOTAS")
+    def _txt_status(row):
+        status = _txt_valor(row.get("STATUS", "")).upper()
+        recusa = _txt_valor(row.get("RECUSA", ""))
+        if status in ["FINALIZADA", "REJEITADA"]:
+            return status
+        return "REJEITADA" if recusa else "FINALIZADA"
 
-    with abas[1]:
-        st.subheader("Parcial do dia")
-        if parcial_com_recusas.empty:
-            st.info("Sem dados para parcial do dia.")
-        else:
-            datas = parcial_com_recusas[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT", ascending=False)
-            data_escolhida = st.selectbox("Escolha o dia", datas["DATA"].tolist(), index=0, key="stc_data_parcial")
-            dia = parcial_com_recusas[parcial_com_recusas["DATA"] == data_escolhida].copy()
-            pagaveis = dia[pd.to_numeric(dia.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy()
-            recusas = dia[pd.to_numeric(dia.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 1].copy()
+    def _gerar_txt_supervisor_stc(df, data_escolhida, contrato_filtro, grupo_filtro):
+        base = df.copy()
 
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            if "EH_VERIFICACAO" not in pagaveis.columns:
-                pagaveis["EH_VERIFICACAO"] = 0
-            c1.metric("Notas feitas", numero(pagaveis["ORDEM_DE_SERVICO"].nunique() if not pagaveis.empty else 0))
-            c2.metric("Cortes", numero(int(pagaveis["EH_CORTE"].sum()) if not pagaveis.empty else 0))
-            c3.metric("Religues", numero(int(pagaveis["EH_RELIGUE"].sum()) if not pagaveis.empty else 0))
-            c4.metric("Verificações", numero(int(pagaveis["EH_VERIFICACAO"].sum()) if not pagaveis.empty else 0))
-            c5.metric("Recusas", numero(recusas["ORDEM_DE_SERVICO"].nunique() if not recusas.empty else 0))
-            c6.metric("Recursos", numero(pagaveis["RECURSO"].nunique() if not pagaveis.empty else 0))
+        if contrato_filtro != "Todos":
+            base = base[base["CONTRATO"] == contrato_filtro].copy()
 
-            if not pagaveis.empty:
-                resumo = (
-                    pagaveis.groupby(["RECURSO", "CONTRATO"], dropna=False)
-                    .agg(TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"), CORTES=("EH_CORTE", "sum"), RELIGUES=("EH_RELIGUE", "sum"), VERIFICACOES=("EH_VERIFICACAO", "sum"))
-                    .reset_index()
-                    .sort_values("TOTAL_NOTAS", ascending=False)
-                )
-                resumo.insert(0, "POSIÇÃO", range(1, len(resumo) + 1))
-                st.dataframe(resumo, use_container_width=True, hide_index=True)
-
-            if not recusas.empty:
-                st.markdown("**Recusas do dia por tipo**")
-                rec = (
-                    recusas.groupby(["RECURSO", "CONTRATO", "RECUSA"], dropna=False)
-                    .agg(QTD_RECUSAS=("ORDEM_DE_SERVICO", "nunique"))
-                    .reset_index()
-                    .sort_values(["QTD_RECUSAS", "RECURSO"], ascending=[False, True])
-                )
-                st.dataframe(rec, use_container_width=True, hide_index=True)
-
-            recursos_sem_movimento = calcular_recursos_sem_movimento_no_dia(parcial_com_recusas, data_escolhida)
-            render_alerta_recursos_sem_movimento(
-                recursos_sem_movimento,
-                contrato_unico=(contrato_escolhido != "Todos"),
-            )
-
-    with abas[2]:
-        st.subheader("Ranking de recursos")
-        base_exec = montar_base_executores(notas_stc)
-        if contrato_escolhido != "Todos" and not base_exec.empty:
-            base_exec = base_exec[base_exec["CONTRATO"] == contrato_escolhido].copy()
-
-        if base_exec.empty:
-            st.info("Sem base para ranking.")
-        else:
-            tipo_periodo = st.radio("Período", ["Mês", "Semana", "Dia"], horizontal=True, key="stc_tipo_rank")
-            dias_op, semanas_op, meses_op = opcoes_periodo_ranking(base_exec)
-            if tipo_periodo == "Dia":
-                valor_periodo = st.selectbox("Dia", dias_op, key="stc_rank_dia") if dias_op else None
-            elif tipo_periodo == "Semana":
-                valor_periodo = st.selectbox("Semana", semanas_op, key="stc_rank_semana") if semanas_op else None
+        if grupo_filtro and grupo_filtro != "Todos":
+            grupo_filtro_norm = normalizar_grupo_nota(grupo_filtro)
+            grupo_norm = base["GRUPO_NOTA"].apply(normalizar_grupo_nota)
+            if grupo_filtro_norm == "CORTE":
+                # Para o TXT, VERIFICACAO deve sair como CORTE.
+                base = base[grupo_norm.isin(["CORTE", "VERIFICACAO"])].copy()
             else:
-                valor_periodo = st.selectbox("Mês", meses_op, key="stc_rank_mes") if meses_op else None
+                base = base[grupo_norm == grupo_filtro_norm].copy()
 
-            base_filtrada, ranking = ranking_recursos_cacheado(base_exec, "Todos", tipo_periodo, valor_periodo, "Notas")
-            # Supervisor STC não visualiza Pagamento Express.
+        base["DATA_HORA_TXT"] = base.apply(_txt_data_hora, axis=1)
+        base["DATA_TXT_DT"] = pd.to_datetime(base["DATA_HORA_TXT"], dayfirst=True, errors="coerce")
 
-            colunas = ["POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "DIAS_ATIVOS", "MÉDIA_NOTAS_DIA"]
-            colunas = [c for c in colunas if c in ranking.columns]
-            st.dataframe(preparar_tabela_ranking(ranking[colunas]), use_container_width=True, hide_index=True)
-            if not ranking.empty:
-                graf = ranking.head(20)[["RECURSO", "NOTAS"]].copy()
-                st.bar_chart(graf, x="RECURSO", y="NOTAS")
+        if data_escolhida:
+            data_ref = pd.to_datetime(data_escolhida, dayfirst=True, errors="coerce")
+            if pd.notna(data_ref):
+                base = base[base["DATA_TXT_DT"].dt.strftime("%d/%m/%Y") == data_ref.strftime("%d/%m/%Y")].copy()
 
-            recusas_tipo = calcular_recusas_por_tipo(base_filtrada)
-            if not recusas_tipo.empty:
-                st.markdown("**Total por tipo de recusa**")
-                total_tipo = recusas_tipo.groupby("RECUSA", dropna=False).agg(QTD_RECUSAS=("QTD_RECUSAS", "sum")).reset_index().sort_values("QTD_RECUSAS", ascending=False)
-                st.dataframe(preparar_tabela_ranking(total_tipo), use_container_width=True, hide_index=True)
-                st.markdown("**Detalhamento por equipe, contrato e tipo de recusa**")
-                st.dataframe(preparar_tabela_ranking(recusas_tipo), use_container_width=True, hide_index=True)
+        if base.empty:
+            return "", base
 
-    with abas[3]:
-        st.subheader("Comparativo mensal operacional")
-        if meses_base.empty:
-            st.info("Sem meses disponíveis.")
-        else:
-            opcoes_meses = meses_base["MES"].tolist()
-            mes_escolhido = st.selectbox("Escolha o mês", opcoes_meses, index=0, key="stc_comp_mes")
-            periodo_escolhido = meses_base.loc[meses_base["MES"] == mes_escolhido, "PERIODO"].iloc[0]
-            mes_anterior = (periodo_escolhido - 1).strftime("%m/%Y")
-            def resumo_operacional_mes(mes_ref):
-                df_mes = parcial_com_recusas.copy()
-                if not df_mes.empty:
-                    df_mes["MES"] = df_mes["DATA_DT"].dt.strftime("%m/%Y")
-                    df_mes = df_mes[df_mes["MES"] == mes_ref].copy()
-                pag = df_mes[pd.to_numeric(df_mes.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy() if not df_mes.empty else pd.DataFrame()
-                return {
-                    "TOTAL_NOTAS": int(pag["ORDEM_DE_SERVICO"].nunique()) if not pag.empty else 0,
-                    "CORTES": cortes_meta_com_verificacao(pag) + int(pag["EH_VERIFICACAO"].sum()) if not pag.empty else 0,
-                    "RELIGUES": int(pag["EH_RELIGUE"].sum()) if not pag.empty else 0,
-                    "VERIFICACOES": int(pag["EH_VERIFICACAO"].sum()) if not pag.empty else 0,
-                    "VERIFICACOES": int(pag["EH_VERIFICACAO"].sum()) if not pag.empty and "EH_VERIFICACAO" in pag.columns else 0,
-                }
+        base["STATUS_TXT"] = base.apply(_txt_status, axis=1)
+        base = base.sort_values(["DATA_TXT_DT", "RECURSO", "ORDEM_DE_SERVICO"], na_position="last").copy()
 
-            atual = resumo_operacional_mes(mes_escolhido)
-            anterior = resumo_operacional_mes(mes_anterior)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Notas", numero(atual["TOTAL_NOTAS"]), variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"]))
-            c2.metric("Cortes", numero(atual["CORTES"]), variacao_percentual(atual["CORTES"], anterior["CORTES"]))
-            c3.metric("Religues", numero(atual["RELIGUES"]), variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"]))
-            c4.metric("Verificações", numero(atual.get("VERIFICACOES", 0)), variacao_percentual(atual.get("VERIFICACOES", 0), anterior.get("VERIFICACOES", 0)))
-            tabela = pd.DataFrame([
-                {"Indicador": "Notas", mes_escolhido: numero(atual["TOTAL_NOTAS"]), mes_anterior: numero(anterior["TOTAL_NOTAS"]), "Variação": variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"])},
-                {"Indicador": "Cortes", mes_escolhido: numero(atual["CORTES"]), mes_anterior: numero(anterior["CORTES"]), "Variação": variacao_percentual(atual["CORTES"], anterior["CORTES"])},
-                {"Indicador": "Religues", mes_escolhido: numero(atual["RELIGUES"]), mes_anterior: numero(anterior["RELIGUES"]), "Variação": variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"])},
-                {"Indicador": "Verificações", mes_escolhido: numero(atual.get("VERIFICACOES", 0)), mes_anterior: numero(anterior.get("VERIFICACOES", 0)), "Variação": variacao_percentual(atual.get("VERIFICACOES", 0), anterior.get("VERIFICACOES", 0))},
-            ])
-            st.dataframe(tabela, use_container_width=True, hide_index=True)
+        linhas = []
+        for _, row in base.iterrows():
+            grupo_txt = normalizar_grupo_nota(row.get("GRUPO_NOTA", ""))
+            if grupo_txt == "VERIFICACAO":
+                grupo_txt = "CORTE"
 
-    with abas[4]:
-        st.subheader("Produção por dia da semana")
-        df_dias = parcial_com_recusas.copy()
-        if df_dias.empty:
-            st.info("Sem dados.")
-        else:
-            df_dias = df_dias[pd.to_numeric(df_dias.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy()
-            tabela = (
-                df_dias.groupby(["CONTRATO", "SEMANA_INICIO", "DIA_SEMANA"], dropna=False)
-                .agg(NOTAS=("ORDEM_DE_SERVICO", "nunique"))
-                .reset_index()
-                .pivot_table(index=["CONTRATO", "SEMANA_INICIO"], columns="DIA_SEMANA", values="NOTAS", aggfunc="sum", fill_value=0)
-                .reset_index()
-            )
-            colunas_dias = [c for c in ORDEM_DIAS if c in tabela.columns]
-            tabela["Total semana"] = tabela[colunas_dias].sum(axis=1) if colunas_dias else 0
-            st.dataframe(tabela[["CONTRATO", "SEMANA_INICIO"] + colunas_dias + ["Total semana"]], use_container_width=True, hide_index=True)
-            por_dia = df_dias.groupby("DIA_SEMANA", as_index=False).agg(NOTAS=("ORDEM_DE_SERVICO", "nunique"))
-            por_dia["ordem"] = por_dia["DIA_SEMANA"].map({d: i for i, d in enumerate(ORDEM_DIAS)})
-            por_dia = por_dia.sort_values("ordem")
-            st.bar_chart(por_dia, x="DIA_SEMANA", y="NOTAS")
+            campos = [
+                _txt_valor(row.get("ORDEM_DE_SERVICO", "")),
+                grupo_txt,
+                _txt_valor(row.get("RECURSO", "")).upper(),
+                _txt_valor(row.get("STATUS_TXT", "")).upper(),
+                _txt_valor(row.get("DATA_HORA_TXT", "")),
+                _txt_valor(row.get("ELETRICISTA1", "")),
+                _txt_valor(row.get("ELETRICISTA2", "")),
+                _txt_valor(row.get("RECUSA", "")),
+            ]
+            linhas.append("\t".join(campos))
 
-    with abas[5]:
-        st.subheader("Consulta de notas")
-        df_notas = notas_stc.copy()
-        termo = st.text_input("Buscar por OS, recurso ou recusa", key="stc_busca_notas")
-        if termo:
-            termo_norm = str(termo).upper().strip()
-            mask = pd.Series(False, index=df_notas.index)
-            for col in ["ORDEM_DE_SERVICO", "RECURSO", "RECUSA", "GRUPO_NOTA"]:
-                if col in df_notas.columns:
-                    mask = mask | df_notas[col].fillna("").astype(str).str.upper().str.contains(termo_norm, na=False)
-            df_notas = df_notas[mask].copy()
-        df_notas = _remover_colunas_financeiras(df_notas)
-        st.dataframe(df_notas.head(1000), use_container_width=True, hide_index=True)
+        return "\n".join(linhas), base
 
-# ==============================
-# G.Z.U.S. — CHATBOT LOCAL
-# Gestão Inteligente de Serviços
-# ==============================
+    st.subheader("TXT do dia — STC/Santa Cruz")
+    st.caption("Este perfil não tem acesso ao Disjuntor Jundiaí nem às demais telas do painel.")
 
-NOME_ASSISTENTE = "G.Z.U.S."
-SUBTITULO_ASSISTENTE = "Gestão Inteligente de Serviços"
+    col_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in notas_stc.columns else "DATA"
+    datas = pd.to_datetime(notas_stc.get(col_data, pd.Series(dtype=str)), dayfirst=True, errors="coerce")
+    datas_disponiveis = (
+        pd.DataFrame({"DATA_DT": datas})
+        .dropna()
+        .drop_duplicates()
+        .sort_values("DATA_DT", ascending=False)
+    )
+    datas_disponiveis["DATA"] = datas_disponiveis["DATA_DT"].dt.strftime("%d/%m/%Y")
+    opcoes_datas = datas_disponiveis["DATA"].drop_duplicates().tolist()
+
+    if not opcoes_datas:
+        st.info("Não encontrei datas disponíveis para gerar o TXT.")
+        return
+
+    c1, c2, c3 = st.columns([1.2, 1.2, 1.2])
+    data_txt = c1.selectbox("Dia do TXT", opcoes_datas, index=0, key="stc_txt_data")
+    contrato_txt = c2.selectbox(
+        "Contrato",
+        ["Todos"] + contratos_permitidos,
+        index=0,
+        key="stc_txt_contrato",
+    )
+
+    grupos_txt = ["Todos"] + sorted(
+        notas_stc.get("GRUPO_NOTA", pd.Series(dtype=str)).dropna().astype(str).str.upper().unique().tolist()
+    )
+    grupo_txt = c3.selectbox("Tipo", grupos_txt, index=0, key="stc_txt_grupo")
+
+    texto_txt, df_txt = _gerar_txt_supervisor_stc(
+        notas_stc,
+        data_escolhida=data_txt,
+        contrato_filtro=contrato_txt,
+        grupo_filtro=grupo_txt,
+    )
+
+    if not texto_txt:
+        st.warning("Nenhuma linha encontrada para os filtros escolhidos.")
+        return
+
+    st.success(f"TXT gerado com {numero(len(df_txt))} linhas. Use copiar ou baixe o arquivo.")
+
+    texto_js = json.dumps(texto_txt)
+    texto_html = html.escape(texto_txt)
+    components.html(
+        f"""
+        <div style="font-family: system-ui, -apple-system, Segoe UI, sans-serif;">
+          <button id="btn-copy-gzus-stc" style="
+              border: 0;
+              border-radius: 12px;
+              padding: 10px 16px;
+              font-weight: 800;
+              cursor: pointer;
+              background: #1d4ed8;
+              color: white;
+              margin-bottom: 8px;">
+            📋 Copiar TXT para a área de transferência
+          </button>
+          <span id="copy-status-gzus-stc" style="margin-left: 10px; font-size: 14px; color: #166534;"></span>
+          <textarea id="txt-gzus-stc" style="
+              width: 100%;
+              height: 260px;
+              margin-top: 8px;
+              box-sizing: border-box;
+              font-family: Consolas, monospace;
+              font-size: 12px;
+              white-space: pre;
+              border: 1px solid #cbd5e1;
+              border-radius: 12px;
+              padding: 10px;">{texto_html}</textarea>
+        </div>
+        <script>
+          const textoGzusStc = {texto_js};
+          const btnStc = document.getElementById('btn-copy-gzus-stc');
+          const statusStc = document.getElementById('copy-status-gzus-stc');
+          const areaStc = document.getElementById('txt-gzus-stc');
+          btnStc.addEventListener('click', async () => {{
+            try {{
+              await navigator.clipboard.writeText(textoGzusStc);
+              statusStc.textContent = 'Copiado!';
+            }} catch (e) {{
+              areaStc.focus();
+              areaStc.select();
+              document.execCommand('copy');
+              statusStc.textContent = 'Copiado pelo modo compatível!';
+            }}
+          }});
+        </script>
+        """,
+        height=340,
+    )
+
+    nome_data = data_txt.replace("/", "-")
+    st.download_button(
+        "⬇️ Baixar TXT STC/Santa Cruz",
+        texto_txt.encode("utf-8"),
+        file_name=f"resultado_final_stc_santa_cruz_{nome_data}.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+
+    with st.expander("Prévia em tabela", expanded=False):
+        colunas_previas = [
+            "ORDEM_DE_SERVICO", "GRUPO_NOTA", "CONTRATO", "RECURSO", "STATUS_TXT",
+            "DATA_HORA_TXT", "ELETRICISTA1", "ELETRICISTA2", "RECUSA",
+        ]
+        colunas_previas = [c for c in colunas_previas if c in df_txt.columns]
+        st.dataframe(df_txt[colunas_previas].head(2000), use_container_width=True, hide_index=True)
 
 
 def _normalizar_chat(texto):
@@ -5942,8 +5955,6 @@ if PERFIL_ACESSO == "supervisor_leitura":
 
 if PERFIL_ACESSO == "supervisor_stc":
     mostrar_painel_supervisor_stc(bases)
-    if not notas.empty:
-        mostrar_chatbot_popup(notas, pode_ver_financeiro=False, pode_ver_express=False)
     st.stop()
 
 st.title("🤖 G.Z.U.S. — Gestão Inteligente de Serviços")
