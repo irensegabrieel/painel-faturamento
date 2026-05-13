@@ -4608,10 +4608,11 @@ def mostrar_painel_supervisor_stc(bases):
 
     try:
         caminho_notas_status = caminho_arquivo(ARQUIVOS["notas"])
-        if caminho_notas_status and Path(caminho_notas_status).exists():
-            atualizado_dt = arquivo_mtime_datetime(caminho_notas_status)
-            if atualizado_dt:
-                st.sidebar.caption(f"Última atualização: {atualizado_dt.strftime('%d/%m/%Y %H:%M:%S')}")
+        if caminho_notas_status.exists():
+            import datetime as _dt
+            mtime = caminho_notas_status.stat().st_mtime
+            atualizado = _dt.datetime.fromtimestamp(mtime).strftime("%d/%m/%Y %H:%M:%S")
+            st.sidebar.caption(f"Última atualização: {atualizado}")
     except Exception:
         pass
 
