@@ -7,6 +7,7 @@ import json
 import html
 import tempfile
 import sqlite3
+import unicodedata
 import pandas as pd
 import streamlit as st
 import altair as alt
@@ -2053,7 +2054,7 @@ def formatar_tabela(df):
     df2 = df.copy()
 
     colunas_moeda = ORDEM_DIAS + [
-        "CORTE", "RELIGUE", "TOTAL", "MÍNIMO", "MÁXIMO", "VALOR",
+        "CORTE", "RELIGUE", "VERIFICACAO", "VERIFICAÇÃO", "TOTAL", "MÍNIMO", "MÁXIMO", "VALOR",
         "Total semana", "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
     ]
 
@@ -2606,6 +2607,18 @@ def contrato_para_base_notas(contrato):
     return nome
 
 
+
+def normalizar_grupo_nota(valor):
+    texto = str(valor or '').strip().upper()
+    texto = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('ascii')
+    if 'VERIFIC' in texto:
+        return 'VERIFICACAO'
+    if 'RELIG' in texto:
+        return 'RELIGUE'
+    if 'CORTE' in texto:
+        return 'CORTE'
+    return texto
+
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def preparar_parcial_do_dia(notas, incluir_recusas=False):
     """
@@ -2633,7 +2646,7 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
     else:
         df["QTD_EXECUTORES"] = pd.to_numeric(df["QTD_EXECUTORES"], errors="coerce").fillna(0).astype(int)
 
-    df["GRUPO_NOTA"] = df["GRUPO_NOTA"].str.upper()
+    df["GRUPO_NOTA"] = df["GRUPO_NOTA"].apply(normalizar_grupo_nota)
     df["RECURSO"] = df["RECURSO"].str.upper()
     df["RECUSA"] = df["RECUSA"].fillna("").astype(str).str.strip()
     df["EH_RECUSA"] = (df["RECUSA"] != "").astype(int)
@@ -2659,14 +2672,14 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
         if eh_disjuntor_jundiai(recurso):
             contrato = "Disjuntor Jundiaí"
             if not eh_recusa:
-                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_CORTE", 13.72), "RELIGUE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_RELIGUE", 27.43)}.get(grupo, 0.0)
+                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_CORTE", 13.72), "VERIFICACAO": secret_float("TARIFA_DISJUNTOR_JUNDIAI_CORTE", 13.72), "RELIGUE": secret_float("TARIFA_DISJUNTOR_JUNDIAI_RELIGUE", 27.43)}.get(grupo, 0.0)
                 faturamento_min = faturamento
                 faturamento_max = faturamento
 
         elif eh_disjuntor_santa_cruz(recurso):
             contrato = "Disjuntor Santa Cruz"
             if not eh_recusa:
-                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE", 11.98), "RELIGUE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE", 23.97)}.get(grupo, 0.0)
+                faturamento = {"CORTE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE", 11.98), "VERIFICACAO": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_VERIFICACAO", 23.97), "RELIGUE": secret_float("TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE", 23.97)}.get(grupo, 0.0)
                 faturamento_min = faturamento
                 faturamento_max = faturamento
 
@@ -2683,7 +2696,7 @@ def preparar_parcial_do_dia(notas, incluir_recusas=False):
             item["FATURAMENTO"] = faturamento
             item["FATURAMENTO_MIN"] = faturamento_min
             item["FATURAMENTO_MAX"] = faturamento_max
-            item["EH_CORTE"] = 1 if (grupo == "CORTE" and not eh_recusa) else 0
+            item["EH_CORTE"] = 1 if (((grupo == "CORTE") or (grupo == "VERIFICACAO" and contrato == "Disjuntor Jundiaí")) and not eh_recusa) else 0
             item["EH_RELIGUE"] = 1 if (grupo == "RELIGUE" and not eh_recusa) else 0
             item["EH_VERIFICACAO"] = 1 if (grupo == "VERIFICACAO" and contrato == "Disjuntor Santa Cruz" and not eh_recusa) else 0
             item["EH_RECUSA"] = 1 if eh_recusa else 0
@@ -6115,12 +6128,12 @@ if tela_escolhida == "Resumo":
                 fill_value=0,
             ).reset_index()
 
-            for col in ["CORTE", "RELIGUE"]:
+            for col in ["CORTE", "RELIGUE", "VERIFICACAO"]:
                 if col not in tabela_resumo.columns:
                     tabela_resumo[col] = 0
 
-            tabela_resumo["TOTAL"] = tabela_resumo[["CORTE", "RELIGUE"]].sum(axis=1)
-            tabela_resumo = tabela_resumo[["CONTRATO", "CORTE", "RELIGUE", "TOTAL"]]
+            tabela_resumo["TOTAL"] = tabela_resumo[["CORTE", "RELIGUE", "VERIFICACAO"]].sum(axis=1)
+            tabela_resumo = tabela_resumo[["CONTRATO", "CORTE", "RELIGUE", "VERIFICACAO", "TOTAL"]]
 
             st.dataframe(formatar_tabela(tabela_resumo), use_container_width=True, hide_index=True)
 
@@ -6859,7 +6872,12 @@ def gerar_txt_supervisao(notas, data_escolhida=None, contrato_filtro="Todos", gr
         df = df[df["CONTRATO"] == contrato_filtro].copy()
 
     if grupo_filtro and grupo_filtro != "Todos" and "GRUPO_NOTA" in df.columns:
-        df = df[df["GRUPO_NOTA"].fillna("").astype(str).str.upper() == str(grupo_filtro).upper()].copy()
+        grupo_filtro_norm = normalizar_grupo_nota(grupo_filtro)
+        grupo_norm = df["GRUPO_NOTA"].apply(normalizar_grupo_nota)
+        if grupo_filtro_norm == "CORTE":
+            df = df[grupo_norm.isin(["CORTE", "VERIFICACAO"])].copy()
+        else:
+            df = df[grupo_norm == grupo_filtro_norm].copy()
 
     df["DATA_HORA_TXT"] = df.apply(_data_hora_txt_supervisao, axis=1)
     df["DATA_TXT_DT"] = pd.to_datetime(df["DATA_HORA_TXT"], dayfirst=True, errors="coerce")
@@ -6879,9 +6897,12 @@ def gerar_txt_supervisao(notas, data_escolhida=None, contrato_filtro="Todos", gr
 
     linhas = []
     for _, row in df.iterrows():
+        grupo_txt = normalizar_grupo_nota(row.get("GRUPO_NOTA", ""))
+        if grupo_txt == "VERIFICACAO":
+            grupo_txt = "CORTE"
         campos = [
             _valor_txt_supervisao(row.get("ORDEM_DE_SERVICO", "")),
-            _valor_txt_supervisao(row.get("GRUPO_NOTA", "")).upper(),
+            grupo_txt,
             _valor_txt_supervisao(row.get("RECURSO", "")).upper(),
             _valor_txt_supervisao(row.get("STATUS_TXT", "")).upper(),
             _valor_txt_supervisao(row.get("DATA_HORA_TXT", "")),
