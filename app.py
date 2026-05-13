@@ -2061,7 +2061,7 @@ def formatar_tabela(df):
     for col in df2.columns:
         if "FATURAMENTO" in col or col in colunas_moeda:
             df2[col] = df2[col].apply(dinheiro)
-        elif col in ["QTD_NOTAS", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "EXPRESS", "TOTAL_NOTAS"]:
+        elif col in ["QTD_NOTAS", "NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS", "EXPRESS", "TOTAL_NOTAS"]:
             df2[col] = df2[col].apply(numero)
 
     return df2
@@ -2080,7 +2080,7 @@ def preparar_tabela_ranking(df, colunas_moeda=None):
     for col in df2.columns:
         if col in colunas_moeda or "FATURAMENTO" in col or col == "TICKET_MÉDIO":
             df2[col] = df2[col].apply(dinheiro)
-        elif col in ["POSIÇÃO", "NOTAS", "CORTES", "RELIGUES", "RECUSAS", "EXPRESS", "DIAS_ATIVOS", "QTD_EQUIPES", "QTD_RECURSOS"]:
+        elif col in ["POSIÇÃO", "NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS", "EXPRESS", "DIAS_ATIVOS", "QTD_EQUIPES", "QTD_RECURSOS"]:
             df2[col] = df2[col].apply(numero)
         elif col in ["MÉDIA_NOTAS_DIA"]:
             df2[col] = df2[col].apply(lambda v: f"{float(v):.2f}".replace(".", ","))
@@ -2175,6 +2175,7 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
             RECUSAS=("ORDEM_SERVICO_RECUSA", "nunique"),
             CORTES=("EH_CORTE", "sum"),
             RELIGUES=("EH_RELIGUE", "sum"),
+            VERIFICACOES=("EH_VERIFICACAO", "sum"),
             DIAS_ATIVOS=("DATA_PAGAVEL", "nunique"),
             QTD_EQUIPES=("RECURSO", "nunique"),
             FATURAMENTO_ATRIBUÍDO=("FATURAMENTO_ATRIBUÍDO", "sum"),
@@ -2446,26 +2447,26 @@ def resumo_operacional_dia_cache(caminho_banco_str, meses_escolhidos, mtime_banc
     """
     del mtime_banco
     if not caminho_banco_str:
-        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "RECUSAS"])
+        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS"])
     try:
         with sqlite3.connect(caminho_banco_str) as conn:
             if not _sqlite_tabela_existe(caminho_banco_str, "resumo_dia"):
-                return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "RECUSAS"])
-            df = pd.read_sql_query('SELECT DATA, CONTRATO, TOTAL_NOTAS, CORTES, RELIGUES, RECUSAS FROM resumo_dia', conn)
+                return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS"])
+            df = pd.read_sql_query('SELECT DATA, CONTRATO, TOTAL_NOTAS, CORTES, RELIGUES, COALESCE(VERIFICACOES, 0) AS VERIFICACOES, RECUSAS FROM resumo_dia', conn)
     except Exception:
-        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "RECUSAS"])
+        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS"])
 
     if df.empty:
-        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "RECUSAS"])
+        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS"])
 
     datas = pd.to_datetime(df["DATA"], dayfirst=True, errors="coerce")
     meses = list(meses_escolhidos or [])
     if meses:
         df = df[datas.dt.strftime("%m/%Y").isin(meses)].copy()
     if df.empty:
-        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "RECUSAS"])
+        return pd.DataFrame(columns=["CONTRATO", "TOTAL_NOTAS_OP", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS"])
 
-    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS"]:
+    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
     return (
@@ -2474,6 +2475,7 @@ def resumo_operacional_dia_cache(caminho_banco_str, meses_escolhidos, mtime_banc
             TOTAL_NOTAS_OP=("TOTAL_NOTAS", "sum"),
             CORTES=("CORTES", "sum"),
             RELIGUES=("RELIGUES", "sum"),
+            VERIFICACOES=("VERIFICACOES", "sum"),
             RECUSAS=("RECUSAS", "sum"),
         )
         .reset_index()
@@ -2535,7 +2537,7 @@ def resumo_home_leve_cache(dias_df, carro_dias_df, meses_escolhidos, contrato_es
     if resumo_contrato.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES"]:
+    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "VERIFICACOES"]:
         if col not in resumo_contrato.columns:
             resumo_contrato[col] = 0
         resumo_contrato[col] = pd.to_numeric(resumo_contrato[col], errors="coerce").fillna(0).astype(int)
@@ -2884,13 +2886,14 @@ def calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida):
         "TOTAL_NOTAS": 0,
         "CORTES": 0,
         "RELIGUES": 0,
+        "VERIFICACOES": 0,
         "FATURAMENTO": 0,
         "FATURAMENTO_MIN": 0,
         "FATURAMENTO_MAX": 0,
         "RECUSAS": 0,
     })
 
-    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS"]:
+    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS"]:
         if col in resumo_equipe.columns:
             resumo_equipe[col] = pd.to_numeric(resumo_equipe[col], errors="coerce").fillna(0).astype(int)
 
@@ -3084,6 +3087,7 @@ def calcular_resumo_mensal(notas, mes, contrato_escolhido="Todos"):
             "TOTAL_NOTAS": 0,
             "CORTES": 0,
             "RELIGUES": 0,
+            "VERIFICACOES": 0,
             "EXPRESS": 0,
             "FATURAMENTO_EXPRESS": 0.0,
             "FATURAMENTO_MIN": 0.0,
@@ -3095,6 +3099,7 @@ def calcular_resumo_mensal(notas, mes, contrato_escolhido="Todos"):
         "TOTAL_NOTAS": int(resumo_contrato["TOTAL_NOTAS"].sum()),
         "CORTES": int(resumo_contrato["CORTES"].sum()),
         "RELIGUES": int(resumo_contrato["RELIGUES"].sum()),
+        "VERIFICACOES": int(resumo_contrato["VERIFICACOES"].sum()) if "VERIFICACOES" in resumo_contrato.columns else 0,
         "EXPRESS": int(resumo_contrato["EXPRESS"].sum()) if "EXPRESS" in resumo_contrato.columns else 0,
         "FATURAMENTO_EXPRESS": float(resumo_contrato["FATURAMENTO_EXPRESS"].sum()) if "FATURAMENTO_EXPRESS" in resumo_contrato.columns else 0.0,
         "FATURAMENTO_MIN": float(resumo_contrato["FATURAMENTO_MIN"].sum()),
@@ -4144,7 +4149,7 @@ def aplicar_express_no_resumo_contrato(resumo_contrato, notas, meses, contrato_e
 
     resumo = resumo.merge(express, on="CONTRATO", how="outer", suffixes=("", "_NOVO"))
 
-    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES"]:
+    for col in ["TOTAL_NOTAS", "CORTES", "RELIGUES", "VERIFICACOES"]:
         if col not in resumo.columns:
             resumo[col] = 0
         resumo[col] = pd.to_numeric(resumo[col], errors="coerce").fillna(0).astype(int)
@@ -4217,7 +4222,7 @@ def aplicar_express_no_ranking_mensal(ranking, notas, mes, contrato_ranking):
         suffixes=("", "_NOVO"),
     )
 
-    for col in ["NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS", "QTD_EQUIPES"]:
+    for col in ["NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "DIAS_ATIVOS", "QTD_EQUIPES"]:
         if col not in ranking.columns:
             ranking[col] = 0
         ranking[col] = pd.to_numeric(ranking[col], errors="coerce").fillna(0)
@@ -4738,18 +4743,21 @@ def mostrar_painel_supervisor_stc(bases):
                     "TOTAL_NOTAS": int(pag["ORDEM_DE_SERVICO"].nunique()) if not pag.empty else 0,
                     "CORTES": int(pag["EH_CORTE"].sum()) if not pag.empty else 0,
                     "RELIGUES": int(pag["EH_RELIGUE"].sum()) if not pag.empty else 0,
+                    "VERIFICACOES": int(pag["EH_VERIFICACAO"].sum()) if not pag.empty and "EH_VERIFICACAO" in pag.columns else 0,
                 }
 
             atual = resumo_operacional_mes(mes_escolhido)
             anterior = resumo_operacional_mes(mes_anterior)
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Notas", numero(atual["TOTAL_NOTAS"]), variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"]))
             c2.metric("Cortes", numero(atual["CORTES"]), variacao_percentual(atual["CORTES"], anterior["CORTES"]))
             c3.metric("Religues", numero(atual["RELIGUES"]), variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"]))
+            c4.metric("Verificações", numero(atual.get("VERIFICACOES", 0)), variacao_percentual(atual.get("VERIFICACOES", 0), anterior.get("VERIFICACOES", 0)))
             tabela = pd.DataFrame([
                 {"Indicador": "Notas", mes_escolhido: numero(atual["TOTAL_NOTAS"]), mes_anterior: numero(anterior["TOTAL_NOTAS"]), "Variação": variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"])},
                 {"Indicador": "Cortes", mes_escolhido: numero(atual["CORTES"]), mes_anterior: numero(anterior["CORTES"]), "Variação": variacao_percentual(atual["CORTES"], anterior["CORTES"])},
                 {"Indicador": "Religues", mes_escolhido: numero(atual["RELIGUES"]), mes_anterior: numero(anterior["RELIGUES"]), "Variação": variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"])},
+                {"Indicador": "Verificações", mes_escolhido: numero(atual.get("VERIFICACOES", 0)), mes_anterior: numero(anterior.get("VERIFICACOES", 0)), "Variação": variacao_percentual(atual.get("VERIFICACOES", 0), anterior.get("VERIFICACOES", 0))},
             ])
             st.dataframe(tabela, use_container_width=True, hide_index=True)
 
@@ -5099,6 +5107,7 @@ def _montar_ranking_contratos_chat(df, metrica="notas", pode_ver_financeiro=True
         ranking["NOTAS"] = 0
         ranking["CORTES"] = 0
         ranking["RELIGUES"] = 0
+        ranking["VERIFICACOES"] = 0
         ranking["DIAS_ATIVOS"] = 0
         ranking["RECURSOS_ATIVOS"] = 0
         ranking["FATURAMENTO"] = 0.0
@@ -5109,6 +5118,7 @@ def _montar_ranking_contratos_chat(df, metrica="notas", pode_ver_financeiro=True
                 NOTAS=("ORDEM_DE_SERVICO", "nunique"),
                 CORTES=("EH_CORTE", "sum"),
                 RELIGUES=("EH_RELIGUE", "sum"),
+                VERIFICACOES=("EH_VERIFICACAO", "sum"),
                 DIAS_ATIVOS=("DATA", "nunique"),
                 RECURSOS_ATIVOS=("RECURSO", "nunique"),
                 FATURAMENTO=("FATURAMENTO", "sum"),
@@ -5122,7 +5132,7 @@ def _montar_ranking_contratos_chat(df, metrica="notas", pode_ver_financeiro=True
         rec = recusas.groupby("CONTRATO", dropna=False).agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique")).reset_index()
 
     ranking = ranking.merge(rec, on="CONTRATO", how="outer").fillna(0)
-    for col in ["NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS", "RECURSOS_ATIVOS", "RECUSAS"]:
+    for col in ["NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "DIAS_ATIVOS", "RECURSOS_ATIVOS", "RECUSAS"]:
         if col not in ranking.columns:
             ranking[col] = 0
         ranking[col] = pd.to_numeric(ranking[col], errors="coerce").fillna(0).astype(int)
@@ -5164,6 +5174,7 @@ def _montar_ranking_chat(df, metrica="notas", pode_ver_financeiro=True):
         ranking["NOTAS"] = 0
         ranking["CORTES"] = 0
         ranking["RELIGUES"] = 0
+        ranking["VERIFICACOES"] = 0
         ranking["DIAS_ATIVOS"] = 0
         ranking["FATURAMENTO"] = 0.0
     else:
@@ -5173,6 +5184,7 @@ def _montar_ranking_chat(df, metrica="notas", pode_ver_financeiro=True):
                 NOTAS=("ORDEM_DE_SERVICO", "nunique"),
                 CORTES=("EH_CORTE", "sum"),
                 RELIGUES=("EH_RELIGUE", "sum"),
+                VERIFICACOES=("EH_VERIFICACAO", "sum"),
                 DIAS_ATIVOS=("DATA", "nunique"),
                 FATURAMENTO=("FATURAMENTO", "sum"),
             )
@@ -5185,7 +5197,7 @@ def _montar_ranking_chat(df, metrica="notas", pode_ver_financeiro=True):
         rec = recusas.groupby("RECURSO", dropna=False).agg(RECUSAS=("ORDEM_DE_SERVICO", "nunique")).reset_index()
 
     ranking = ranking.merge(rec, on="RECURSO", how="outer").fillna(0)
-    for col in ["NOTAS", "CORTES", "RELIGUES", "DIAS_ATIVOS", "RECUSAS"]:
+    for col in ["NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "DIAS_ATIVOS", "RECUSAS"]:
         if col not in ranking.columns:
             ranking[col] = 0
         ranking[col] = pd.to_numeric(ranking[col], errors="coerce").fillna(0).astype(int)
@@ -5577,7 +5589,7 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
         alvo = recurso or contrato or "Geral"
         linhas = [f"📊 **Comparativo — {alvo}**", "", f"**{_nome_mes_chat(m1)} → {_nome_mes_chat(m2)}**", ""]
         linhas.append(f"• Produção: **{numero(r1['notas'])} → {numero(r2['notas'])}** ({var(r2['notas'], r1['notas'])})")
-        linhas.append(f"• Cortes/religues: **{numero(r1['cortes'])}/{numero(r1['religues'])} → {numero(r2['cortes'])}/{numero(r2['religues'])}**")
+        linhas.append(f"• Cortes/religues/verificações: **{numero(r1['cortes'])}/{numero(r1['religues'])} → {numero(r2['cortes'])}/{numero(r2['religues'])}**")
         linhas.append(f"• Recusas: **{numero(r1['recusas'])} → {numero(r2['recusas'])}** ({var(r2['recusas'], r1['recusas'])})")
         if pode_ver_financeiro:
             linhas.append(f"• Faturamento: **{dinheiro(r1['faturamento'])} → {dinheiro(r2['faturamento'])}** ({var(r2['faturamento'], r1['faturamento'])})")
@@ -5619,7 +5631,7 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
                 else:
                     linhas.append(f"**{row['CONTRATO']}** liderou a produção com **{numero(int(row['NOTAS']))} notas**.")
                 linhas.append("")
-                detalhe = f"• Cortes / religues: **{numero(int(row['CORTES']))} / {numero(int(row['RELIGUES']))}** • Recursos ativos: **{numero(int(row['RECURSOS_ATIVOS']))}** • Recusas: **{numero(int(row['RECUSAS']))}**"
+                detalhe = f"• Cortes / religues / verificações: **{numero(int(row['CORTES']))} / {numero(int(row['RELIGUES']))} / {numero(int(row.get('VERIFICACOES', 0)))}** • Recursos ativos: **{numero(int(row['RECURSOS_ATIVOS']))}** • Recusas: **{numero(int(row['RECUSAS']))}**"
                 linhas.append(detalhe.replace(".", ","))
                 return "\n".join(linhas)
 
@@ -5632,7 +5644,7 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
                 elif metrica_ranking == "faturamento" and pode_ver_financeiro:
                     linhas.append(f"{int(row['POSICAO'])}. **{row['CONTRATO']}** — {dinheiro(float(row['FATURAMENTO']))} • {numero(int(row['NOTAS']))} notas")
                 else:
-                    linhas.append(f"{int(row['POSICAO'])}. **{row['CONTRATO']}** — {numero(int(row['NOTAS']))} notas • Cortes/religues: {numero(int(row['CORTES']))}/{numero(int(row['RELIGUES']))} • Recusas: {numero(int(row['RECUSAS']))}")
+                    linhas.append(f"{int(row['POSICAO'])}. **{row['CONTRATO']}** — {numero(int(row['NOTAS']))} notas • Cortes/religues/verificações: {numero(int(row['CORTES']))}/{numero(int(row['RELIGUES']))}/{numero(int(row.get('VERIFICACOES', 0)))} • Recusas: {numero(int(row['RECUSAS']))}")
             linhas.append("")
             linhas.append("Obs.: ranking agregado por **contrato**, não por equipe/recurso.")
             return "\n".join(linhas)
@@ -5653,7 +5665,7 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
             else:
                 linhas.append(f"**{row['RECURSO']}** liderou a produção com **{numero(int(row['NOTAS']))} notas**.")
             linhas.append("")
-            detalhe = f"• Cortes / religues: **{numero(int(row['CORTES']))} / {numero(int(row['RELIGUES']))}** • Média/dia: **{float(row['MEDIA_DIA']):.1f}** • Recusas: **{numero(int(row['RECUSAS']))}**"
+            detalhe = f"• Cortes / religues / verificações: **{numero(int(row['CORTES']))} / {numero(int(row['RELIGUES']))} / {numero(int(row.get('VERIFICACOES', 0)))}** • Média/dia: **{float(row['MEDIA_DIA']):.1f}** • Recusas: **{numero(int(row['RECUSAS']))}**"
             linhas.append(detalhe.replace(".", ","))
             motivo = _principal_recusa_recurso_chat(df, recurso=row["RECURSO"])
             if motivo:
@@ -5670,7 +5682,7 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
             elif metrica_ranking == "faturamento" and pode_ver_financeiro:
                 linhas.append(f"{int(row['POSICAO'])}. **{row['RECURSO']}** — {dinheiro(float(row['FATURAMENTO']))} • {numero(int(row['NOTAS']))} notas")
             else:
-                linhas.append(f"{int(row['POSICAO'])}. **{row['RECURSO']}** — {numero(int(row['NOTAS']))} notas • Cortes/religues: {numero(int(row['CORTES']))}/{numero(int(row['RELIGUES']))} • Recusas: {numero(int(row['RECUSAS']))}")
+                linhas.append(f"{int(row['POSICAO'])}. **{row['RECURSO']}** — {numero(int(row['NOTAS']))} notas • Cortes/religues/verificações: {numero(int(row['CORTES']))}/{numero(int(row['RELIGUES']))}/{numero(int(row.get('VERIFICACOES', 0)))} • Recusas: {numero(int(row['RECUSAS']))}")
         return "\n".join(linhas)
 
     if tipo == "recusas":
@@ -5714,7 +5726,7 @@ def responder_chatbot_painel(pergunta, notas, pode_ver_financeiro=True, pode_ver
         if faturamento_express and pode_ver_express:
             linhas.append(f"  - Sem express: {dinheiro(faturamento_base)}")
             linhas.append(f"  - Express: {dinheiro(faturamento_express)}")
-    linhas.append(f"• **Cortes / religues:** {numero(resumo['cortes'])} / {numero(resumo['religues'])}")
+    linhas.append(f"• **Cortes / religues / verificações:** {numero(resumo['cortes'])} / {numero(resumo['religues'])}")
     linhas.append(f"• **Recusas:** {numero(resumo['recusas'])} ({taxa_recusa:.1f}%)".replace(".", ","))
     if resumo["dias_ativos"]:
         linhas.append(f"• **Média/dia:** {media_dia:.1f} notas".replace(".", ","))
@@ -6115,7 +6127,7 @@ if tela_escolhida == "Resumo":
         grafico_resumo = resumo_contrato_periodo.copy()
         st.bar_chart(grafico_resumo, x="CONTRATO", y="FATURAMENTO")
 
-        st.markdown("**Resumo com corte + religue**")
+        st.markdown("**Resumo com corte + religue + verificação**")
 
         if resumo_grupo_periodo.empty:
             st.caption("Nesta versão rápida, o detalhamento corte/religue da Home fica fora do carregamento inicial. Use Parcial, Ranking ou Notas para detalhes operacionais.")
@@ -6139,7 +6151,7 @@ if tela_escolhida == "Resumo":
 
         st.markdown("**Detalhamento por contrato no período**")
         colunas_detalhe_resumo = [
-            "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "EXPRESS",
+            "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "EXPRESS",
             "FATURAMENTO", "FATURAMENTO_EXPRESS", "FATURAMENTO_MIN", "FATURAMENTO_MAX"
         ]
         colunas_detalhe_resumo = [c for c in colunas_detalhe_resumo if c in resumo_contrato_periodo.columns]
@@ -6257,6 +6269,7 @@ if tela_escolhida == "Parcial do dia":
                                 alt.Tooltip("TOTAL_NOTAS:Q", title="Notas feitas"),
                                 alt.Tooltip("CORTES:Q", title="Cortes"),
                                 alt.Tooltip("RELIGUES:Q", title="Religues"),
+                                alt.Tooltip("VERIFICACOES:Q", title="Verificações"),
                                 alt.Tooltip("RECUSAS:Q", title="Recusas"),
                                 alt.Tooltip("FATURAMENTO:Q", title="Faturamento", format=",.2f"),
                             ],
@@ -6274,7 +6287,7 @@ if tela_escolhida == "Parcial do dia":
                     tabela_equipe = resumo_equipe.copy()
                     tabela_equipe["FATURAMENTO"] = tabela_equipe.apply(faturamento_linha_equipe, axis=1)
                     tabela_equipe = tabela_equipe[[
-                        "POSIÇÃO", "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "RECUSAS", "FATURAMENTO"
+                        "POSIÇÃO", "RECURSO", "CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS", "FATURAMENTO"
                     ]]
 
                     st.dataframe(formatar_tabela(tabela_equipe), use_container_width=True, hide_index=True)
@@ -6493,7 +6506,7 @@ if tela_escolhida == "Ranking de recursos":
             with st.expander("Ver notas consideradas no ranking"):
                 detalhe_cols = [
                     "DATA", "RECURSO", "CONTRATO", "ORDEM_DE_SERVICO",
-                    "GRUPO_NOTA", "FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"
+                    "GRUPO_NOTA", "EH_CORTE", "EH_RELIGUE", "EH_VERIFICACAO", "FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"
                 ]
                 detalhe_cols = [c for c in detalhe_cols if c in base_filtrada_exec.columns]
                 detalhe_base = base_filtrada_exec.copy()
@@ -6612,18 +6625,20 @@ if tela_escolhida == "Comparativo mensal":
                     f"Os dados vão até {data_max_comp.strftime('%d/%m/%Y')}."
                 )
 
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("Faturamento", dinheiro(atual["FATURAMENTO"]), variacao_percentual(atual["FATURAMENTO"], anterior["FATURAMENTO"]))
         c2.metric("Notas", numero(atual["TOTAL_NOTAS"]), variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"]))
         c3.metric("Cortes", numero(atual["CORTES"]), variacao_percentual(atual["CORTES"], anterior["CORTES"]))
         c4.metric("Religues", numero(atual["RELIGUES"]), variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"]))
-        c5.metric("Express", numero(atual.get("EXPRESS", 0)), variacao_percentual(atual.get("EXPRESS", 0), anterior.get("EXPRESS", 0)))
+        c5.metric("Verificações", numero(atual.get("VERIFICACOES", 0)), variacao_percentual(atual.get("VERIFICACOES", 0), anterior.get("VERIFICACOES", 0)))
+        c6.metric("Express", numero(atual.get("EXPRESS", 0)), variacao_percentual(atual.get("EXPRESS", 0), anterior.get("EXPRESS", 0)))
 
         tabela_comparativo = pd.DataFrame([
             {"Indicador": "Faturamento", mes_escolhido: dinheiro(atual["FATURAMENTO"]), mes_anterior: dinheiro(anterior["FATURAMENTO"]), "Variação": variacao_percentual(atual["FATURAMENTO"], anterior["FATURAMENTO"])},
             {"Indicador": "Notas", mes_escolhido: numero(atual["TOTAL_NOTAS"]), mes_anterior: numero(anterior["TOTAL_NOTAS"]), "Variação": variacao_percentual(atual["TOTAL_NOTAS"], anterior["TOTAL_NOTAS"])},
             {"Indicador": "Cortes", mes_escolhido: numero(atual["CORTES"]), mes_anterior: numero(anterior["CORTES"]), "Variação": variacao_percentual(atual["CORTES"], anterior["CORTES"])},
             {"Indicador": "Religues", mes_escolhido: numero(atual["RELIGUES"]), mes_anterior: numero(anterior["RELIGUES"]), "Variação": variacao_percentual(atual["RELIGUES"], anterior["RELIGUES"])},
+            {"Indicador": "Verificações", mes_escolhido: numero(atual.get("VERIFICACOES", 0)), mes_anterior: numero(anterior.get("VERIFICACOES", 0)), "Variação": variacao_percentual(atual.get("VERIFICACOES", 0), anterior.get("VERIFICACOES", 0))},
             {"Indicador": "Express", mes_escolhido: numero(atual.get("EXPRESS", 0)), mes_anterior: numero(anterior.get("EXPRESS", 0)), "Variação": variacao_percentual(atual.get("EXPRESS", 0), anterior.get("EXPRESS", 0))},
             {"Indicador": "Faturamento Express", mes_escolhido: dinheiro(atual.get("FATURAMENTO_EXPRESS", 0)), mes_anterior: dinheiro(anterior.get("FATURAMENTO_EXPRESS", 0)), "Variação": variacao_percentual(atual.get("FATURAMENTO_EXPRESS", 0), anterior.get("FATURAMENTO_EXPRESS", 0))},
         ])
@@ -6639,6 +6654,7 @@ if tela_escolhida == "Comparativo mensal":
                 "NOTAS": r["TOTAL_NOTAS"],
                 "CORTES": r["CORTES"],
                 "RELIGUES": r["RELIGUES"],
+                "VERIFICACOES": r.get("VERIFICACOES", 0),
                 "EXPRESS": r.get("EXPRESS", 0),
                 "FATURAMENTO_EXPRESS": r.get("FATURAMENTO_EXPRESS", 0),
             })
@@ -6653,7 +6669,7 @@ if tela_escolhida == "Comparativo mensal":
         if resumo_mes.empty:
             st.info("Nenhum dado encontrado para esse mês.")
         else:
-            colunas = ["CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "EXPRESS", "FATURAMENTO", "FATURAMENTO_EXPRESS", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]
+            colunas = ["CONTRATO", "TOTAL_NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "EXPRESS", "FATURAMENTO", "FATURAMENTO_EXPRESS", "FATURAMENTO_MIN", "FATURAMENTO_MAX"]
             colunas = [c for c in colunas if c in resumo_mes.columns]
             st.dataframe(formatar_tabela(resumo_mes[colunas]), use_container_width=True, hide_index=True)
 
