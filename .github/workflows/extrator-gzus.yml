@@ -46,15 +46,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-github-actions.txt
 
+      # IMPORTANTE:
+      # Em horários sem serviço/sem CSV novo, o extrator pode falhar com:
+      # "Nenhum dado válido foi processado dos CSVs copiados."
+      # Isso não deve impedir o recálculo do dashboard usando os CSVs históricos.
       - name: Executar extrator
+        continue-on-error: true
         run: |
           python run_extrator_cloud.py
 
       - name: Pré-calcular tabelas instantâneas
+        if: always()
         run: |
           python precalcular_dashboard.py
 
       - name: Commit das tabelas instantâneas
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
