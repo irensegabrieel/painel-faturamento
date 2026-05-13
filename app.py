@@ -2174,6 +2174,7 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
             NOTAS=("ORDEM_SERVICO_PAGAVEL", "nunique"),
             RECUSAS=("ORDEM_SERVICO_RECUSA", "nunique"),
             CORTES=("EH_CORTE", "sum"),
+            VERIFICACOES=("EH_VERIFICACAO", "sum"),
             RELIGUES=("EH_RELIGUE", "sum"),
             VERIFICACOES=("EH_VERIFICACAO", "sum"),
             DIAS_ATIVOS=("DATA_PAGAVEL", "nunique"),
@@ -2856,6 +2857,7 @@ def calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida):
         .agg(
             TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
             CORTES=("EH_CORTE", "sum"),
+            VERIFICACOES=("EH_VERIFICACAO", "sum"),
             RELIGUES=("EH_RELIGUE", "sum"),
             VERIFICACOES=("EH_VERIFICACAO", "sum"),
             FATURAMENTO=("FATURAMENTO", "sum"),
@@ -3043,6 +3045,7 @@ def resumo_por_periodo(notas, meses_escolhidos, contrato_escolhido="Todos"):
         .agg(
             TOTAL_NOTAS=("ORDEM_DE_SERVICO", "nunique"),
             CORTES=("EH_CORTE", "sum"),
+            VERIFICACOES=("EH_VERIFICACAO", "sum"),
             RELIGUES=("EH_RELIGUE", "sum"),
             VERIFICACOES=("EH_VERIFICACAO", "sum"),
             FATURAMENTO=("FATURAMENTO", "sum"),
@@ -4294,7 +4297,7 @@ def resumo_parcial_mais_recente(notas, contrato_escolhido="Todos"):
     resumo["notas"] = int(parcial_dia["ORDEM_DE_SERVICO"].nunique())
     if "EH_VERIFICACAO" not in parcial_dia.columns:
         parcial_dia["EH_VERIFICACAO"] = 0
-    resumo["cortes"] = int(parcial_dia["EH_CORTE"].sum())
+    resumo["cortes"] = int(parcial_dia["EH_CORTE"].sum()) + int(parcial_dia["EH_VERIFICACAO"].sum())
     resumo["religues"] = int(parcial_dia["EH_RELIGUE"].sum())
     resumo["verificacoes"] = int(parcial_dia["EH_VERIFICACAO"].sum())
 
@@ -4302,7 +4305,7 @@ def resumo_parcial_mais_recente(notas, contrato_escolhido="Todos"):
         contrato = str(contrato)
         resumo["por_contrato"][contrato] = {
             "notas": int(df_contrato["ORDEM_DE_SERVICO"].nunique()),
-            "cortes": int(df_contrato["EH_CORTE"].sum()),
+            "cortes": int(df_contrato["EH_CORTE"].sum()) + int(df_contrato["EH_VERIFICACAO"].sum()) if "EH_VERIFICACAO" in df_contrato.columns else int(df_contrato["EH_CORTE"].sum()),
             "religues": int(df_contrato["EH_RELIGUE"].sum()),
             "verificacoes": int(df_contrato["EH_VERIFICACAO"].sum()) if "EH_VERIFICACAO" in df_contrato.columns else 0,
         }
@@ -4741,8 +4744,9 @@ def mostrar_painel_supervisor_stc(bases):
                 pag = df_mes[pd.to_numeric(df_mes.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy() if not df_mes.empty else pd.DataFrame()
                 return {
                     "TOTAL_NOTAS": int(pag["ORDEM_DE_SERVICO"].nunique()) if not pag.empty else 0,
-                    "CORTES": int(pag["EH_CORTE"].sum()) if not pag.empty else 0,
+                    "CORTES": int(pag["EH_CORTE"].sum()) + int(pag["EH_VERIFICACAO"].sum()) if not pag.empty else 0,
                     "RELIGUES": int(pag["EH_RELIGUE"].sum()) if not pag.empty else 0,
+                    "VERIFICACOES": int(pag["EH_VERIFICACAO"].sum()) if not pag.empty else 0,
                     "VERIFICACOES": int(pag["EH_VERIFICACAO"].sum()) if not pag.empty and "EH_VERIFICACAO" in pag.columns else 0,
                 }
 
