@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import os, sqlite3
+import os, sqlite3, unicodedata
 from pathlib import Path
 import pandas as pd
 BASE_DIR = Path(__file__).resolve().parent
@@ -17,6 +17,18 @@ def eh_disjuntor_santa_cruz(recurso):
     import re
     r=str(recurso or '').strip().upper(); m=re.search(r'(\d+)', r)
     return bool(m and (m.group(1).startswith('89') or m.group(1).startswith('20')))
+
+def normalizar_grupo_nota(valor):
+    texto = str(valor or '').strip().upper()
+    texto = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('ascii')
+    if 'VERIFIC' in texto:
+        return 'VERIFICACAO'
+    if 'RELIG' in texto:
+        return 'RELIGUE'
+    if 'CORTE' in texto:
+        return 'CORTE'
+    return texto
+
 def preparar_notas_processadas(notas):
     df=notas.copy()
     for col in ['ORDEM_DE_SERVICO','GRUPO_NOTA','RECURSO','RECUSA','ELETRICISTA1','ELETRICISTA2','DATA','DATA_ENCERRAMENTO']:
@@ -25,7 +37,7 @@ def preparar_notas_processadas(notas):
     if 'QTD_EXECUTORES' not in df.columns:
         df['QTD_EXECUTORES']=((df['ELETRICISTA1']!='').astype(int)+(df['ELETRICISTA2']!='').astype(int))
     else: df['QTD_EXECUTORES']=pd.to_numeric(df['QTD_EXECUTORES'], errors='coerce').fillna(0).astype(int)
-    df['GRUPO_NOTA']=df['GRUPO_NOTA'].str.upper(); df['RECURSO']=df['RECURSO'].str.upper(); df['EH_RECUSA']=(df['RECUSA']!='').astype(int)
+    df['GRUPO_NOTA']=df['GRUPO_NOTA'].apply(normalizar_grupo_nota); df['RECURSO']=df['RECURSO'].str.upper(); df['EH_RECUSA']=(df['RECUSA']!='').astype(int)
     data_raw=df['DATA'] if 'DATA' in df.columns and not (df['DATA'].fillna('').astype(str).str.strip()=='').all() else df['DATA_ENCERRAMENTO']
     df['DATA_DT']=pd.to_datetime(data_raw, dayfirst=True, errors='coerce'); df['DATA']=df['DATA_DT'].dt.strftime('%d/%m/%Y').fillna(''); df=df[df['DATA']!=''].copy()
     tjc=env_float('TARIFA_DISJUNTOR_JUNDIAI_CORTE',13.72); tjr=env_float('TARIFA_DISJUNTOR_JUNDIAI_RELIGUE',27.43); tsc=env_float('TARIFA_DISJUNTOR_SANTA_CRUZ_CORTE',11.98); tsr=env_float('TARIFA_DISJUNTOR_SANTA_CRUZ_RELIGUE',23.97); tsv=env_float('TARIFA_DISJUNTOR_SANTA_CRUZ_VERIFICACAO',23.97)
@@ -34,7 +46,7 @@ def preparar_notas_processadas(notas):
         contrato=''; fat=fmin=fmax=0.0
         if eh_disjuntor_jundiai(recurso):
             contrato='Disjuntor Jundiaí';
-            if not rec: fat={'CORTE':tjc,'RELIGUE':tjr}.get(grupo,0.0); fmin=fmax=fat
+            if not rec: fat={'CORTE':tjc,'VERIFICACAO':tjc,'RELIGUE':tjr}.get(grupo,0.0); fmin=fmax=fat
         elif eh_disjuntor_santa_cruz(recurso):
             contrato='Disjuntor Santa Cruz';
             if not rec: fat={'CORTE':tsc,'RELIGUE':tsr,'VERIFICACAO':tsv}.get(grupo,0.0); fmin=fmax=fat
@@ -43,7 +55,7 @@ def preparar_notas_processadas(notas):
             if not rec: fmin={'CORTE':38.18,'RELIGUE':36.36}.get(grupo,0.0); fmax={'CORTE':45.45,'RELIGUE':50.91}.get(grupo,0.0); fat=fmin
         elif recurso.startswith('JUN') or recurso.startswith('SAL'):
             contrato='STC Jundiai'
-        return pd.Series({'CONTRATO':contrato,'FATURAMENTO':fat,'FATURAMENTO_MIN':fmin,'FATURAMENTO_MAX':fmax,'EH_CORTE':1 if grupo=='CORTE' and not rec else 0,'EH_RELIGUE':1 if grupo=='RELIGUE' and not rec else 0,'EH_VERIFICACAO':1 if grupo=='VERIFICACAO' and contrato=='Disjuntor Santa Cruz' and not rec else 0})
+        return pd.Series({'CONTRATO':contrato,'FATURAMENTO':fat,'FATURAMENTO_MIN':fmin,'FATURAMENTO_MAX':fmax,'EH_CORTE':1 if ((grupo=='CORTE') or (grupo=='VERIFICACAO' and contrato=='Disjuntor Jundiaí')) and not rec else 0,'EH_RELIGUE':1 if grupo=='RELIGUE' and not rec else 0,'EH_VERIFICACAO':1 if grupo=='VERIFICACAO' and contrato=='Disjuntor Santa Cruz' and not rec else 0})
     df=pd.concat([df.reset_index(drop=True), df.apply(classificar, axis=1).reset_index(drop=True)], axis=1); df=df[df['CONTRATO'].fillna('').astype(str).str.strip()!=''].copy()
     df['ORDEM_SERVICO_PAGAVEL']=df['ORDEM_DE_SERVICO'].where(df['EH_RECUSA']==0, pd.NA); df['ORDEM_SERVICO_RECUSA']=df['ORDEM_DE_SERVICO'].where(df['EH_RECUSA']==1, pd.NA); df['DATA_PAGAVEL']=df['DATA'].where(df['EH_RECUSA']==0, pd.NA)
     df['MES']=df['DATA_DT'].dt.strftime('%m/%Y'); df['SEMANA_INICIO_DT']=df['DATA_DT']-pd.to_timedelta(df['DATA_DT'].dt.weekday, unit='D'); df['SEMANA']=df['SEMANA_INICIO_DT'].dt.strftime('%d/%m/%Y')
