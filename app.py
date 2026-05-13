@@ -4601,7 +4601,7 @@ def mostrar_painel_supervisor_stc(bases):
     - no TXT, VERIFICACAO continua saindo como CORTE.
     """
     st.title("📄 G.Z.U.S. — TXT Supervisor STC")
-    st.caption("Acesso restrito: somente geração do TXT para STC Jundiai e Disjuntor Santa Cruz.")
+    st.caption("Arquivos TXT para Disjuntor Santa Cruz e STC • Atualizações disponíveis em média a cada 15 minutos.")
 
     st.sidebar.header("Supervisor STC")
     st.sidebar.info("Acesso liberado somente ao TXT STC/Santa Cruz.")
@@ -4739,7 +4739,6 @@ def mostrar_painel_supervisor_stc(bases):
         return "\n".join(linhas), base
 
     st.subheader("TXT do dia — STC/Santa Cruz")
-    st.caption("Este perfil não tem acesso ao Disjuntor Jundiaí nem às demais telas do painel.")
 
     col_data = "DATA_ENCERRAMENTO" if "DATA_ENCERRAMENTO" in notas_stc.columns else "DATA"
     datas = pd.to_datetime(notas_stc.get(col_data, pd.Series(dtype=str)), dayfirst=True, errors="coerce")
