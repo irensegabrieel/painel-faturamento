@@ -2036,6 +2036,22 @@ def ler_csv(caminho):
     return df
 
 
+
+def cortes_meta_com_verificacao(df):
+    """Conta cortes para meta operacional.
+
+    Regra:
+    - CORTE normal conta como corte.
+    - VERIFICAÇÃO do contrato Disjuntor Santa Cruz também entra na meta de cortes.
+    - Disjuntor Jundiaí já vem tratado como corte na origem quando aplicável.
+    """
+    if df is None or df.empty:
+        return 0
+    cortes = pd.to_numeric(df.get("EH_CORTE", 0), errors="coerce").fillna(0).sum()
+    verificacoes = pd.to_numeric(df.get("EH_VERIFICACAO", 0), errors="coerce").fillna(0).sum()
+    return int(cortes + verificacoes)
+
+
 def dinheiro(valor):
     try:
         return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -2176,7 +2192,6 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
             CORTES=("EH_CORTE", "sum"),
             VERIFICACOES=("EH_VERIFICACAO", "sum"),
             RELIGUES=("EH_RELIGUE", "sum"),
-            VERIFICACOES=("EH_VERIFICACAO", "sum"),
             DIAS_ATIVOS=("DATA_PAGAVEL", "nunique"),
             QTD_EQUIPES=("RECURSO", "nunique"),
             FATURAMENTO_ATRIBUÍDO=("FATURAMENTO_ATRIBUÍDO", "sum"),
@@ -2843,7 +2858,7 @@ def calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida):
     totais = {
         "total_notas": parcial_dia["ORDEM_DE_SERVICO"].nunique() if not parcial_dia.empty else 0,
         "total_recursos_ativos": parcial_dia["RECURSO"].nunique() if not parcial_dia.empty else 0,
-        "total_cortes": int(parcial_dia["EH_CORTE"].sum()) if not parcial_dia.empty else 0,
+        "total_cortes": cortes_meta_com_verificacao(parcial_dia) if not parcial_dia.empty else 0,
         "total_religues": int(parcial_dia["EH_RELIGUE"].sum()) if not parcial_dia.empty else 0,
         "total_verificacoes": int(parcial_dia["EH_VERIFICACAO"].sum()) if not parcial_dia.empty and "EH_VERIFICACAO" in parcial_dia.columns else 0,
         "total_recusas": recusas_dia["ORDEM_DE_SERVICO"].nunique() if not recusas_dia.empty else 0,
@@ -2859,7 +2874,6 @@ def calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida):
             CORTES=("EH_CORTE", "sum"),
             VERIFICACOES=("EH_VERIFICACAO", "sum"),
             RELIGUES=("EH_RELIGUE", "sum"),
-            VERIFICACOES=("EH_VERIFICACAO", "sum"),
             FATURAMENTO=("FATURAMENTO", "sum"),
             FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
             FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
@@ -2908,6 +2922,12 @@ def calcular_parcial_dia_processada_cache(parcial_com_recusas, data_escolhida):
         .sort_values(["TOTAL_NOTAS", "FATURAMENTO", "RECUSAS"], ascending=[False, False, False])
         .reset_index(drop=True)
     )
+
+    if "VERIFICACOES" in resumo_equipe.columns:
+        resumo_equipe["CORTES"] = (
+            pd.to_numeric(resumo_equipe.get("CORTES", 0), errors="coerce").fillna(0)
+            + pd.to_numeric(resumo_equipe.get("VERIFICACOES", 0), errors="coerce").fillna(0)
+        ).astype(int)
 
     recursos_sem_movimento = calcular_recursos_sem_movimento_no_dia(base, data_escolhida)
 
@@ -3047,7 +3067,6 @@ def resumo_por_periodo(notas, meses_escolhidos, contrato_escolhido="Todos"):
             CORTES=("EH_CORTE", "sum"),
             VERIFICACOES=("EH_VERIFICACAO", "sum"),
             RELIGUES=("EH_RELIGUE", "sum"),
-            VERIFICACOES=("EH_VERIFICACAO", "sum"),
             FATURAMENTO=("FATURAMENTO", "sum"),
             FATURAMENTO_MIN=("FATURAMENTO_MIN", "sum"),
             FATURAMENTO_MAX=("FATURAMENTO_MAX", "sum"),
@@ -4297,7 +4316,7 @@ def resumo_parcial_mais_recente(notas, contrato_escolhido="Todos"):
     resumo["notas"] = int(parcial_dia["ORDEM_DE_SERVICO"].nunique())
     if "EH_VERIFICACAO" not in parcial_dia.columns:
         parcial_dia["EH_VERIFICACAO"] = 0
-    resumo["cortes"] = int(parcial_dia["EH_CORTE"].sum()) + int(parcial_dia["EH_VERIFICACAO"].sum())
+    resumo["cortes"] = cortes_meta_com_verificacao(parcial_dia) + int(parcial_dia["EH_VERIFICACAO"].sum())
     resumo["religues"] = int(parcial_dia["EH_RELIGUE"].sum())
     resumo["verificacoes"] = int(parcial_dia["EH_VERIFICACAO"].sum())
 
@@ -4305,7 +4324,7 @@ def resumo_parcial_mais_recente(notas, contrato_escolhido="Todos"):
         contrato = str(contrato)
         resumo["por_contrato"][contrato] = {
             "notas": int(df_contrato["ORDEM_DE_SERVICO"].nunique()),
-            "cortes": int(df_contrato["EH_CORTE"].sum()) + int(df_contrato["EH_VERIFICACAO"].sum()) if "EH_VERIFICACAO" in df_contrato.columns else int(df_contrato["EH_CORTE"].sum()),
+            "cortes": cortes_meta_com_verificacao(df_contrato) + int(df_contrato["EH_VERIFICACAO"].sum()) if "EH_VERIFICACAO" in df_contrato.columns else cortes_meta_com_verificacao(df_contrato),
             "religues": int(df_contrato["EH_RELIGUE"].sum()),
             "verificacoes": int(df_contrato["EH_VERIFICACAO"].sum()) if "EH_VERIFICACAO" in df_contrato.columns else 0,
         }
@@ -4744,7 +4763,7 @@ def mostrar_painel_supervisor_stc(bases):
                 pag = df_mes[pd.to_numeric(df_mes.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int) == 0].copy() if not df_mes.empty else pd.DataFrame()
                 return {
                     "TOTAL_NOTAS": int(pag["ORDEM_DE_SERVICO"].nunique()) if not pag.empty else 0,
-                    "CORTES": int(pag["EH_CORTE"].sum()) + int(pag["EH_VERIFICACAO"].sum()) if not pag.empty else 0,
+                    "CORTES": cortes_meta_com_verificacao(pag) + int(pag["EH_VERIFICACAO"].sum()) if not pag.empty else 0,
                     "RELIGUES": int(pag["EH_RELIGUE"].sum()) if not pag.empty else 0,
                     "VERIFICACOES": int(pag["EH_VERIFICACAO"].sum()) if not pag.empty else 0,
                     "VERIFICACOES": int(pag["EH_VERIFICACAO"].sum()) if not pag.empty and "EH_VERIFICACAO" in pag.columns else 0,
