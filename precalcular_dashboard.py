@@ -7,6 +7,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DASHBOARD_DIR = BASE_DIR / "dashboard"
 NOTAS_CSV = DASHBOARD_DIR / "notas_dashboard.csv"
 DB_PATH = DASHBOARD_DIR / "gzus_dashboard.db"
+TXT_SUPERVISOR_STC_CSV = DASHBOARD_DIR / "txt_supervisor_stc_santa_cruz.csv"
 def env_float(nome, padrao):
     try: return float(os.getenv(nome, padrao))
     except Exception: return float(padrao)
@@ -95,12 +96,62 @@ def gerar_opcoes(df):
         datas=base[['DATA','DATA_DT']].drop_duplicates().sort_values('DATA_DT', ascending=False)['DATA'].tolist(); semanas=base[['SEMANA','SEMANA_INICIO_DT']].drop_duplicates().sort_values('SEMANA_INICIO_DT', ascending=False)['SEMANA'].tolist(); mdf=base[['MES','DATA_DT']].copy(); mdf['PER']=mdf['DATA_DT'].dt.to_period('M'); meses=mdf.drop_duplicates('MES').sort_values('PER', ascending=False)['MES'].tolist()
         add(f'datas_parcial::{contrato}', datas); add(f'ranking_dias::{contrato}', datas); add(f'ranking_semanas::{contrato}', semanas); add(f'ranking_meses::{contrato}', meses)
     return pd.DataFrame(linhas)
+def gerar_txt_supervisor_stc_csv(notas, base):
+    """Gera CSV leve e pré-filtrado para o login Supervisor STC.
+
+    Contém somente STC Jundiai e Disjuntor Santa Cruz.
+    Não inclui Disjuntor Jundiaí.
+    É usado pelo app.py para abrir o login do supervisor sem carregar/classificar
+    todo o notas_dashboard.csv.
+    """
+    if notas is None or notas.empty or base is None or base.empty:
+        return pd.DataFrame()
+
+    permitidos = ["STC Jundiai", "Disjuntor Santa Cruz"]
+
+    mapa = (
+        base[["ORDEM_DE_SERVICO", "CONTRATO"]]
+        .dropna(subset=["ORDEM_DE_SERVICO"])
+        .drop_duplicates(subset=["ORDEM_DE_SERVICO"], keep="last")
+        .copy()
+    )
+    mapa["ORDEM_DE_SERVICO"] = mapa["ORDEM_DE_SERVICO"].astype(str).str.strip()
+
+    saida = notas.copy()
+    if "ORDEM_DE_SERVICO" not in saida.columns:
+        return pd.DataFrame()
+
+    saida["ORDEM_DE_SERVICO"] = saida["ORDEM_DE_SERVICO"].fillna("").astype(str).str.strip()
+    saida = saida.merge(mapa, on="ORDEM_DE_SERVICO", how="left")
+    saida = saida[saida["CONTRATO"].isin(permitidos)].copy()
+
+    colunas_preferidas = [
+        "ORDEM_DE_SERVICO",
+        "GRUPO_NOTA",
+        "CONTRATO",
+        "RECURSO",
+        "STATUS",
+        "DATA",
+        "DATA_ENCERRAMENTO",
+        "ELETRICISTA1",
+        "ELETRICISTA2",
+        "RECUSA",
+        "QTD_EXECUTORES",
+    ]
+    for col in colunas_preferidas:
+        if col not in saida.columns:
+            saida[col] = ""
+
+    outras = [c for c in saida.columns if c not in colunas_preferidas]
+    saida = saida[colunas_preferidas + outras].copy()
+    return saida
+
 def main():
     if not NOTAS_CSV.exists(): log(f'⚠️ notas_dashboard.csv não encontrado: {NOTAS_CSV}'); return 0
     DASHBOARD_DIR.mkdir(parents=True, exist_ok=True); log(f'📚 Lendo histórico de notas: {NOTAS_CSV}'); notas=pd.read_csv(NOTAS_CSV, sep=';', encoding='utf-8-sig', dtype=str); log(f'📊 Notas carregadas: {len(notas):,}'.replace(',','.'))
-    base=preparar_notas_processadas(notas); parcial, detalhe=gerar_parcial(base); ranking=gerar_ranking(base); opcoes=gerar_opcoes(base)
+    base=preparar_notas_processadas(notas); parcial, detalhe=gerar_parcial(base); ranking=gerar_ranking(base); opcoes=gerar_opcoes(base); txt_supervisor_stc=gerar_txt_supervisor_stc_csv(notas, base)
     with sqlite3.connect(DB_PATH) as conn:
         parcial.to_sql('instant_parcial_recurso', conn, if_exists='replace', index=False); detalhe.to_sql('instant_parcial_detalhe', conn, if_exists='replace', index=False); ranking.to_sql('instant_ranking', conn, if_exists='replace', index=False); opcoes.to_sql('instant_opcoes', conn, if_exists='replace', index=False)
         conn.execute('CREATE INDEX IF NOT EXISTS idx_instant_parcial ON instant_parcial_recurso(DATA, CONTRATO, RECURSO)'); conn.execute('CREATE INDEX IF NOT EXISTS idx_instant_detalhe ON instant_parcial_detalhe(DATA, CONTRATO, RECURSO)'); conn.execute('CREATE INDEX IF NOT EXISTS idx_instant_ranking ON instant_ranking(CONTRATO, TIPO_PERIODO, VALOR_PERIODO)'); conn.execute('CREATE INDEX IF NOT EXISTS idx_instant_opcoes ON instant_opcoes(CHAVE, ORDEM)')
-    log(f'✅ Tabelas instantâneas gravadas em {DB_PATH}'); log(f'   instant_parcial_recurso: {len(parcial):,}'.replace(',','.')); log(f'   instant_parcial_detalhe: {len(detalhe):,}'.replace(',','.')); log(f'   instant_ranking: {len(ranking):,}'.replace(',','.')); return 0
+    txt_supervisor_stc.to_csv(TXT_SUPERVISOR_STC_CSV, sep=';', encoding='utf-8-sig', index=False); log(f'✅ Tabelas instantâneas gravadas em {DB_PATH}'); log(f'✅ CSV leve do Supervisor STC gravado em {TXT_SUPERVISOR_STC_CSV}: {len(txt_supervisor_stc):,} linhas'.replace(',','.')); log(f'   instant_parcial_recurso: {len(parcial):,}'.replace(',','.')); log(f'   instant_parcial_detalhe: {len(detalhe):,}'.replace(',','.')); log(f'   instant_ranking: {len(ranking):,}'.replace(',','.')); return 0
 if __name__=='__main__': raise SystemExit(main())
