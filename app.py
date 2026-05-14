@@ -437,6 +437,7 @@ STATUS_SNAPSHOT_PATH = Path(tempfile.gettempdir()) / "status_dashboard_snapshot.
 
 ARQUIVOS = {
     "notas": "notas_dashboard.csv",
+    "txt_supervisor_stc": "txt_supervisor_stc_santa_cruz.csv",
     "contratos": "faturamento_contratos_dashboard.csv",
     "dias": "faturamento_dias_dashboard.csv",
     "carro": "faturamento_carro_estimado_dashboard.csv",
@@ -4616,7 +4617,9 @@ def mostrar_painel_supervisor_stc(bases):
 
     atualizado_txt = "não identificado"
     try:
-        caminho_notas_status = caminho_arquivo(ARQUIVOS["notas"])
+        caminho_notas_status = caminho_arquivo(ARQUIVOS.get("txt_supervisor_stc", "txt_supervisor_stc_santa_cruz.csv"))
+        if not caminho_notas_status or not Path(caminho_notas_status).exists():
+            caminho_notas_status = caminho_arquivo(ARQUIVOS["notas"])
         if caminho_notas_status and Path(caminho_notas_status).exists():
             # Mostra explicitamente no fuso do Brasil.
             atualizado_dt = datetime.fromtimestamp(
@@ -4633,41 +4636,52 @@ def mostrar_painel_supervisor_stc(bases):
         st.cache_data.clear()
         st.rerun()
 
-    notas_stc = bases.get("notas", pd.DataFrame()).copy()
-
     contratos_permitidos = list(CONTRATOS_SUPERVISOR_STC)
     contratos_permitidos = [c for c in contratos_permitidos if c != "Disjuntor Jundiaí"]
 
-    # Fallback de segurança: alguns ambientes podem zerar o filtro anterior.
-    # Se vier vazio, tenta recarregar direto da base completa.
+    # Caminho rápido: CSV pré-filtrado gerado pelo GitHub Actions/precalcular_dashboard.py.
+    # Isso evita carregar e classificar o notas_dashboard.csv inteiro no login do supervisor.
+    notas_stc = pd.DataFrame()
+    try:
+        caminho_txt_stc = caminho_arquivo(ARQUIVOS.get("txt_supervisor_stc", "txt_supervisor_stc_santa_cruz.csv"))
+        if caminho_txt_stc and Path(caminho_txt_stc).exists():
+            notas_stc = pd.read_csv(caminho_txt_stc, sep=";", encoding="utf-8-sig", dtype=str)
+    except Exception:
+        notas_stc = pd.DataFrame()
+
+    # Fallback de segurança para enquanto o CSV leve ainda não foi gerado no GitHub.
     if notas_stc.empty:
-        try:
-            notas_stc = carregar_notas_rapido(None).copy()
-        except Exception:
-            notas_stc = pd.DataFrame()
+        notas_stc = bases.get("notas", pd.DataFrame()).copy()
+        if notas_stc.empty:
+            try:
+                notas_stc = carregar_notas_rapido(None).copy()
+            except Exception:
+                notas_stc = pd.DataFrame()
+
+        if not notas_stc.empty:
+            parcial = preparar_parcial_do_dia(notas_stc, incluir_recusas=True)
+            if parcial.empty or "ORDEM_DE_SERVICO" not in parcial.columns or "CONTRATO" not in parcial.columns:
+                st.warning("Não consegui classificar as notas para montar o TXT com segurança.")
+                return
+
+            mapa_contrato = (
+                parcial[["ORDEM_DE_SERVICO", "CONTRATO"]]
+                .drop_duplicates(subset=["ORDEM_DE_SERVICO"], keep="last")
+                .copy()
+            )
+            mapa_contrato["ORDEM_DE_SERVICO"] = mapa_contrato["ORDEM_DE_SERVICO"].astype(str)
+
+            notas_stc["ORDEM_DE_SERVICO"] = notas_stc.get("ORDEM_DE_SERVICO", "").astype(str)
+            notas_stc = notas_stc.merge(mapa_contrato, on="ORDEM_DE_SERVICO", how="left")
 
     if notas_stc.empty:
         st.info("Nenhuma nota disponível para STC Jundiai ou Disjuntor Santa Cruz.")
         return
 
-    # Reclassifica as notas para garantir que o filtro por contrato seja aplicado
-    # mesmo quando a base bruta de notas não tem coluna CONTRATO.
-    parcial = preparar_parcial_do_dia(notas_stc, incluir_recusas=True)
-    if parcial.empty or "ORDEM_DE_SERVICO" not in parcial.columns or "CONTRATO" not in parcial.columns:
-        st.warning("Não consegui classificar as notas para montar o TXT com segurança.")
-        return
-
-    mapa_contrato = (
-        parcial[["ORDEM_DE_SERVICO", "CONTRATO"]]
-        .drop_duplicates(subset=["ORDEM_DE_SERVICO"], keep="last")
-        .copy()
-    )
-    mapa_contrato["ORDEM_DE_SERVICO"] = mapa_contrato["ORDEM_DE_SERVICO"].astype(str)
-
-    notas_stc["ORDEM_DE_SERVICO"] = notas_stc.get("ORDEM_DE_SERVICO", "").astype(str)
-    notas_stc = notas_stc.merge(mapa_contrato, on="ORDEM_DE_SERVICO", how="left")
-
     # Barreira final: remove qualquer coisa fora de STC/Santa Cruz.
+    if "CONTRATO" not in notas_stc.columns:
+        st.warning("Base do TXT sem coluna CONTRATO. Rode o GitHub Actions para recriar o CSV leve.")
+        return
     notas_stc = notas_stc[notas_stc["CONTRATO"].isin(contratos_permitidos)].copy()
 
     if notas_stc.empty:
