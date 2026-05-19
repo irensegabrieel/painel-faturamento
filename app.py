@@ -6868,15 +6868,30 @@ if tela_escolhida == "Resumo para envio":
                 "Disjuntor Santa Cruz": int(secret_float("META_CPFL_SANTA_CRUZ", 218)),
             }
             metas_scs_envio = {
-                "Disjuntor Jundiaí": int(secret_float("META_SCS_DISJUNTOR_JUNDIAI", 21)),
-                "STC Jundiai": int(secret_float("META_SCS_STC", 26)),
-                "Disjuntor Santa Cruz": int(secret_float("META_SCS_SANTA_CRUZ", 22)),
+                "Disjuntor Jundiaí": int(secret_float("META_SCS_DISJUNTOR_JUNDIAI", 960)),
+                "STC Jundiai": int(secret_float("META_SCS_STC", 450)),
+                "Disjuntor Santa Cruz": int(secret_float("META_SCS_SANTA_CRUZ", 510)),
             }
             funcionarios_envio = {
-                "Disjuntor Jundiaí": int(secret_float("FUNCIONARIOS_DISJUNTOR_JUNDIAI", 8)),
-                "STC Jundiai": int(secret_float("FUNCIONARIOS_STC", 4)),
-                "Disjuntor Santa Cruz": int(secret_float("FUNCIONARIOS_SANTA_CRUZ", 8)),
+                "Disjuntor Jundiaí": int(secret_float("FUNCIONARIOS_DISJUNTOR_JUNDIAI", 34)),
+                "STC Jundiai": int(secret_float("FUNCIONARIOS_STC", 14)),
+                "Disjuntor Santa Cruz": int(secret_float("FUNCIONARIOS_SANTA_CRUZ", 16)),
             }
+
+            with st.expander("Ajustar metas e funcionários", expanded=False):
+                st.caption("Ajuste aqui quando a meta ou a quantidade de funcionários mudar. O cálculo é atualizado automaticamente.")
+                c_jun, c_stc, c_sc = st.columns(3)
+                metas_cpfl_envio["Disjuntor Jundiaí"] = int(c_jun.number_input("Meta CPFL — Disjuntor Jundiaí", min_value=0, value=int(metas_cpfl_envio["Disjuntor Jundiaí"]), step=1))
+                funcionarios_envio["Disjuntor Jundiaí"] = int(c_jun.number_input("Funcionários — Disjuntor Jundiaí", min_value=1, value=int(funcionarios_envio["Disjuntor Jundiaí"]), step=1))
+                metas_scs_envio["Disjuntor Jundiaí"] = int(c_jun.number_input("Meta SCS — Disjuntor Jundiaí", min_value=0, value=int(metas_scs_envio["Disjuntor Jundiaí"]), step=1))
+
+                metas_cpfl_envio["STC Jundiai"] = int(c_stc.number_input("Meta CPFL — STC", min_value=0, value=int(metas_cpfl_envio["STC Jundiai"]), step=1))
+                funcionarios_envio["STC Jundiai"] = int(c_stc.number_input("Funcionários — STC", min_value=1, value=int(funcionarios_envio["STC Jundiai"]), step=1))
+                metas_scs_envio["STC Jundiai"] = int(c_stc.number_input("Meta SCS — STC", min_value=0, value=int(metas_scs_envio["STC Jundiai"]), step=1))
+
+                metas_cpfl_envio["Disjuntor Santa Cruz"] = int(c_sc.number_input("Meta CPFL — Santa Cruz", min_value=0, value=int(metas_cpfl_envio["Disjuntor Santa Cruz"]), step=1))
+                funcionarios_envio["Disjuntor Santa Cruz"] = int(c_sc.number_input("Funcionários — Santa Cruz", min_value=1, value=int(funcionarios_envio["Disjuntor Santa Cruz"]), step=1))
+                metas_scs_envio["Disjuntor Santa Cruz"] = int(c_sc.number_input("Meta SCS — Santa Cruz", min_value=0, value=int(metas_scs_envio["Disjuntor Santa Cruz"]), step=1))
 
             rows_cards = []
             for contrato_nome in contratos_ordem_envio:
@@ -6890,7 +6905,10 @@ if tela_escolhida == "Resumo para envio":
                 faltam_cpfl = max(meta_cpfl - total_cortes, 0)
                 qtd_func = max(funcionarios_envio.get(contrato_nome, 1), 1)
                 faltam_func_cpfl = int((faltam_cpfl + qtd_func - 1) // qtd_func) if faltam_cpfl else 0
-                faltam_func_scs = metas_scs_envio.get(contrato_nome, 0)
+                meta_scs = metas_scs_envio.get(contrato_nome, 0)
+                ate_momento_scs = total_cortes + total_religas
+                faltam_scs = max(meta_scs - ate_momento_scs, 0)
+                faltam_func_scs = int((faltam_scs + qtd_func - 1) // qtd_func) if faltam_scs else 0
 
                 rows_cards.append({
                     "CONTRATO": contrato_nome,
@@ -6901,6 +6919,9 @@ if tela_escolhida == "Resumo para envio":
                     "META_CPFL": meta_cpfl,
                     "RESTANTE_CPFL": faltam_cpfl,
                     "FALTAM_FUNC_CPFL": faltam_func_cpfl,
+                    "META_SCS": meta_scs,
+                    "ATE_MOMENTO_SCS": ate_momento_scs,
+                    "RESTANTE_SCS": faltam_scs,
                     "FALTAM_FUNC_SCS": faltam_func_scs,
                 })
 
@@ -6926,6 +6947,9 @@ if tela_escolhida == "Resumo para envio":
             .envio-faltam .head:last-child {border-right:0;}
             .envio-faltam .num {background:#fecdd3; color:#b91c1c; font-size:24px; font-weight:900; text-align:center; padding:10px; border-top:2px solid #020617; border-right:2px solid #020617;}
             .envio-faltam .num:last-child {border-right:0;}
+            .envio-card-scs .titulo {background:#92d050;}
+            .envio-card-scs .meta {font-size:20px; font-weight:900; background:#92d050;}
+            .envio-card-scs .subtitulo {background:#92d050; font-weight:900;}
             @media (max-width: 900px) {
                 .envio-grid {grid-template-columns: 1fr;}
                 .envio-faltam .row {grid-template-columns: 1fr;}
@@ -6946,6 +6970,24 @@ if tela_escolhida == "Resumo para envio":
                 )
             html_cards_envio.append("</div>")
 
+            html_cards_envio.append('<div class="envio-grid">')
+            titulos_scs_cards = {
+                "Disjuntor Jundiaí": "Disjuntor Jundiaí/SCS",
+                "STC Jundiai": "Meta CPFL/SCS",
+                "Disjuntor Santa Cruz": "Santa Cruz/SCS",
+            }
+            for row in indicadores_envio.to_dict("records"):
+                html_cards_envio.append(
+                    '<div class="envio-card envio-card-scs">'
+                    f'<div class="titulo">{html.escape(str(titulos_scs_cards.get(row["CONTRATO"], row["CONTRATO"])))}</div>'
+                    '<div class="linha"><div class="cel subtitulo" style="grid-column:1 / span 2;">Meta SCS</div></div>'
+                    f'<div class="linha"><div class="cel meta" style="grid-column:1 / span 2;">{numero(int(row["META_SCS"]))}</div></div>'
+                    '<div class="linha"><div class="cel">Até o momento</div><div class="cel">Faltam</div></div>'
+                    f'<div class="linha"><div class="cel valor">{numero(int(row["ATE_MOMENTO_SCS"]))}</div><div class="cel valor restante">{numero(int(row["RESTANTE_SCS"]))}</div></div>'
+                    '</div>'
+                )
+            html_cards_envio.append("</div>")
+
             titulos_curto = ["Disjuntor Jundiaí", "STC", "Santa Cruz"]
             html_cards_envio.append('<div class="envio-faltam"><div class="titulo">Faltam por funcionário meta/CPFL</div>')
             html_cards_envio.append('<div class="row">' + "".join(f'<div class="head">{t}</div>' for t in titulos_curto) + "</div>")
@@ -6957,8 +6999,7 @@ if tela_escolhida == "Resumo para envio":
 
             st.markdown("".join(html_cards_envio), unsafe_allow_html=True)
 
-            with st.expander("Ajustar metas usadas nos cards", expanded=False):
-                st.caption("As metas padrão podem ser mudadas pelos Secrets do Streamlit/GitHub.")
+            with st.expander("Tabela dos indicadores calculados", expanded=False):
                 st.dataframe(indicadores_envio, use_container_width=True, hide_index=True)
 
             st.markdown("### Gráfico por contrato")
@@ -7036,7 +7077,8 @@ if tela_escolhida == "Resumo para envio":
                 f"Resumo {data_envio}\n"
                 + "\n".join(
                     f"{r['TÍTULO']}: {numero(int(r['TOTAL_CORTES']))} cortes, "
-                    f"{numero(int(r['TOTAL_RELIGAS']))} religas, restam {numero(int(r['RESTANTE_CPFL']))}"
+                    f"{numero(int(r['TOTAL_RELIGAS']))} religas, restam CPFL {numero(int(r['RESTANTE_CPFL']))}, "
+                    f"restam SCS {numero(int(r['RESTANTE_SCS']))}"
                     for r in indicadores_envio.to_dict('records')
                 )
             )
