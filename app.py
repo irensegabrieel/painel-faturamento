@@ -6149,7 +6149,7 @@ mostrar_carro = not carro.empty
 
 mostrar_aba_carro = (contrato_escolhido == "Todos") or (contrato_filtro_notas == "STC Jundiai") or (not carro.empty)
 
-nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana"]
+nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana", "Resumo para envio"]
 if mostrar_aba_carro:
     nomes_abas.append("STC")
 nomes_abas += ["Notas", "Downloads"]
@@ -6804,6 +6804,243 @@ if tela_escolhida == "Dias da semana":
         st.bar_chart(por_dia, x="DIA_SEMANA", y="FATURAMENTO")
     else:
         st.info("Nenhum dado para o contrato selecionado.")
+
+
+# ==============================
+# ABA RESUMO PARA ENVIO
+# ==============================
+
+if tela_escolhida == "Resumo para envio":
+    st.subheader("Resumo para envio")
+    st.caption("Cards e gráficos prontos para print/copiar, substituindo a etapa de colar o TXT na planilha.")
+
+    notas_envio = carregar_notas_rapido(meses_escolhidos_resumo)
+    parcial_envio = preparar_parcial_do_dia(notas_envio, incluir_recusas=True)
+
+    if parcial_envio.empty:
+        st.info("Sem dados suficientes para montar o resumo para envio.")
+    else:
+        if contrato_filtro_notas != "Todos" and "CONTRATO" in parcial_envio.columns:
+            parcial_envio = parcial_envio[parcial_envio["CONTRATO"] == contrato_filtro_notas].copy()
+
+        datas_envio = (
+            parcial_envio[["DATA", "DATA_DT"]]
+            .drop_duplicates()
+            .sort_values("DATA_DT", ascending=False)
+        )
+
+        data_envio = st.selectbox(
+            "Dia do resumo",
+            datas_envio["DATA"].tolist(),
+            index=0,
+            key="resumo_envio_data",
+        )
+
+        dia_envio = parcial_envio[parcial_envio["DATA"] == data_envio].copy()
+        if dia_envio.empty:
+            st.info("Não encontrei dados para o dia selecionado.")
+        else:
+            if "EH_VERIFICACAO" not in dia_envio.columns:
+                dia_envio["EH_VERIFICACAO"] = 0
+
+            dia_envio["EH_RECUSA"] = pd.to_numeric(dia_envio.get("EH_RECUSA", 0), errors="coerce").fillna(0).astype(int)
+            pag_envio = dia_envio[dia_envio["EH_RECUSA"] == 0].copy()
+            rec_envio = dia_envio[dia_envio["EH_RECUSA"] == 1].copy()
+
+            if not pag_envio.empty:
+                pag_envio["CORTES_META"] = (
+                    pd.to_numeric(pag_envio.get("EH_CORTE", 0), errors="coerce").fillna(0)
+                    + pd.to_numeric(pag_envio.get("EH_VERIFICACAO", 0), errors="coerce").fillna(0)
+                ).astype(int)
+            else:
+                pag_envio["CORTES_META"] = pd.Series(dtype=int)
+
+            contratos_ordem_envio = ["Disjuntor Jundiaí", "STC Jundiai", "Disjuntor Santa Cruz"]
+            nomes_cards_envio = {
+                "Disjuntor Jundiaí": "Disjuntor Jundiaí/CPFL",
+                "STC Jundiai": "Meta CPFL/STC",
+                "Disjuntor Santa Cruz": "Santa Cruz/CPFL",
+            }
+
+            metas_cpfl_envio = {
+                "Disjuntor Jundiaí": int(secret_float("META_CPFL_DISJUNTOR_JUNDIAI", 490)),
+                "STC Jundiai": int(secret_float("META_CPFL_STC", 247)),
+                "Disjuntor Santa Cruz": int(secret_float("META_CPFL_SANTA_CRUZ", 218)),
+            }
+            metas_scs_envio = {
+                "Disjuntor Jundiaí": int(secret_float("META_SCS_DISJUNTOR_JUNDIAI", 21)),
+                "STC Jundiai": int(secret_float("META_SCS_STC", 26)),
+                "Disjuntor Santa Cruz": int(secret_float("META_SCS_SANTA_CRUZ", 22)),
+            }
+            funcionarios_envio = {
+                "Disjuntor Jundiaí": int(secret_float("FUNCIONARIOS_DISJUNTOR_JUNDIAI", 8)),
+                "STC Jundiai": int(secret_float("FUNCIONARIOS_STC", 4)),
+                "Disjuntor Santa Cruz": int(secret_float("FUNCIONARIOS_SANTA_CRUZ", 8)),
+            }
+
+            rows_cards = []
+            for contrato_nome in contratos_ordem_envio:
+                pag_c = pag_envio[pag_envio.get("CONTRATO", "") == contrato_nome].copy()
+                rec_c = rec_envio[rec_envio.get("CONTRATO", "") == contrato_nome].copy()
+
+                total_cortes = int(pd.to_numeric(pag_c.get("CORTES_META", 0), errors="coerce").fillna(0).sum()) if not pag_c.empty else 0
+                total_religas = int(pd.to_numeric(pag_c.get("EH_RELIGUE", 0), errors="coerce").fillna(0).sum()) if not pag_c.empty else 0
+                total_recusas = int(rec_c["ORDEM_DE_SERVICO"].nunique()) if not rec_c.empty else 0
+                meta_cpfl = metas_cpfl_envio.get(contrato_nome, 0)
+                faltam_cpfl = max(meta_cpfl - total_cortes, 0)
+                qtd_func = max(funcionarios_envio.get(contrato_nome, 1), 1)
+                faltam_func_cpfl = int((faltam_cpfl + qtd_func - 1) // qtd_func) if faltam_cpfl else 0
+                faltam_func_scs = metas_scs_envio.get(contrato_nome, 0)
+
+                rows_cards.append({
+                    "CONTRATO": contrato_nome,
+                    "TÍTULO": nomes_cards_envio.get(contrato_nome, contrato_nome),
+                    "TOTAL_CORTES": total_cortes,
+                    "TOTAL_RELIGAS": total_religas,
+                    "RECUSAS": total_recusas,
+                    "META_CPFL": meta_cpfl,
+                    "RESTANTE_CPFL": faltam_cpfl,
+                    "FALTAM_FUNC_CPFL": faltam_func_cpfl,
+                    "FALTAM_FUNC_SCS": faltam_func_scs,
+                })
+
+            indicadores_envio = pd.DataFrame(rows_cards)
+
+            st.markdown("### Indicadores do dia")
+            st.caption("Bloco pensado para print/recorte direto no relatório.")
+
+            css_cards_envio = """
+            <style>
+            .envio-grid {display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 14px 0 20px 0;}
+            .envio-card {background:#f8fafc; color:#0f172a; border:2px solid #020617; border-radius:0; overflow:hidden; box-shadow:none;}
+            .envio-card .titulo {background:#0ea5d8; color:#020617; font-weight:900; text-align:center; padding:8px; font-size:18px; border-bottom:2px solid #020617;}
+            .envio-card .linha {display:grid; grid-template-columns: 1fr 1fr; border-bottom:2px solid #020617;}
+            .envio-card .cel {padding:7px; text-align:center; font-weight:800; border-right:2px solid #020617;}
+            .envio-card .cel:last-child {border-right:0;}
+            .envio-card .valor {font-size:22px; font-weight:900; background:white;}
+            .envio-card .restante {background:#fecdd3; color:#b91c1c;}
+            .envio-faltam {margin-top:14px; border:2px solid #020617; background:#86d34b; color:#020617;}
+            .envio-faltam .titulo {text-align:center; font-size:28px; font-weight:900; padding:6px; border-bottom:2px solid #020617;}
+            .envio-faltam .row {display:grid; grid-template-columns: repeat(3, 1fr);}
+            .envio-faltam .head {font-weight:900; text-align:center; padding:8px; border-right:2px solid #020617;}
+            .envio-faltam .head:last-child {border-right:0;}
+            .envio-faltam .num {background:#fecdd3; color:#b91c1c; font-size:24px; font-weight:900; text-align:center; padding:10px; border-top:2px solid #020617; border-right:2px solid #020617;}
+            .envio-faltam .num:last-child {border-right:0;}
+            @media (max-width: 900px) {
+                .envio-grid {grid-template-columns: 1fr;}
+                .envio-faltam .row {grid-template-columns: 1fr;}
+                .envio-faltam .head, .envio-faltam .num {border-right:0; border-top:2px solid #020617;}
+            }
+            </style>
+            """
+            html_cards_envio = [css_cards_envio, '<div class="envio-grid">']
+            for row in indicadores_envio.to_dict("records"):
+                html_cards_envio.append(
+                    '<div class="envio-card">'
+                    f'<div class="titulo">{html.escape(str(row["TÍTULO"]))}</div>'
+                    '<div class="linha"><div class="cel">Total cortes</div><div class="cel">Total religas</div></div>'
+                    f'<div class="linha"><div class="cel valor">{numero(int(row["TOTAL_CORTES"]))}</div><div class="cel valor">{numero(int(row["TOTAL_RELIGAS"]))}</div></div>'
+                    '<div class="linha"><div class="cel">Meta cortes/dia</div><div class="cel">Restam</div></div>'
+                    f'<div class="linha"><div class="cel valor">{numero(int(row["META_CPFL"]))}</div><div class="cel valor restante">{numero(int(row["RESTANTE_CPFL"]))}</div></div>'
+                    '</div>'
+                )
+            html_cards_envio.append("</div>")
+
+            titulos_curto = ["Disjuntor Jundiaí", "STC", "Santa Cruz"]
+            html_cards_envio.append('<div class="envio-faltam"><div class="titulo">Faltam por funcionário meta/CPFL</div>')
+            html_cards_envio.append('<div class="row">' + "".join(f'<div class="head">{t}</div>' for t in titulos_curto) + "</div>")
+            html_cards_envio.append('<div class="row">' + "".join(f'<div class="num">{numero(int(v))}</div>' for v in indicadores_envio["FALTAM_FUNC_CPFL"].tolist()) + "</div></div>")
+
+            html_cards_envio.append('<div class="envio-faltam"><div class="titulo">Faltam por funcionário meta/SCS</div>')
+            html_cards_envio.append('<div class="row">' + "".join(f'<div class="head">{t}</div>' for t in titulos_curto) + "</div>")
+            html_cards_envio.append('<div class="row">' + "".join(f'<div class="num">{numero(int(v))}</div>' for v in indicadores_envio["FALTAM_FUNC_SCS"].tolist()) + "</div></div>")
+
+            st.markdown("".join(html_cards_envio), unsafe_allow_html=True)
+
+            with st.expander("Ajustar metas usadas nos cards", expanded=False):
+                st.caption("As metas padrão podem ser mudadas pelos Secrets do Streamlit/GitHub.")
+                st.dataframe(indicadores_envio, use_container_width=True, hide_index=True)
+
+            st.markdown("### Gráfico por contrato")
+
+            contrato_grafico = st.radio(
+                "Contrato do gráfico",
+                contratos_ordem_envio,
+                horizontal=True,
+                format_func=lambda c: nomes_cards_envio.get(c, c),
+                key="resumo_envio_contrato_grafico",
+            )
+
+            pag_graf = pag_envio[pag_envio.get("CONTRATO", "") == contrato_grafico].copy()
+            rec_graf = rec_envio[rec_envio.get("CONTRATO", "") == contrato_grafico].copy()
+
+            if pag_graf.empty and rec_graf.empty:
+                st.info("Sem dados para o contrato selecionado.")
+            else:
+                producao = (
+                    pag_graf.groupby("RECURSO", dropna=False)
+                    .agg(
+                        Geral=("ORDEM_DE_SERVICO", "nunique"),
+                        Corte=("CORTES_META", "sum"),
+                        Religa=("EH_RELIGUE", "sum"),
+                    )
+                    .reset_index()
+                    if not pag_graf.empty else pd.DataFrame(columns=["RECURSO", "Geral", "Corte", "Religa"])
+                )
+                recusas_g = (
+                    rec_graf.groupby("RECURSO", dropna=False)
+                    .agg(Recusa=("ORDEM_DE_SERVICO", "nunique"))
+                    .reset_index()
+                    if not rec_graf.empty else pd.DataFrame(columns=["RECURSO", "Recusa"])
+                )
+                graf = producao.merge(recusas_g, on="RECURSO", how="outer").fillna(0)
+                for c in ["Geral", "Corte", "Religa", "Recusa"]:
+                    graf[c] = pd.to_numeric(graf[c], errors="coerce").fillna(0).astype(int)
+                graf = graf.sort_values(["Geral", "Corte", "Religa", "Recusa"], ascending=False).head(35)
+
+                graf_long = graf.melt(
+                    id_vars=["RECURSO"],
+                    value_vars=["Geral", "Corte", "Religa", "Recusa"],
+                    var_name="Indicador",
+                    value_name="Quantidade",
+                )
+
+                grafico_envio = (
+                    alt.Chart(graf_long)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("RECURSO:N", sort=graf["RECURSO"].tolist(), title="Recurso", axis=alt.Axis(labelAngle=-45)),
+                        y=alt.Y("Quantidade:Q", title="Quantidade"),
+                        color=alt.Color(
+                            "Indicador:N",
+                            scale=alt.Scale(
+                                domain=["Geral", "Corte", "Religa", "Recusa"],
+                                range=["#4472C4", "#ED7D31", "#A5A5A5", "#FFC000"],
+                            ),
+                            legend=alt.Legend(orient="bottom"),
+                        ),
+                        xOffset="Indicador:N",
+                        tooltip=["RECURSO:N", "Indicador:N", "Quantidade:Q"],
+                    )
+                    .properties(
+                        height=420,
+                        title=nomes_cards_envio.get(contrato_grafico, contrato_grafico),
+                    )
+                )
+
+                st.altair_chart(grafico_envio, use_container_width=True)
+                st.dataframe(graf, use_container_width=True, hide_index=True)
+
+            st.markdown("### Texto curto para mensagem")
+            texto_msg = (
+                f"Resumo {data_envio}\n"
+                + "\n".join(
+                    f"{r['TÍTULO']}: {numero(int(r['TOTAL_CORTES']))} cortes, "
+                    f"{numero(int(r['TOTAL_RELIGAS']))} religas, restam {numero(int(r['RESTANTE_CPFL']))}"
+                    for r in indicadores_envio.to_dict('records')
+                )
+            )
+            st.text_area("Copiar texto", texto_msg, height=150, key="resumo_envio_texto")
 
 # ==============================
 # ABA CARRO
