@@ -3480,21 +3480,17 @@ def resolver_recurso_depara(valor, mapa_codigo_recurso):
 
 def caminho_pagamento_express():
     """
-    Procura a planilha manual de Pagamento Express.
+    Procura a planilha manual de Pagamento Express e escolhe o arquivo mais recente.
 
-    Correção importante:
-    - antes o app preferia dashboard/ antes da raiz;
-    - se existisse um pagamento_express antigo dentro de dashboard/, ele podia ser lido
-      mesmo quando o arquivo novo estivesse na raiz do projeto;
-    - agora ele procura todos os candidatos e escolhe o MAIS RECENTE por data de modificação.
+    Por que assim:
+    - pode existir arquivo antigo em dashboard/ e novo na raiz, ou o inverso;
+    - o GitHub Actions pode commitar arquivos em dashboard/;
+    - o Streamlit pode manter mais de um candidato após rename.
 
-    Aceita nomes como:
-    - pagamento_express.xlsx
-    - pagamento_express.xlsx.xlsx
-    - pagamento_express.csv
-    - express.xlsx
-    - express.csv
+    Então a regra é: localizar todos os pagamento_express/express válidos e usar
+    o de maior mtime. A auditoria mostra o caminho lido.
     """
+    candidatos = []
     nomes_exatos = [
         "pagamento_express.xlsx",
         "pagamento_express.xlsx.xlsx",
@@ -3502,8 +3498,6 @@ def caminho_pagamento_express():
         "express.xlsx",
         "express.csv",
     ]
-
-    candidatos = []
 
     for pasta in [PASTA_DASHBOARD, PASTA_ATUAL]:
         try:
@@ -3519,7 +3513,6 @@ def caminho_pagamento_express():
         except Exception:
             pass
 
-    # Remove duplicados.
     unicos = {}
     for caminho in candidatos:
         try:
@@ -3527,14 +3520,10 @@ def caminho_pagamento_express():
         except Exception:
             unicos[str(caminho)] = caminho
 
-    candidatos = list(unicos.values())
-
+    candidatos = [p for p in unicos.values() if p.exists() and p.is_file()]
     if not candidatos:
         return None
 
-    # Escolhe o arquivo realmente mais novo.
-    # Isso evita cair em dashboard/pagamento_express antigo quando existe
-    # pagamento_express novo na raiz, ou vice-versa.
     try:
         return max(candidatos, key=lambda p: p.stat().st_mtime)
     except Exception:
@@ -3657,32 +3646,66 @@ def ler_pagamento_express(caminho):
     df = df[(df["NOME_EXPRESS_NORM"] != "") | (df["NOME_EXPRESS_02_NORM"] != "")].copy()
 
     # Data de referência do Express.
-    col_data = achar_coluna(
+    # Correção: algumas versões do Excel têm mais de uma coluna com data
+    # (DATA, DATA_EXECUCAO, DT_REFERENCIA, etc.). Antes o app podia pegar
+    # a primeira coluna compatível e ficar preso em 05/05. Agora ele testa
+    # todas as colunas candidatas e escolhe a que tem datas válidas mais recentes.
+    def _parse_data_express(serie):
+        dt = pd.to_datetime(serie, dayfirst=True, errors="coerce")
+        if dt.notna().sum() == 0:
+            serie_num = pd.to_numeric(serie, errors="coerce")
+            dt = pd.to_datetime(serie_num, unit="D", origin="1899-12-30", errors="coerce")
+        # Evita colunas numéricas que viram datas absurdas por engano.
+        agora = pd.Timestamp.now()
+        dt = dt.where((dt >= pd.Timestamp("2020-01-01")) & (dt <= agora + pd.Timedelta(days=30)))
+        return dt
+
+    candidatos_data = []
+    preferidas_data = [
         "DT_REFERENCIA", "DT REFERENCIA", "DT_REFERÊNCIA", "DT REFERÊNCIA",
-        "DATA_REFERENCIA", "DATA REFERENCIA", "DATA_REFERÊNCIA", "DATA REFERÊNCIA", "DATA"
-    )
+        "DATA_REFERENCIA", "DATA REFERENCIA", "DATA_REFERÊNCIA", "DATA REFERÊNCIA",
+        "DATA_PAGAMENTO", "DATA PAGAMENTO",
+        "DATA_EXECUCAO", "DATA EXECUCAO", "DATA_EXECUÇÃO", "DATA EXECUÇÃO",
+        "DT_EXECUCAO", "DT EXECUCAO", "DT_EXECUÇÃO", "DT EXECUÇÃO",
+        "DATA",
+    ]
+    for nome in preferidas_data:
+        col = achar_coluna(nome)
+        if col and col not in candidatos_data:
+            candidatos_data.append(col)
 
-    if col_data is None:
-        for col in df.columns:
-            col_norm = normalizar_nome_pessoa(col)
-            if ("REFERENCIA" in col_norm or "REF" in col_norm) and ("DATA" in col_norm or "DT" in col_norm):
-                col_data = col
-                break
+    for col in df.columns:
+        col_norm = normalizar_nome_pessoa(col)
+        if any(t in col_norm for t in ["DATA", "DT", "REFERENCIA", "REF", "EXECUCAO", "PAGAMENTO"]):
+            if col not in candidatos_data:
+                candidatos_data.append(col)
 
-    if col_data is not None:
-        serie_data = df[col_data]
-        df["DATA_EXPRESS_DT"] = pd.to_datetime(serie_data, dayfirst=True, errors="coerce")
+    melhor_col_data = None
+    melhor_dt = pd.Series(pd.NaT, index=df.index)
+    melhor_score = (-1, pd.Timestamp("1900-01-01"))
+    diagnostico_datas = {}
 
-        # Fallback para datas numéricas do Excel.
-        if df["DATA_EXPRESS_DT"].isna().all():
-            serie_num = pd.to_numeric(serie_data, errors="coerce")
-            df["DATA_EXPRESS_DT"] = pd.to_datetime(serie_num, unit="D", origin="1899-12-30", errors="coerce")
-    else:
-        df["DATA_EXPRESS_DT"] = pd.NaT
+    for col in candidatos_data:
+        dt_col = _parse_data_express(df[col])
+        qtd_validas = int(dt_col.notna().sum())
+        max_data = dt_col.max() if qtd_validas else pd.NaT
+        diagnostico_datas[str(col)] = {
+            "validas": qtd_validas,
+            "max": max_data.strftime("%d/%m/%Y") if pd.notna(max_data) else "",
+        }
+        score = (qtd_validas, max_data if pd.notna(max_data) else pd.Timestamp("1900-01-01"))
+        if score > melhor_score:
+            melhor_score = score
+            melhor_col_data = col
+            melhor_dt = dt_col
+
+    df["DATA_EXPRESS_DT"] = melhor_dt
+    col_data = melhor_col_data
 
     df.attrs["EXPRESS_COLUNAS"] = list(df_original.columns)
     df.attrs["EXPRESS_COL_VALIDACAO"] = col_validacao or ""
     df.attrs["EXPRESS_COL_DATA"] = col_data or ""
+    df.attrs["EXPRESS_DIAGNOSTICO_DATAS"] = diagnostico_datas if 'diagnostico_datas' in locals() else {}
     df.attrs["EXPRESS_COL_NOME_1"] = col_nome_1 or ""
     df.attrs["EXPRESS_COL_RECURSO_DIRETO"] = col_recurso_direto or ""
 
@@ -4092,10 +4115,23 @@ def render_auditoria_express_ranking(
 
     st.markdown('<div class="section-title">Auditoria do Pagamento Express</div>', unsafe_allow_html=True)
     if express_caminho:
+        info_extra = ""
+        try:
+            express_tmp_info = ler_pagamento_express(str(express_caminho))
+            col_data_info = express_tmp_info.attrs.get("EXPRESS_COL_DATA", "") if hasattr(express_tmp_info, "attrs") else ""
+            mod_info_dt = arquivo_mtime_datetime(express_caminho)
+            mod_info = mod_info_dt.strftime("%d/%m/%Y %H:%M:%S") if mod_info_dt else ""
+            info_extra = f" | arquivo: {Path(express_caminho).name}"
+            if mod_info:
+                info_extra += f" | modificado: {mod_info}"
+            if col_data_info:
+                info_extra += f" | coluna data: {col_data_info}"
+        except Exception:
+            pass
         if express_data_max:
-            st.info(f"Pagamento Express conciliado por DE/PARA Nome → Recurso até {express_data_max}.")
+            st.info(f"Pagamento Express conciliado por DE/PARA Nome → Recurso até {express_data_max}.{info_extra}")
         else:
-            st.info("Pagamento Express conciliado por DE/PARA Nome → Recurso. A planilha não trouxe data válida para exibir o limite.")
+            st.info(f"Pagamento Express conciliado por DE/PARA Nome → Recurso. A planilha não trouxe data válida para exibir o limite.{info_extra}")
     else:
         st.caption("Pagamento Express: arquivo não localizado.")
 
@@ -4129,6 +4165,8 @@ def render_auditoria_express_ranking(
                         "nomes_mapeados_por_depara": int(express_debug.get("NOME_EXPRESS_NORM", pd.Series(dtype=object)).map(DEPARA_NOME_RECURSO_EXPRESS).fillna("").ne("").sum()) if "NOME_EXPRESS_NORM" in express_debug.columns else 0,
                         "recursos_diretos_no_excel": int(express_debug.get("RECURSO_EXPRESS_DIRETO", pd.Series(dtype=object)).fillna("").astype(str).str.strip().replace({"nan":"", "NaN":"", "None":""}).ne("").sum()) if "RECURSO_EXPRESS_DIRETO" in express_debug.columns else 0,
                         "tamanho_depara_nome_recurso": len(DEPARA_NOME_RECURSO_EXPRESS),
+                        "coluna_data_escolhida": express_debug.attrs.get("EXPRESS_COL_DATA", "") if hasattr(express_debug, "attrs") else "",
+                        "diagnostico_datas": express_debug.attrs.get("EXPRESS_DIAGNOSTICO_DATAS", {}) if hasattr(express_debug, "attrs") else {},
                     })
                     cols_debug = [
                         "NOME_EXPRESS", "NOME_EXPRESS_NORM", "DATA_EXPRESS_DT", "NOTA_NORM", "VALIDAÇÃO", "VALIDACAO"
