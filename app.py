@@ -3482,6 +3482,12 @@ def caminho_pagamento_express():
     """
     Procura a planilha manual de Pagamento Express.
 
+    Correção importante:
+    - antes o app preferia dashboard/ antes da raiz;
+    - se existisse um pagamento_express antigo dentro de dashboard/, ele podia ser lido
+      mesmo quando o arquivo novo estivesse na raiz do projeto;
+    - agora ele procura todos os candidatos e escolhe o MAIS RECENTE por data de modificação.
+
     Aceita nomes como:
     - pagamento_express.xlsx
     - pagamento_express.xlsx.xlsx
@@ -3489,7 +3495,7 @@ def caminho_pagamento_express():
     - express.xlsx
     - express.csv
     """
-    nomes = [
+    nomes_exatos = [
         "pagamento_express.xlsx",
         "pagamento_express.xlsx.xlsx",
         "pagamento_express.csv",
@@ -3497,24 +3503,42 @@ def caminho_pagamento_express():
         "express.csv",
     ]
 
-    for nome in nomes:
-        for pasta in [PASTA_DASHBOARD, PASTA_ATUAL]:
-            caminho = pasta / nome
-            if caminho.exists():
-                return caminho
+    candidatos = []
 
     for pasta in [PASTA_DASHBOARD, PASTA_ATUAL]:
-        achados = (
-            list(pasta.glob("pagamento_express*.xlsx"))
-            + list(pasta.glob("pagamento_express*.csv"))
-            + list(pasta.glob("express*.xlsx"))
-            + list(pasta.glob("express*.csv"))
-        )
-        if achados:
-            return achados[0]
+        try:
+            for nome in nomes_exatos:
+                caminho = pasta / nome
+                if caminho.exists() and caminho.is_file():
+                    candidatos.append(caminho)
 
-    return None
+            candidatos.extend(list(pasta.glob("pagamento_express*.xlsx")))
+            candidatos.extend(list(pasta.glob("pagamento_express*.csv")))
+            candidatos.extend(list(pasta.glob("express*.xlsx")))
+            candidatos.extend(list(pasta.glob("express*.csv")))
+        except Exception:
+            pass
 
+    # Remove duplicados.
+    unicos = {}
+    for caminho in candidatos:
+        try:
+            unicos[str(caminho.resolve())] = caminho
+        except Exception:
+            unicos[str(caminho)] = caminho
+
+    candidatos = list(unicos.values())
+
+    if not candidatos:
+        return None
+
+    # Escolhe o arquivo realmente mais novo.
+    # Isso evita cair em dashboard/pagamento_express antigo quando existe
+    # pagamento_express novo na raiz, ou vice-versa.
+    try:
+        return max(candidatos, key=lambda p: p.stat().st_mtime)
+    except Exception:
+        return candidatos[0]
 
 def ler_pagamento_express(caminho):
     """
