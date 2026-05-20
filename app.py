@@ -3482,12 +3482,6 @@ def caminho_pagamento_express():
     """
     Procura a planilha manual de Pagamento Express.
 
-    Correção importante:
-    - antes o app preferia dashboard/ antes da raiz;
-    - se existisse um pagamento_express antigo dentro de dashboard/, ele podia ser lido
-      mesmo quando o arquivo novo estivesse na raiz do projeto;
-    - agora ele procura todos os candidatos e escolhe o MAIS RECENTE por data de modificação.
-
     Aceita nomes como:
     - pagamento_express.xlsx
     - pagamento_express.xlsx.xlsx
@@ -3495,7 +3489,7 @@ def caminho_pagamento_express():
     - express.xlsx
     - express.csv
     """
-    nomes_exatos = [
+    nomes = [
         "pagamento_express.xlsx",
         "pagamento_express.xlsx.xlsx",
         "pagamento_express.csv",
@@ -3503,42 +3497,24 @@ def caminho_pagamento_express():
         "express.csv",
     ]
 
-    candidatos = []
+    for nome in nomes:
+        for pasta in [PASTA_DASHBOARD, PASTA_ATUAL]:
+            caminho = pasta / nome
+            if caminho.exists():
+                return caminho
 
     for pasta in [PASTA_DASHBOARD, PASTA_ATUAL]:
-        try:
-            for nome in nomes_exatos:
-                caminho = pasta / nome
-                if caminho.exists() and caminho.is_file():
-                    candidatos.append(caminho)
+        achados = (
+            list(pasta.glob("pagamento_express*.xlsx"))
+            + list(pasta.glob("pagamento_express*.csv"))
+            + list(pasta.glob("express*.xlsx"))
+            + list(pasta.glob("express*.csv"))
+        )
+        if achados:
+            return achados[0]
 
-            candidatos.extend(list(pasta.glob("pagamento_express*.xlsx")))
-            candidatos.extend(list(pasta.glob("pagamento_express*.csv")))
-            candidatos.extend(list(pasta.glob("express*.xlsx")))
-            candidatos.extend(list(pasta.glob("express*.csv")))
-        except Exception:
-            pass
+    return None
 
-    # Remove duplicados.
-    unicos = {}
-    for caminho in candidatos:
-        try:
-            unicos[str(caminho.resolve())] = caminho
-        except Exception:
-            unicos[str(caminho)] = caminho
-
-    candidatos = list(unicos.values())
-
-    if not candidatos:
-        return None
-
-    # Escolhe o arquivo realmente mais novo.
-    # Isso evita cair em dashboard/pagamento_express antigo quando existe
-    # pagamento_express novo na raiz, ou vice-versa.
-    try:
-        return max(candidatos, key=lambda p: p.stat().st_mtime)
-    except Exception:
-        return candidatos[0]
 
 def ler_pagamento_express(caminho):
     """
@@ -6173,7 +6149,7 @@ mostrar_carro = not carro.empty
 
 mostrar_aba_carro = (contrato_escolhido == "Todos") or (contrato_filtro_notas == "STC Jundiai") or (not carro.empty)
 
-nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana", "Resumo para envio"]
+nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana", "Resumo para envio", "Conferência produção"]
 if mostrar_aba_carro:
     nomes_abas.append("STC")
 nomes_abas += ["Notas", "Downloads"]
@@ -7181,14 +7157,382 @@ if tela_escolhida == "Notas":
         total_filtrado = len(df_notas)
         st.info(f"{numero(total_filtrado)} notas encontradas com os filtros atuais.")
 
+        csv_notas = df_notas.to_csv(index=False, sep=";", encoding="utf-8-sig")
+        st.download_button(
+            "⬇️ Baixar notas filtradas em CSV",
+            csv_notas.encode("utf-8-sig"),
+            file_name="notas_filtradas.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+        try:
+            import io
+            buffer_xlsx = io.BytesIO()
+            with pd.ExcelWriter(buffer_xlsx, engine="openpyxl") as writer:
+                df_notas.to_excel(writer, index=False, sheet_name="Notas filtradas")
+            st.download_button(
+                "⬇️ Baixar notas filtradas em Excel",
+                buffer_xlsx.getvalue(),
+                file_name="notas_filtradas.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        except Exception:
+            pass
+
         if st.button("Carregar notas", use_container_width=True):
             st.dataframe(df_notas.head(2000), use_container_width=True, hide_index=True)
-            st.caption("Mostrando até 2000 linhas para não deixar o painel pesado.")
+            st.caption("Mostrando até 2000 linhas para não deixar o painel pesado. O download acima baixa todas as notas filtradas.")
         else:
-            st.caption("As notas não são carregadas automaticamente para deixar o painel mais rápido.")
+            st.caption("As notas não são carregadas automaticamente para deixar o painel mais rápido. Use os botões acima para baixar tudo filtrado.")
     else:
         st.info("Base de notas não encontrada.")
 
+
+
+# ==============================
+# ABA CONFERÊNCIA DE PRODUÇÃO
+# ==============================
+
+if tela_escolhida == "Conferência produção":
+    st.subheader("Conferência de produção")
+    st.caption("Cruza a planilha paga pela empresa com as notas do dashboard e calcula produção por executor.")
+
+    def _norm_txt_prod(valor):
+        texto = str(valor or "").strip().upper()
+        texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+        return " ".join(texto.replace(".", " ").replace("_", " ").replace("-", " ").split())
+
+    def _norm_col_prod(col):
+        return _norm_txt_prod(col)
+
+    def _encontrar_coluna_prod(df, candidatos):
+        mapa = {_norm_col_prod(c): c for c in df.columns}
+        candidatos_norm = [_norm_col_prod(c) for c in candidatos]
+        for cand in candidatos_norm:
+            if cand in mapa:
+                return mapa[cand]
+        for nome_norm, original in mapa.items():
+            for cand in candidatos_norm:
+                if cand in nome_norm or nome_norm in cand:
+                    return original
+        return None
+
+    def _limpar_os_prod(valor):
+        if pd.isna(valor):
+            return ""
+        texto = str(valor).strip()
+        if texto.endswith(".0"):
+            texto = texto[:-2]
+        return "".join(ch for ch in texto if ch.isdigit())
+
+    def _extrair_executores_prod(valor):
+        import re
+        texto = str(valor or "")
+        codigos = re.findall(r"\b\d{6,10}\b", texto)
+        return codigos or [""]
+
+    def _tipo_servico_prod(desc, grupo_original=""):
+        texto = _norm_txt_prod(str(desc or "") + " " + str(grupo_original or ""))
+        if "PAGAMENTO EXPRESS" in texto or "EXPRESS" in texto:
+            return "EXPRESS"
+        if "RELIG" in texto:
+            return "RELIGUE"
+        if "VERIFIC" in texto or "AUTO RELIGADA" in texto:
+            return "VERIFICACAO"
+        if "DESLIG" in texto or "CORTE" in texto:
+            return "CORTE"
+        return "OUTRO"
+
+    def _ler_planilha_empresa_prod(arquivo):
+        todas = pd.read_excel(arquivo, sheet_name=None, dtype=object)
+        nomes = list(todas.keys())
+        nome_aba = nomes[1] if len(nomes) >= 2 else nomes[0]
+        df = todas[nome_aba].copy()
+        df.columns = [str(c).strip() for c in df.columns]
+        col_nota = _encontrar_coluna_prod(df, ["Nota", "Ordem", "OS", "Ordem de Serviço"])
+        col_data = _encontrar_coluna_prod(df, ["Data encermto.", "Data encerramento", "Data"])
+        col_exec = _encontrar_coluna_prod(df, ["Executor_Executor", "Executor", "Executante"])
+        col_desc = _encontrar_coluna_prod(df, ["Descrição Serv.", "Descricao Serv", "Serviço", "Servico"])
+        col_mun = _encontrar_coluna_prod(df, ["Município", "Municipio"])
+        if not col_nota:
+            raise ValueError("Não encontrei a coluna da nota na planilha da empresa.")
+        saida = pd.DataFrame()
+        saida["NOTA"] = df[col_nota].apply(_limpar_os_prod)
+        saida["DATA"] = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce") if col_data else pd.NaT
+        saida["MUNICIPIO"] = df[col_mun].fillna("").astype(str).str.strip() if col_mun else ""
+        saida["EXECUTOR_RAW"] = df[col_exec].fillna("").astype(str) if col_exec else ""
+        saida["DESCRICAO"] = df[col_desc].fillna("").astype(str) if col_desc else ""
+        saida["TIPO"] = saida["DESCRICAO"].apply(_tipo_servico_prod)
+        saida = saida[saida["NOTA"] != ""].copy()
+        saida["ORIGEM_EMPRESA_ABA"] = nome_aba
+        return saida
+
+    def _explodir_por_executor_prod(df, coluna_exec="EXECUTOR_RAW"):
+        if df.empty:
+            return df.copy()
+        base = df.copy()
+        base["EXECUTOR_CODIGO"] = base[coluna_exec].apply(_extrair_executores_prod)
+        base = base.explode("EXECUTOR_CODIGO")
+        base["EXECUTOR_CODIGO"] = base["EXECUTOR_CODIGO"].fillna("").astype(str).str.strip()
+        return base
+
+    def _preparar_dashboard_prod(notas, mes_ref):
+        parcial = preparar_parcial_do_dia(notas, incluir_recusas=True)
+        if parcial.empty:
+            return pd.DataFrame()
+        base = parcial.copy()
+        base["NOTA"] = base["ORDEM_DE_SERVICO"].apply(_limpar_os_prod) if "ORDEM_DE_SERVICO" in base.columns else ""
+        base["DATA_DT"] = pd.to_datetime(base.get("DATA_DT", pd.NaT), errors="coerce")
+        if mes_ref:
+            mes_dt = pd.to_datetime("01/" + mes_ref, dayfirst=True, errors="coerce")
+            if pd.notna(mes_dt):
+                base = base[(base["DATA_DT"].dt.month == mes_dt.month) & (base["DATA_DT"].dt.year == mes_dt.year)].copy()
+        if "EH_VERIFICACAO" not in base.columns:
+            base["EH_VERIFICACAO"] = 0
+        if "EH_CORTE" not in base.columns:
+            base["EH_CORTE"] = 0
+        if "EH_RELIGUE" not in base.columns:
+            base["EH_RELIGUE"] = 0
+        if "EH_RECUSA" not in base.columns:
+            base["EH_RECUSA"] = 0
+        base["TIPO"] = "OUTRO"
+        base.loc[pd.to_numeric(base["EH_CORTE"], errors="coerce").fillna(0).astype(int) == 1, "TIPO"] = "CORTE"
+        base.loc[pd.to_numeric(base["EH_VERIFICACAO"], errors="coerce").fillna(0).astype(int) == 1, "TIPO"] = "VERIFICACAO"
+        base.loc[pd.to_numeric(base["EH_RELIGUE"], errors="coerce").fillna(0).astype(int) == 1, "TIPO"] = "RELIGUE"
+        base.loc[pd.to_numeric(base["EH_RECUSA"], errors="coerce").fillna(0).astype(int) == 1, "TIPO"] = "RECUSA"
+        # Tenta usar eletricistas quando existirem. Se não existirem, usa RECURSO como fallback.
+        exec_cols = [c for c in ["ELETRICISTA1", "ELETRICISTA2"] if c in base.columns]
+        if exec_cols:
+            partes = []
+            for col in exec_cols:
+                tmp = base.copy()
+                tmp["EXECUTOR_RAW"] = tmp[col].fillna("").astype(str)
+                partes.append(tmp)
+            base_exec = pd.concat(partes, ignore_index=True)
+        else:
+            base_exec = base.copy()
+            base_exec["EXECUTOR_RAW"] = base_exec.get("RECURSO", "").fillna("").astype(str) if "RECURSO" in base_exec.columns else ""
+        base_exec = _explodir_por_executor_prod(base_exec, "EXECUTOR_RAW")
+        base_exec = base_exec[base_exec["NOTA"] != ""].copy()
+        return base_exec
+
+    def _resumo_executor_prod(df, origem_nome):
+        if df.empty:
+            return pd.DataFrame(columns=["EXECUTOR_CODIGO", f"NOTAS_{origem_nome}", f"CORTES_{origem_nome}", f"RELIGUES_{origem_nome}", f"VERIFICACOES_{origem_nome}", f"EXPRESS_{origem_nome}", f"RECUSAS_{origem_nome}"])
+        base = df.copy()
+        base["EXECUTOR_CODIGO"] = base["EXECUTOR_CODIGO"].fillna("").astype(str).str.strip()
+        base = base[base["EXECUTOR_CODIGO"] != ""].copy()
+        if base.empty:
+            return pd.DataFrame()
+        for tipo in ["CORTE", "RELIGUE", "VERIFICACAO", "EXPRESS", "RECUSA"]:
+            base[tipo] = (base["TIPO"] == tipo).astype(int)
+        res = (
+            base.groupby("EXECUTOR_CODIGO", dropna=False)
+            .agg(
+                **{
+                    f"NOTAS_{origem_nome}": ("NOTA", "nunique"),
+                    f"CORTES_{origem_nome}": ("CORTE", "sum"),
+                    f"RELIGUES_{origem_nome}": ("RELIGUE", "sum"),
+                    f"VERIFICACOES_{origem_nome}": ("VERIFICACAO", "sum"),
+                    f"EXPRESS_{origem_nome}": ("EXPRESS", "sum"),
+                    f"RECUSAS_{origem_nome}": ("RECUSA", "sum"),
+                }
+            )
+            .reset_index()
+        )
+        return res
+
+    def _ler_ranking_vinculada_prod(arquivo):
+        if arquivo is None:
+            return pd.DataFrame()
+        df = pd.read_excel(arquivo, dtype=object)
+        df.columns = [str(c).strip() for c in df.columns]
+        col_nome = _encontrar_coluna_prod(df, ["Executor", "Nome"])
+        col_qtd = _encontrar_coluna_prod(df, ["Qtd Notas", "Notas"])
+        col_rel = _encontrar_coluna_prod(df, ["Religa Vinculada", "Rel. V."])
+        col_pct = _encontrar_coluna_prod(df, ["% Religa Vinculada", "% Vinculada", "REL.V."])
+        if not col_nome:
+            return pd.DataFrame()
+        out = pd.DataFrame()
+        out["NOME"] = df[col_nome].fillna("").astype(str).str.strip()
+        out["NOME_NORM"] = out["NOME"].apply(_norm_txt_prod)
+        out["QTD_NOTAS_RANKING"] = pd.to_numeric(df[col_qtd], errors="coerce").fillna(0).astype(int) if col_qtd else 0
+        out["RELIGA_VINCULADA"] = pd.to_numeric(df[col_rel], errors="coerce").fillna(0).astype(int) if col_rel else 0
+        if col_pct:
+            out["PCT_VINCULADA"] = pd.to_numeric(df[col_pct], errors="coerce").fillna(0.0)
+            out.loc[out["PCT_VINCULADA"] > 1, "PCT_VINCULADA"] = out.loc[out["PCT_VINCULADA"] > 1, "PCT_VINCULADA"] / 100
+        else:
+            out["PCT_VINCULADA"] = 0.0
+        return out[out["NOME"] != ""].copy()
+
+    def _ler_cadastro_executor_prod(arquivo):
+        if arquivo is None:
+            return pd.DataFrame()
+        try:
+            todas = pd.read_excel(arquivo, sheet_name=None, dtype=object)
+        except Exception:
+            return pd.DataFrame()
+        candidatos = []
+        for nome_aba, df in todas.items():
+            if df is None or df.empty:
+                continue
+            df = df.copy()
+            df.columns = [str(c).strip() for c in df.columns]
+            col_exec = _encontrar_coluna_prod(df, ["EXECUTOR", "Executor", "Codigo executor", "Código Executor"])
+            col_nome = _encontrar_coluna_prod(df, ["NOME", "Nome", "Funcionário", "Funcionario"])
+            col_matr = _encontrar_coluna_prod(df, ["MATR.", "MATR", "Matricula", "Matrícula"])
+            if col_exec and col_nome:
+                tmp = pd.DataFrame()
+                tmp["EXECUTOR_CODIGO"] = df[col_exec].apply(_limpar_os_prod)
+                tmp["NOME"] = df[col_nome].fillna("").astype(str).str.strip()
+                tmp["MATRICULA"] = df[col_matr].apply(_limpar_os_prod) if col_matr else ""
+                tmp = tmp[(tmp["EXECUTOR_CODIGO"] != "") & (tmp["NOME"] != "")].copy()
+                if not tmp.empty:
+                    candidatos.append(tmp)
+        return pd.concat(candidatos, ignore_index=True).drop_duplicates("EXECUTOR_CODIGO") if candidatos else pd.DataFrame()
+
+    def _valor_unitario_vinculada(qtd_notas, pct):
+        try:
+            qtd = int(qtd_notas or 0)
+            p = float(pct or 0)
+        except Exception:
+            return 0.0
+        faixas_qtd = [
+            (600, 660, [0.75, 1.50, 1.65, 1.80, 2.03, 2.25, 2.63]),
+            (661, 720, [0.89, 1.78, 1.96, 2.14, 2.40, 2.67, 3.12]),
+            (721, 780, [1.07, 2.14, 2.35, 2.57, 2.89, 3.21, 3.75]),
+            (781, 840, [1.25, 2.50, 2.75, 3.00, 3.38, 3.75, 4.38]),
+            (841, 870, [1.43, 2.85, 3.14, 3.42, 3.85, 4.28, 4.99]),
+            (871, 10**9, [1.80, 3.60, 3.96, 4.32, 4.86, 5.40, 6.30]),
+        ]
+        if p < 0.40:
+            return 0.0
+        if p < 0.50:
+            idx = 0
+        elif p < 0.60:
+            idx = 1
+        elif p < 0.65:
+            idx = 2
+        elif p < 0.70:
+            idx = 3
+        elif p < 0.75:
+            idx = 4
+        elif p < 0.80:
+            idx = 5
+        else:
+            idx = 6
+        for minimo, maximo, valores in faixas_qtd:
+            if minimo <= qtd <= maximo:
+                return valores[idx]
+        return 0.0
+
+    mes_conferencia = st.selectbox("Mês da conferência", ["04/2026", "05/2026", "03/2026", "02/2026", "01/2026"], index=0)
+    col_up1, col_up2, col_up3 = st.columns(3)
+    arq_empresa = col_up1.file_uploader("Planilha paga pela empresa (.xlsx)", type=["xlsx"], key="prod_empresa_upload")
+    arq_ranking = col_up2.file_uploader("Ranking por Executor / % vinculada (.xlsx)", type=["xlsx"], key="prod_ranking_upload")
+    arq_cadastro = col_up3.file_uploader("Cadastro executor→nome/matrícula (.xlsx/.xlsm, opcional)", type=["xlsx", "xlsm"], key="prod_cadastro_upload")
+
+    if not arq_empresa:
+        st.info("Envie a planilha de pagamento da empresa. A aba 2 será usada como base principal.")
+    else:
+        try:
+            empresa = _ler_planilha_empresa_prod(arq_empresa)
+            empresa["MES"] = pd.to_datetime(empresa["DATA"], errors="coerce").dt.strftime("%m/%Y")
+            empresa_mes = empresa[empresa["MES"] == mes_conferencia].copy()
+            empresa_exec = _explodir_por_executor_prod(empresa_mes)
+
+            notas_dash = carregar_notas_rapido([mes_conferencia])
+            dash_exec = _preparar_dashboard_prod(notas_dash, mes_conferencia)
+
+            resumo_empresa = _resumo_executor_prod(empresa_exec, "EMPRESA")
+            resumo_dash = _resumo_executor_prod(dash_exec, "DASH")
+            cadastro = _ler_cadastro_executor_prod(arq_cadastro)
+            ranking_vinc = _ler_ranking_vinculada_prod(arq_ranking)
+
+            resumo = resumo_empresa.merge(resumo_dash, on="EXECUTOR_CODIGO", how="outer").fillna(0)
+            if not cadastro.empty:
+                resumo = resumo.merge(cadastro, on="EXECUTOR_CODIGO", how="left")
+            else:
+                resumo["NOME"] = ""
+                resumo["MATRICULA"] = ""
+
+            resumo["NOME_NORM"] = resumo["NOME"].fillna("").astype(str).apply(_norm_txt_prod)
+            if not ranking_vinc.empty:
+                resumo = resumo.merge(ranking_vinc[["NOME_NORM", "QTD_NOTAS_RANKING", "RELIGA_VINCULADA", "PCT_VINCULADA"]], on="NOME_NORM", how="left")
+            else:
+                resumo["QTD_NOTAS_RANKING"] = 0
+                resumo["RELIGA_VINCULADA"] = 0
+                resumo["PCT_VINCULADA"] = 0.0
+
+            for col in ["NOTAS_EMPRESA", "NOTAS_DASH", "CORTES_EMPRESA", "CORTES_DASH", "RELIGUES_EMPRESA", "RELIGUES_DASH", "VERIFICACOES_EMPRESA", "VERIFICACOES_DASH", "EXPRESS_EMPRESA", "EXPRESS_DASH", "RECUSAS_EMPRESA", "RECUSAS_DASH", "QTD_NOTAS_RANKING", "RELIGA_VINCULADA"]:
+                if col not in resumo.columns:
+                    resumo[col] = 0
+                resumo[col] = pd.to_numeric(resumo[col], errors="coerce").fillna(0).astype(int)
+            resumo["DIF_NOTAS"] = resumo["NOTAS_EMPRESA"] - resumo["NOTAS_DASH"]
+            resumo["VALOR_UNIT_RELIGA_VINC"] = resumo.apply(lambda r: _valor_unitario_vinculada(r.get("QTD_NOTAS_RANKING") or r.get("NOTAS_EMPRESA"), r.get("PCT_VINCULADA", 0)), axis=1)
+            resumo["TOTAL_RELIGA_VINCULADA"] = resumo["RELIGA_VINCULADA"] * resumo["VALOR_UNIT_RELIGA_VINC"]
+            resumo = resumo.sort_values(["DIF_NOTAS", "NOTAS_EMPRESA"], ascending=[False, False]).reset_index(drop=True)
+
+            notas_empresa_set = set(empresa_mes["NOTA"].dropna().astype(str))
+            notas_dash_set = set(dash_exec["NOTA"].dropna().astype(str)) if not dash_exec.empty else set()
+            faltando_empresa = sorted(notas_dash_set - notas_empresa_set)
+            pago_sem_dashboard = sorted(notas_empresa_set - notas_dash_set)
+            notas_ok = sorted(notas_empresa_set & notas_dash_set)
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Notas empresa", numero(len(notas_empresa_set)))
+            k2.metric("Notas dashboard", numero(len(notas_dash_set)))
+            k3.metric("OK nos dois", numero(len(notas_ok)))
+            k4.metric("Diferença líquida", numero(len(notas_empresa_set) - len(notas_dash_set)))
+
+            st.markdown("### Produção por executor")
+            colunas_resumo = [
+                "EXECUTOR_CODIGO", "MATRICULA", "NOME",
+                "NOTAS_EMPRESA", "NOTAS_DASH", "DIF_NOTAS",
+                "CORTES_EMPRESA", "CORTES_DASH", "RELIGUES_EMPRESA", "RELIGUES_DASH",
+                "VERIFICACOES_EMPRESA", "VERIFICACOES_DASH", "EXPRESS_EMPRESA", "EXPRESS_DASH",
+                "QTD_NOTAS_RANKING", "RELIGA_VINCULADA", "PCT_VINCULADA", "VALOR_UNIT_RELIGA_VINC", "TOTAL_RELIGA_VINCULADA",
+            ]
+            colunas_resumo = [c for c in colunas_resumo if c in resumo.columns]
+            st.dataframe(formatar_tabela(resumo[colunas_resumo]), use_container_width=True, hide_index=True)
+
+            csv_resumo = resumo[colunas_resumo].to_csv(index=False, sep=";", encoding="utf-8-sig")
+            st.download_button("Baixar produção por executor", csv_resumo, file_name=f"producao_executor_{mes_conferencia.replace('/', '-')}.csv", mime="text/csv", use_container_width=True)
+
+            st.markdown("### Divergência de notas")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Feitas no dashboard e não pagas na planilha da empresa**")
+                if faltando_empresa:
+                    df_falta = dash_exec[dash_exec["NOTA"].isin(faltando_empresa)].drop_duplicates("NOTA")
+                    cols = [c for c in ["NOTA", "DATA", "CONTRATO", "RECURSO", "TIPO", "RECUSA"] if c in df_falta.columns]
+                    st.dataframe(df_falta[cols].head(2000), use_container_width=True, hide_index=True)
+                    st.download_button("Baixar não pagas", df_falta.to_csv(index=False, sep=";", encoding="utf-8-sig"), file_name="notas_dashboard_nao_pagas.csv", mime="text/csv", use_container_width=True)
+                else:
+                    st.success("Nenhuma nota do dashboard ficou fora da planilha da empresa.")
+            with c2:
+                st.markdown("**Pagas pela empresa e não encontradas no dashboard**")
+                if pago_sem_dashboard:
+                    df_sobra = empresa_mes[empresa_mes["NOTA"].isin(pago_sem_dashboard)].drop_duplicates("NOTA")
+                    st.dataframe(df_sobra.head(2000), use_container_width=True, hide_index=True)
+                    st.download_button("Baixar pagas fora do dashboard", df_sobra.to_csv(index=False, sep=";", encoding="utf-8-sig"), file_name="notas_pagas_fora_dashboard.csv", mime="text/csv", use_container_width=True)
+                else:
+                    st.success("Nenhuma nota paga pela empresa ficou fora do dashboard.")
+
+            with st.expander("Diagnóstico das planilhas", expanded=False):
+                st.write(f"Aba da empresa lida: {empresa['ORIGEM_EMPRESA_ABA'].iloc[0] if not empresa.empty else ''}")
+                st.write(f"Linhas empresa no mês: {len(empresa_mes)}")
+                st.write(f"Linhas empresa explodidas por executor: {len(empresa_exec)}")
+                st.write(f"Linhas dashboard explodidas por executor: {len(dash_exec)}")
+                if cadastro.empty:
+                    st.warning("Cadastro executor→nome não enviado ou não reconhecido. O cálculo de % vinculada por nome pode ficar sem vínculo.")
+                if ranking_vinc.empty:
+                    st.warning("Ranking por Executor não enviado ou não reconhecido. O valor de religa vinculada ficará zerado.")
+
+        except Exception as e:
+            st.error(f"Erro ao processar conferência: {e}")
 
 # ==============================
 # TXT SUPERVISÃO / TXT DO DIA
