@@ -46,10 +46,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-github-actions.txt
 
-      # IMPORTANTE:
-      # Em horários sem serviço/sem CSV novo, o extrator pode falhar com:
-      # "Nenhum dado válido foi processado dos CSVs copiados."
-      # Isso não deve impedir o recálculo do dashboard usando os CSVs históricos.
       - name: Executar extrator
         continue-on-error: true
         run: |
@@ -60,6 +56,12 @@ jobs:
         run: |
           python precalcular_dashboard.py
 
+      - name: Proteger arquivo manual do Pagamento Express
+        if: always()
+        run: |
+          echo "Restaurando Pagamento Express para a versão já existente no repositório..."
+          git restore -- pagamento_express.xlsx pagamento_express.xlsx.xlsx dashboard/pagamento_express.xlsx dashboard/pagamento_express.xlsx.xlsx 2>/dev/null || true
+
       - name: Commit das tabelas instantâneas
         if: always()
         run: |
@@ -68,7 +70,12 @@ jobs:
 
           git add dashboard/gzus_dashboard.db
           git add dashboard/*.csv
-          git add dashboard/*.xlsx
+
+          # IMPORTANTE:
+          # Não adiciona pagamento_express*.xlsx aqui.
+          # Esse arquivo é manual e não pode ser sobrescrito pelo Actions.
+          # Se no futuro precisar commitar algum XLSX gerado automaticamente,
+          # adicione pelo nome específico, nunca com git add *.xlsx.
 
           if git diff --cached --quiet; then
             echo "Nada para commitar."
@@ -90,9 +97,10 @@ jobs:
 
             git reset --soft origin/main
 
+            git restore -- pagamento_express.xlsx pagamento_express.xlsx.xlsx dashboard/pagamento_express.xlsx dashboard/pagamento_express.xlsx.xlsx 2>/dev/null || true
+
             git add dashboard/gzus_dashboard.db
             git add dashboard/*.csv
-            git add dashboard/*.xlsx
 
             if git diff --cached --quiet; then
               echo "Após atualizar a base, não há nada para commitar."
