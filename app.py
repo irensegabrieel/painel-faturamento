@@ -7256,12 +7256,14 @@ if tela_escolhida == "Conferência produção":
         col_exec = _encontrar_coluna_prod(df, ["Executor_Executor", "Executor", "Executante"])
         col_desc = _encontrar_coluna_prod(df, ["Descrição Serv.", "Descricao Serv", "Serviço", "Servico"])
         col_mun = _encontrar_coluna_prod(df, ["Município", "Municipio"])
+        col_contrato = _encontrar_coluna_prod(df, ["Contrato", "Contrato SAP", "Nº Contrato", "No Contrato"])
         if not col_nota:
             raise ValueError("Não encontrei a coluna da nota na planilha da empresa.")
         saida = pd.DataFrame()
         saida["NOTA"] = df[col_nota].apply(_limpar_os_prod)
         saida["DATA"] = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce") if col_data else pd.NaT
         saida["MUNICIPIO"] = df[col_mun].fillna("").astype(str).str.strip() if col_mun else ""
+        saida["CONTRATO_EMPRESA_RAW"] = df[col_contrato].fillna("").astype(str).str.strip() if col_contrato else ""
         saida["EXECUTOR_RAW"] = df[col_exec].fillna("").astype(str) if col_exec else ""
         saida["DESCRICAO"] = df[col_desc].fillna("").astype(str) if col_desc else ""
         saida["TIPO"] = saida["DESCRICAO"].apply(_tipo_servico_prod)
@@ -7393,6 +7395,39 @@ if tela_escolhida == "Conferência produção":
                     candidatos.append(tmp)
         return pd.concat(candidatos, ignore_index=True).drop_duplicates("EXECUTOR_CODIGO") if candidatos else pd.DataFrame()
 
+    def _ler_cadastro_executor_colado_prod(texto_colado):
+        """Lê cadastro colado do Excel/planilha.
+
+        Aceita conteúdo copiado com cabeçalho, por exemplo:
+        NOME<TAB>EXECUTOR
+        JOAO DA SILVA<TAB>80012345
+        """
+        if not texto_colado or not str(texto_colado).strip():
+            return pd.DataFrame()
+        import io
+        bruto = str(texto_colado).strip()
+        try:
+            df = pd.read_csv(io.StringIO(bruto), sep="\t", dtype=str)
+        except Exception:
+            try:
+                df = pd.read_csv(io.StringIO(bruto), sep=";", dtype=str)
+            except Exception:
+                return pd.DataFrame()
+        if df.empty:
+            return pd.DataFrame()
+        df.columns = [str(c).strip() for c in df.columns]
+        col_exec = _encontrar_coluna_prod(df, ["EXECUTOR", "Executor", "Codigo executor", "Código Executor"])
+        col_nome = _encontrar_coluna_prod(df, ["NOME", "Nome", "Funcionário", "Funcionario"])
+        col_matr = _encontrar_coluna_prod(df, ["MATR.", "MATR", "Matricula", "Matrícula"])
+        if not col_exec or not col_nome:
+            return pd.DataFrame()
+        out = pd.DataFrame()
+        out["EXECUTOR_CODIGO"] = df[col_exec].apply(_limpar_os_prod)
+        out["NOME"] = df[col_nome].fillna("").astype(str).str.strip()
+        out["MATRICULA"] = df[col_matr].apply(_limpar_os_prod) if col_matr else ""
+        out = out[(out["EXECUTOR_CODIGO"] != "") & (out["NOME"] != "")].copy()
+        return out.drop_duplicates("EXECUTOR_CODIGO")
+
     def _valor_unitario_vinculada(qtd_notas, pct):
         try:
             qtd = int(qtd_notas or 0)
@@ -7433,6 +7468,12 @@ if tela_escolhida == "Conferência produção":
     arq_empresa = col_up1.file_uploader("Planilha paga pela empresa (.xlsx)", type=["xlsx"], key="prod_empresa_upload")
     arq_ranking = col_up2.file_uploader("Ranking por Executor / % vinculada (.xlsx)", type=["xlsx"], key="prod_ranking_upload")
     arq_cadastro = col_up3.file_uploader("Cadastro executor→nome/matrícula (.xlsx/.xlsm, opcional)", type=["xlsx", "xlsm"], key="prod_cadastro_upload")
+    cadastro_colado = st.text_area(
+        "Ou cole aqui o cadastro executor→nome",
+        placeholder="NOME\tEXECUTOR\nADRIANO ROSA DA SILVA\t80012742\nANDERSON ALEXANDRE N CAMARGO\t80010363",
+        height=160,
+        key="prod_cadastro_colado",
+    )
 
     if not arq_empresa:
         st.info("Envie a planilha de pagamento da empresa. A aba 2 será usada como base principal.")
@@ -7440,15 +7481,49 @@ if tela_escolhida == "Conferência produção":
         try:
             empresa = _ler_planilha_empresa_prod(arq_empresa)
             empresa["MES"] = pd.to_datetime(empresa["DATA"], errors="coerce").dt.strftime("%m/%Y")
-            empresa_mes = empresa[empresa["MES"] == mes_conferencia].copy()
-            empresa_exec = _explodir_por_executor_prod(empresa_mes)
+            empresa_mes_base = empresa[empresa["MES"] == mes_conferencia].copy()
 
             notas_dash = carregar_notas_rapido([mes_conferencia])
-            dash_exec = _preparar_dashboard_prod(notas_dash, mes_conferencia)
+            dash_exec_base = _preparar_dashboard_prod(notas_dash, mes_conferencia)
+
+            contratos_dashboard = []
+            if not dash_exec_base.empty and "CONTRATO" in dash_exec_base.columns:
+                contratos_dashboard = sorted([c for c in dash_exec_base["CONTRATO"].dropna().astype(str).unique().tolist() if c])
+            contrato_conferencia = st.selectbox(
+                "Contrato para comparar",
+                ["Todos"] + contratos_dashboard,
+                index=(["Todos"] + contratos_dashboard).index(contrato_filtro_notas) if contrato_filtro_notas in (["Todos"] + contratos_dashboard) else 0,
+                key="prod_contrato_conferencia",
+            )
+
+            empresa_mes = empresa_mes_base.copy()
+            dash_exec = dash_exec_base.copy()
+
+            if contrato_conferencia != "Todos":
+                # A planilha da empresa normalmente vem 1 arquivo por contrato.
+                # Então o filtro principal precisa ser aplicado no dashboard.
+                # Se a planilha da empresa tiver o mesmo nome textual de contrato, filtramos nela também.
+                if not dash_exec.empty and "CONTRATO" in dash_exec.columns:
+                    dash_exec = dash_exec[dash_exec["CONTRATO"] == contrato_conferencia].copy()
+                if "CONTRATO_EMPRESA_RAW" in empresa_mes.columns:
+                    raw_norm = empresa_mes["CONTRATO_EMPRESA_RAW"].fillna("").astype(str).apply(_norm_txt_prod)
+                    alvo_norm = _norm_txt_prod(contrato_conferencia)
+                    if (raw_norm == alvo_norm).any():
+                        empresa_mes = empresa_mes[raw_norm == alvo_norm].copy()
+                empresa_mes["CONTRATO_COMPARACAO"] = contrato_conferencia
+
+            empresa_exec = _explodir_por_executor_prod(empresa_mes)
 
             resumo_empresa = _resumo_executor_prod(empresa_exec, "EMPRESA")
             resumo_dash = _resumo_executor_prod(dash_exec, "DASH")
-            cadastro = _ler_cadastro_executor_prod(arq_cadastro)
+            cadastro_arquivo = _ler_cadastro_executor_prod(arq_cadastro)
+            cadastro_colado_df = _ler_cadastro_executor_colado_prod(cadastro_colado)
+            if not cadastro_arquivo.empty and not cadastro_colado_df.empty:
+                cadastro = pd.concat([cadastro_colado_df, cadastro_arquivo], ignore_index=True).drop_duplicates("EXECUTOR_CODIGO", keep="first")
+            elif not cadastro_colado_df.empty:
+                cadastro = cadastro_colado_df
+            else:
+                cadastro = cadastro_arquivo
             ranking_vinc = _ler_ranking_vinculada_prod(arq_ranking)
 
             resumo = resumo_empresa.merge(resumo_dash, on="EXECUTOR_CODIGO", how="outer").fillna(0)
@@ -7481,6 +7556,7 @@ if tela_escolhida == "Conferência produção":
             pago_sem_dashboard = sorted(notas_empresa_set - notas_dash_set)
             notas_ok = sorted(notas_empresa_set & notas_dash_set)
 
+            st.caption(f"Comparando contrato: **{contrato_conferencia}**")
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Notas empresa", numero(len(notas_empresa_set)))
             k2.metric("Notas dashboard", numero(len(notas_dash_set)))
@@ -7526,8 +7602,9 @@ if tela_escolhida == "Conferência produção":
                 st.write(f"Linhas empresa no mês: {len(empresa_mes)}")
                 st.write(f"Linhas empresa explodidas por executor: {len(empresa_exec)}")
                 st.write(f"Linhas dashboard explodidas por executor: {len(dash_exec)}")
+                st.write(f"Contrato comparado: {contrato_conferencia}")
                 if cadastro.empty:
-                    st.warning("Cadastro executor→nome não enviado ou não reconhecido. O cálculo de % vinculada por nome pode ficar sem vínculo.")
+                    st.warning("Cadastro executor→nome não enviado/colado ou não reconhecido. O cálculo de % vinculada por nome pode ficar sem vínculo.")
                 if ranking_vinc.empty:
                     st.warning("Ranking por Executor não enviado ou não reconhecido. O valor de religa vinculada ficará zerado.")
 
