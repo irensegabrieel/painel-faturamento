@@ -6691,9 +6691,7 @@ if tela_escolhida == "Ranking de recursos":
                     )
 
                     cadastro = _ler_cadastro_ranking_colado(cadastro_colado)
-                    ranking_nome["EXECUTOR_CODIGO"] = ranking_nome["EXECUTOR_CODIGO"].astype(str).str.strip()
                     if not cadastro.empty:
-                        cadastro["EXECUTOR_CODIGO"] = cadastro["EXECUTOR_CODIGO"].astype(str).str.strip()
                         ranking_nome = ranking_nome.merge(cadastro, on="EXECUTOR_CODIGO", how="left")
                     else:
                         ranking_nome["NOME"] = ""
