@@ -6594,7 +6594,7 @@ if tela_escolhida == "Ranking de recursos":
             )
 
             if True:
-                st.markdown('<div class="section-title">Ranking por nome / executor (teste)</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-title">Ranking por nome / executor</div>', unsafe_allow_html=True)
                 st.caption("Use este bloco para ligar os executores numéricos ao nome da pessoa. Cole duas colunas copiadas do Excel: NOME e EXECUTOR.")
 
                 cadastro_rank_colado = st.text_area(
@@ -6621,24 +6621,85 @@ if tela_escolhida == "Ranking de recursos":
                     import re
                     linhas = [l.strip() for l in str(texto_colado or "").splitlines() if l.strip()]
                     registros = []
+
                     for linha in linhas:
+                        linha = linha.strip()
+                        if not linha:
+                            continue
+
                         if "EXECUTOR" in linha.upper() and "NOME" in linha.upper():
                             continue
-                        partes = linha.split("\\t")
-                        if len(partes) >= 2:
-                            nome = " ".join(partes[:-1]).strip()
-                            executor = _limpar_codigo_executor_ranking(partes[-1])
-                        else:
-                            m = re.search(r"(\d{6,10})\\s*$", linha)
-                            if not m:
-                                continue
-                            executor = m.group(1)
-                            nome = linha[:m.start()].strip()
+
+                        # Aceita:
+                        # NOME<TAB>EXECUTOR<TAB>MATRICULA
+                        # NOME;EXECUTOR;MATRICULA
+                        # NOME    EXECUTOR    MATRICULA
+                        codigos = re.findall(r"\b\d{4,10}\b", linha)
+                        if not codigos:
+                            continue
+
+                        # Executor é o primeiro código de 6 a 10 dígitos encontrado da direita para esquerda.
+                        executor = ""
+                        matricula = ""
+                        for cod in reversed(codigos):
+                            if 6 <= len(cod) <= 10 and not executor:
+                                executor = cod
+                            elif 3 <= len(cod) <= 6 and not matricula:
+                                matricula = cod
+
+                        if not executor:
+                            continue
+
+                        # Remove apenas a última ocorrência do executor e da matrícula do texto do nome.
+                        nome = linha
+                        nome = re.sub(r"\b" + re.escape(executor) + r"\b", " ", nome, count=1)
+                        if matricula:
+                            nome = re.sub(r"\b" + re.escape(matricula) + r"\b", " ", nome, count=1)
+                        nome = nome.replace(";", " ").replace("\t", " ")
+                        nome = " ".join(nome.split()).strip()
+
                         if nome and executor:
-                            registros.append({"EXECUTOR_CODIGO": executor, "NOME": nome})
+                            registros.append({
+                                "EXECUTOR_CODIGO": str(executor).strip(),
+                                "NOME": nome,
+                                "MATRICULA": str(matricula).strip(),
+                            })
+
                     if not registros:
-                        return pd.DataFrame(columns=["EXECUTOR_CODIGO", "NOME"])
-                    return pd.DataFrame(registros).drop_duplicates("EXECUTOR_CODIGO", keep="first")
+                        return pd.DataFrame(columns=["EXECUTOR_CODIGO", "NOME", "MATRICULA"])
+
+                    cadastro = pd.DataFrame(registros)
+                    cadastro["EXECUTOR_CODIGO"] = cadastro["EXECUTOR_CODIGO"].astype(str).str.strip()
+                    cadastro["NOME"] = cadastro["NOME"].astype(str).str.strip()
+                    cadastro["MATRICULA"] = cadastro["MATRICULA"].fillna("").astype(str).str.strip()
+                    return cadastro.drop_duplicates("EXECUTOR_CODIGO", keep="first")
+
+                def _valor_producao_stc_por_nota(qtd_notas):
+                    try:
+                        qtd = int(qtd_notas or 0)
+                    except Exception:
+                        return 0.0
+                    if qtd <= 599:
+                        return 0.0
+                    if 600 <= qtd <= 659:
+                        return 2.00
+                    if 660 <= qtd <= 719:
+                        return 2.50
+                    if 720 <= qtd <= 779:
+                        return 3.00
+                    if 780 <= qtd <= 839:
+                        return 3.50
+                    return 4.00
+
+                def _producao_stc(qtd_notas):
+                    try:
+                        qtd = int(qtd_notas or 0)
+                    except Exception:
+                        return 0.0
+                    valor_unit = _valor_producao_stc_por_nota(qtd)
+                    qtd_pagavel = max(qtd - 599, 0)
+                    return float(qtd_pagavel * valor_unit)
+
 
                 def _ranking_stc_por_executor_nome(base_detalhe, cadastro_colado):
                     if base_detalhe is None or base_detalhe.empty:
@@ -6691,12 +6752,20 @@ if tela_escolhida == "Ranking de recursos":
                     )
 
                     cadastro = _ler_cadastro_ranking_colado(cadastro_colado)
+                    ranking_nome["EXECUTOR_CODIGO"] = ranking_nome["EXECUTOR_CODIGO"].astype(str).str.strip()
                     if not cadastro.empty:
+                        cadastro["EXECUTOR_CODIGO"] = cadastro["EXECUTOR_CODIGO"].astype(str).str.strip()
                         ranking_nome = ranking_nome.merge(cadastro, on="EXECUTOR_CODIGO", how="left")
                     else:
                         ranking_nome["NOME"] = ""
+                        ranking_nome["MATRICULA"] = ""
 
+                    if "MATRICULA" not in ranking_nome.columns:
+                        ranking_nome["MATRICULA"] = ""
                     ranking_nome["NOME"] = ranking_nome["NOME"].fillna("")
+                    ranking_nome["MATRICULA"] = ranking_nome["MATRICULA"].fillna("").astype(str)
+                    ranking_nome["VALOR_UNIT_PRODUCAO"] = ranking_nome["NOTAS"].apply(_valor_producao_stc_por_nota)
+                    ranking_nome["PRODUCAO"] = ranking_nome["NOTAS"].apply(_producao_stc)
                     ranking_nome = ranking_nome.sort_values(["NOTAS", "CORTES", "RELIGUES"], ascending=[False, False, False]).reset_index(drop=True)
                     ranking_nome.insert(0, "POSIÇÃO", range(1, len(ranking_nome) + 1))
                     return ranking_nome
@@ -6707,10 +6776,11 @@ if tela_escolhida == "Ranking de recursos":
                     st.info("Cole o cadastro NOME → EXECUTOR acima para exibir o ranking por nome, ou verifique se há executores individuais nas notas.")
                 else:
                     colunas_nome_exec = [
-                        "POSIÇÃO", "NOME", "EXECUTOR_CODIGO", "NOTAS", "CORTES", "RELIGUES",
-                        "VERIFICACOES", "RECUSAS", "DIAS_ATIVOS", "MÉDIA_NOTAS_DIA", "FATURAMENTO_ATRIBUÍDO"
+                        "POSIÇÃO", "NOME", "MATRICULA", "EXECUTOR_CODIGO", "NOTAS", "CORTES", "RELIGUES",
+                        "VERIFICACOES", "RECUSAS", "DIAS_ATIVOS", "MÉDIA_NOTAS_DIA", "VALOR_UNIT_PRODUCAO", "PRODUCAO", "FATURAMENTO_ATRIBUÍDO"
                     ]
                     colunas_nome_exec = [c for c in colunas_nome_exec if c in ranking_nome_exec.columns]
+                    st.caption("Produção STC: até 599 notas = R$ 0; de 600 a 659 = (notas - 599) × R$ 2,00; 660 a 719 × R$ 2,50; 720 a 779 × R$ 3,00; 780 a 839 × R$ 3,50; 840+ × R$ 4,00.")
                     st.dataframe(
                         preparar_tabela_ranking(ranking_nome_exec[colunas_nome_exec]),
                         use_container_width=True,
