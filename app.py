@@ -6594,7 +6594,7 @@ if tela_escolhida == "Ranking de recursos":
             )
 
             if True:
-                st.markdown('<div class="section-title">Ranking por nome / executor (teste)</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-title">Ranking por nome / executor</div>', unsafe_allow_html=True)
                 st.caption("Use este bloco para ligar os executores numéricos ao nome da pessoa. Cole duas colunas copiadas do Excel: NOME e EXECUTOR.")
 
                 cadastro_rank_colado = st.text_area(
@@ -6621,24 +6621,40 @@ if tela_escolhida == "Ranking de recursos":
                     import re
                     linhas = [l.strip() for l in str(texto_colado or "").splitlines() if l.strip()]
                     registros = []
+
                     for linha in linhas:
+                        linha = linha.strip()
+                        if not linha:
+                            continue
+
                         if "EXECUTOR" in linha.upper() and "NOME" in linha.upper():
                             continue
-                        partes = linha.split("\\t")
-                        if len(partes) >= 2:
-                            nome = " ".join(partes[:-1]).strip()
-                            executor = _limpar_codigo_executor_ranking(partes[-1])
-                        else:
-                            m = re.search(r"(\d{6,10})\\s*$", linha)
-                            if not m:
-                                continue
-                            executor = m.group(1)
-                            nome = linha[:m.start()].strip()
+
+                        # Aceita qualquer formato:
+                        # NOME<TAB>EXECUTOR
+                        # NOME;EXECUTOR
+                        # NOME    EXECUTOR
+                        m = re.search(r"(\d{6,10})\s*$", linha)
+                        if not m:
+                            continue
+
+                        executor = m.group(1).strip()
+                        nome = linha[:m.start()].strip(" ;\t")
+                        nome = " ".join(nome.split())
+
                         if nome and executor:
-                            registros.append({"EXECUTOR_CODIGO": executor, "NOME": nome})
+                            registros.append({
+                                "EXECUTOR_CODIGO": str(executor).strip(),
+                                "NOME": nome,
+                            })
+
                     if not registros:
                         return pd.DataFrame(columns=["EXECUTOR_CODIGO", "NOME"])
-                    return pd.DataFrame(registros).drop_duplicates("EXECUTOR_CODIGO", keep="first")
+
+                    cadastro = pd.DataFrame(registros)
+                    cadastro["EXECUTOR_CODIGO"] = cadastro["EXECUTOR_CODIGO"].astype(str).str.strip()
+                    cadastro["NOME"] = cadastro["NOME"].astype(str).str.strip()
+                    return cadastro.drop_duplicates("EXECUTOR_CODIGO", keep="first")
 
                 def _ranking_stc_por_executor_nome(base_detalhe, cadastro_colado):
                     if base_detalhe is None or base_detalhe.empty:
@@ -6691,7 +6707,9 @@ if tela_escolhida == "Ranking de recursos":
                     )
 
                     cadastro = _ler_cadastro_ranking_colado(cadastro_colado)
+                    ranking_nome["EXECUTOR_CODIGO"] = ranking_nome["EXECUTOR_CODIGO"].astype(str).str.strip()
                     if not cadastro.empty:
+                        cadastro["EXECUTOR_CODIGO"] = cadastro["EXECUTOR_CODIGO"].astype(str).str.strip()
                         ranking_nome = ranking_nome.merge(cadastro, on="EXECUTOR_CODIGO", how="left")
                     else:
                         ranking_nome["NOME"] = ""
