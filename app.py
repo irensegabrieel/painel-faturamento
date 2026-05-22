@@ -6593,6 +6593,137 @@ if tela_escolhida == "Ranking de recursos":
                 hide_index=True,
             )
 
+            if True:
+                st.markdown('<div class="section-title">Ranking por nome / executor (teste)</div>', unsafe_allow_html=True)
+                st.caption("Use este bloco para ligar os executores numéricos ao nome da pessoa. Cole duas colunas copiadas do Excel: NOME e EXECUTOR.")
+
+                cadastro_rank_colado = st.text_area(
+                    "Cadastro NOME → EXECUTOR para este ranking",
+                    placeholder="NOME\\tEXECUTOR\\nMARCOS ROGERIO PIRES BARBOSA\\t80012936\\nJOSE DANILO DA SILVA SANTOS\\t80008359",
+                    height=150,
+                    key=f"cadastro_nome_executor_ranking_{tipo_periodo}_{valor_periodo}",
+                )
+
+                def _limpar_codigo_executor_ranking(valor):
+                    import re
+                    texto = str(valor or "").strip()
+                    if texto.endswith(".0"):
+                        texto = texto[:-2]
+                    achados = re.findall(r"\b\d{6,10}\b", texto)
+                    return achados[0] if achados else ""
+
+                def _norm_nome_executor_ranking(valor):
+                    texto = str(valor or "").strip().upper()
+                    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+                    return " ".join(texto.split())
+
+                def _ler_cadastro_ranking_colado(texto_colado):
+                    import re
+                    linhas = [l.strip() for l in str(texto_colado or "").splitlines() if l.strip()]
+                    registros = []
+                    for linha in linhas:
+                        if "EXECUTOR" in linha.upper() and "NOME" in linha.upper():
+                            continue
+                        partes = linha.split("\\t")
+                        if len(partes) >= 2:
+                            nome = " ".join(partes[:-1]).strip()
+                            executor = _limpar_codigo_executor_ranking(partes[-1])
+                        else:
+                            m = re.search(r"(\d{6,10})\\s*$", linha)
+                            if not m:
+                                continue
+                            executor = m.group(1)
+                            nome = linha[:m.start()].strip()
+                        if nome and executor:
+                            registros.append({"EXECUTOR_CODIGO": executor, "NOME": nome})
+                    if not registros:
+                        return pd.DataFrame(columns=["EXECUTOR_CODIGO", "NOME"])
+                    return pd.DataFrame(registros).drop_duplicates("EXECUTOR_CODIGO", keep="first")
+
+                def _ranking_stc_por_executor_nome(base_detalhe, cadastro_colado):
+                    if base_detalhe is None or base_detalhe.empty:
+                        return pd.DataFrame()
+
+                    base_nome = base_detalhe.copy()
+                    for col in ["EH_RECUSA", "EH_CORTE", "EH_RELIGUE", "EH_VERIFICACAO", "FATURAMENTO_ATRIBUÍDO"]:
+                        if col not in base_nome.columns:
+                            base_nome[col] = 0
+                    for col in ["ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]:
+                        if col not in base_nome.columns:
+                            base_nome[col] = pd.NA
+
+                    exec_cols = [c for c in ["ELETRICISTA1", "ELETRICISTA2", "EXECUTOR", "EXECUTOR_CODIGO"] if c in base_nome.columns]
+                    if not exec_cols:
+                        st.warning("Não encontrei colunas de executor individual nesta base. Só existe RECURSO/equipe.")
+                        return pd.DataFrame()
+
+                    partes_exec = []
+                    for col in exec_cols:
+                        tmp = base_nome.copy()
+                        tmp["EXECUTOR_CODIGO"] = tmp[col].apply(_limpar_codigo_executor_ranking)
+                        partes_exec.append(tmp)
+
+                    base_exec_nome = pd.concat(partes_exec, ignore_index=True)
+                    base_exec_nome = base_exec_nome[base_exec_nome["EXECUTOR_CODIGO"] != ""].copy()
+                    if base_exec_nome.empty:
+                        return pd.DataFrame()
+
+                    # Evita duplicar quando o mesmo executor aparece nas duas colunas da mesma nota.
+                    if "ORDEM_DE_SERVICO" in base_exec_nome.columns:
+                        base_exec_nome = base_exec_nome.drop_duplicates(["ORDEM_DE_SERVICO", "EXECUTOR_CODIGO"])
+
+                    ranking_nome = (
+                        base_exec_nome.groupby("EXECUTOR_CODIGO", dropna=False)
+                        .agg(
+                            NOTAS=("ORDEM_SERVICO_PAGAVEL", "nunique"),
+                            CORTES=("EH_CORTE", "sum"),
+                            RELIGUES=("EH_RELIGUE", "sum"),
+                            VERIFICACOES=("EH_VERIFICACAO", "sum"),
+                            RECUSAS=("ORDEM_SERVICO_RECUSA", "nunique"),
+                            DIAS_ATIVOS=("DATA_PAGAVEL", "nunique"),
+                            FATURAMENTO_ATRIBUÍDO=("FATURAMENTO_ATRIBUÍDO", "sum"),
+                        )
+                        .reset_index()
+                    )
+                    ranking_nome["MÉDIA_NOTAS_DIA"] = ranking_nome.apply(
+                        lambda r: (r["NOTAS"] / r["DIAS_ATIVOS"]) if r["DIAS_ATIVOS"] else 0,
+                        axis=1,
+                    )
+
+                    cadastro = _ler_cadastro_ranking_colado(cadastro_colado)
+                    if not cadastro.empty:
+                        ranking_nome = ranking_nome.merge(cadastro, on="EXECUTOR_CODIGO", how="left")
+                    else:
+                        ranking_nome["NOME"] = ""
+
+                    ranking_nome["NOME"] = ranking_nome["NOME"].fillna("")
+                    ranking_nome = ranking_nome.sort_values(["NOTAS", "CORTES", "RELIGUES"], ascending=[False, False, False]).reset_index(drop=True)
+                    ranking_nome.insert(0, "POSIÇÃO", range(1, len(ranking_nome) + 1))
+                    return ranking_nome
+
+                ranking_nome_exec = _ranking_stc_por_executor_nome(base_filtrada_exec, cadastro_rank_colado)
+
+                if ranking_nome_exec.empty:
+                    st.info("Cole o cadastro NOME → EXECUTOR acima para exibir o ranking por nome, ou verifique se há executores individuais nas notas.")
+                else:
+                    colunas_nome_exec = [
+                        "POSIÇÃO", "NOME", "EXECUTOR_CODIGO", "NOTAS", "CORTES", "RELIGUES",
+                        "VERIFICACOES", "RECUSAS", "DIAS_ATIVOS", "MÉDIA_NOTAS_DIA", "FATURAMENTO_ATRIBUÍDO"
+                    ]
+                    colunas_nome_exec = [c for c in colunas_nome_exec if c in ranking_nome_exec.columns]
+                    st.dataframe(
+                        preparar_tabela_ranking(ranking_nome_exec[colunas_nome_exec]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    st.download_button(
+                        "Baixar ranking por nome/executor",
+                        ranking_nome_exec[colunas_nome_exec].to_csv(index=False, sep=";", encoding="utf-8-sig"),
+                        file_name=f"ranking_por_nome_executor_stc_{str(valor_periodo).replace('/', '-')}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+
             with st.expander("Ver notas consideradas no ranking"):
                 detalhe_cols = [
                     "DATA", "RECURSO", "CONTRATO", "ORDEM_DE_SERVICO",
