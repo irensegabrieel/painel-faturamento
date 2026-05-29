@@ -305,6 +305,11 @@ USUARIOS_ACESSO = {
         "perfil": "supervisor_stc",
         "nome": secret_value("NOME_SUPERVISOR_STC", "Supervisor STC"),
     },
+    "supervisor_leitura": {
+        "senha": secret_value("SENHA_LEITURA", ""),
+        "perfil": "supervisor_leitura",
+        "nome": secret_value("NOME_SUPERVISOR_LEITURA", "Supervisor Leitura"),
+    },
 }
 
 CONTRATOS_SUPERVISOR_STC = secret_list("CONTRATOS_SUPERVISOR_STC", ["STC Jundiai", "Disjuntor Santa Cruz"])
@@ -422,14 +427,7 @@ if not st.session_state.autenticado:
 
 PERFIL_ACESSO = st.session_state.get("perfil_acesso", "gerente")
 NOME_ACESSO = st.session_state.get("nome_acesso", "Gerente")
-PODE_VER_FINANCEIRO = False  # Financeiro removido do painel
-COLUNAS_FINANCEIRAS_REMOVIDAS = [
-    "FATURAMENTO", "FATURAMENTO_MIN", "FATURAMENTO_MAX", "FATURAMENTO_ATRIBUÍDO",
-    "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE",
-    "FATURAMENTO_EXPRESS", "TICKET_MÉDIO", "VALOR_UNIT_PRODUCAO", "PRODUCAO",
-    "TOTAL_RELIGA_VINCULADA", "VALOR_UNIT_RELIGA_VINC"
-]
-
+PODE_VER_FINANCEIRO = PERFIL_ACESSO == "gerente"
 
 PASTA_DASHBOARD = Path("dashboard")
 PASTA_ATUAL = Path(".")
@@ -6005,10 +6003,18 @@ dias_original = bases.get("dias", pd.DataFrame())
 carro_dias_original = bases.get("carro_dias", pd.DataFrame())
 notas = pd.DataFrame()  # carregada sob demanda por SQL filtrado
 
-# Supervisor STC agora usa o mesmo painel, porém restrito a TXT e Ranking sem financeiro.
+# Perfis restritos têm telas próprias para evitar exposição acidental de dados financeiros.
+if PERFIL_ACESSO == "supervisor_leitura":
+    st.title("📖 Leitura temporariamente desativada")
+    st.info("A área de Leitura foi removida temporariamente para acelerar o painel principal.")
+    st.stop()
 
-st.title("G.Z.U.S. — Painel Operacional")
-st.caption("Painel operacional para consulta de notas, ranking e TXT de supervisão.")
+if PERFIL_ACESSO == "supervisor_stc":
+    mostrar_painel_supervisor_stc(bases)
+    st.stop()
+
+st.title("🤖 G.Z.U.S. — Gestão Inteligente de Serviços")
+st.caption("Painel operacional com assistente inteligente. Atualização automática com GitHub e banco leve SQLite.")
 st.sidebar.caption(f"Perfil: {NOME_ACESSO}")
 if isinstance(_status_sync_github, dict) and _status_sync_github.get("quando"):
     st.sidebar.caption(f"GitHub: {_status_sync_github.get('message', '')} ({_status_sync_github.get('quando')})")
@@ -6024,7 +6030,7 @@ if faltando:
 # o pós-login mais rápido. Para religar, coloque ASSISTENTE_GZUS_AUTO = "true" nos Secrets.
 ASSISTENTE_GZUS_AUTO = str(secret_value("ASSISTENTE_GZUS_AUTO", "false") or "false").strip().lower() in ["1", "true", "sim", "s", "yes", "on"]
 if ASSISTENTE_GZUS_AUTO and PERFIL_ACESSO == "gerente" and not notas.empty:
-    mostrar_chatbot_popup(notas, pode_ver_financeiro=False, pode_ver_express=False)
+    mostrar_chatbot_popup(notas, pode_ver_financeiro=True, pode_ver_express=True)
 
 # ==============================
 # FILTROS EM BOTÕES
@@ -6051,8 +6057,6 @@ for base in [contratos_original, dias_original, carro_original, carro_dias_origi
         contratos_lista += base["CONTRATO"].dropna().unique().tolist()
 
 contratos_lista = sorted(set(contratos_lista))
-if PERFIL_ACESSO == "supervisor_stc":
-    contratos_lista = [c for c in contratos_lista if c in CONTRATOS_SUPERVISOR_STC]
 
 if "contrato_escolhido" not in st.session_state:
     st.session_state.contrato_escolhido = "Todos"
@@ -6077,9 +6081,6 @@ if st.session_state.get("modo_painel") == "leitura":
 
 modo_painel = st.session_state.modo_painel
 contrato_escolhido = st.session_state.contrato_escolhido
-if PERFIL_ACESSO == "supervisor_stc" and contrato_escolhido not in (["Todos"] + list(CONTRATOS_SUPERVISOR_STC)):
-    contrato_escolhido = "Todos"
-    st.session_state.contrato_escolhido = "Todos"
 contrato_filtro_notas = contrato_para_base_notas(contrato_escolhido)
 
 st.sidebar.markdown("---")
@@ -6148,14 +6149,10 @@ mostrar_carro = not carro.empty
 
 mostrar_aba_carro = (contrato_escolhido == "Todos") or (contrato_filtro_notas == "STC Jundiai") or (not carro.empty)
 
-if PERFIL_ACESSO == "supervisor_stc":
-    nomes_abas = ["TXT STC/Santa Cruz", "Ranking de recursos"]
-else:
-    # Financeiro removido: ficam apenas telas operacionais/consulta.
-    nomes_abas = ["Parcial do dia", "Ranking de recursos", "Dias da semana", "Notas"]
-
-if st.session_state.get("tela_principal_gzus") not in nomes_abas:
-    st.session_state["tela_principal_gzus"] = nomes_abas[0]
+nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana", "Resumo para envio", "Conferência produção"]
+if mostrar_aba_carro:
+    nomes_abas.append("STC")
+nomes_abas += ["Notas", "Downloads"]
 
 # Mais leve que st.tabs: no Streamlit, todas as abas executam ao mesmo tempo.
 # Com radio, só a tela escolhida roda, reduzindo carregamento após login e troca de filtros.
@@ -6170,14 +6167,6 @@ tela_escolhida = st.radio(
 # A tabela grande de notas NÃO é mais carregada aqui.
 # Cada tela pesada carrega somente quando for aberta.
 notas = pd.DataFrame()
-
-# ==============================
-# TXT STC/SANTA CRUZ
-# ==============================
-
-if tela_escolhida == "TXT STC/Santa Cruz":
-    mostrar_painel_supervisor_stc(bases)
-    st.stop()
 
 # ==============================
 # ABA RESUMO
@@ -6447,8 +6436,6 @@ if tela_escolhida == "Ranking de recursos":
 
         dias_ranking, semanas_ranking, meses_ranking = opcoes_periodo_ranking(base_exec)
         contratos_exec = ["Todos"] + sorted(base_exec["CONTRATO"].dropna().unique().tolist())
-        if PERFIL_ACESSO == "supervisor_stc":
-            contratos_exec = ["Todos"] + [c for c in contratos_exec if c != "Todos" and c in CONTRATOS_SUPERVISOR_STC]
         contrato_ranking = col_f1.selectbox(
             "Contrato",
             contratos_exec,
@@ -6473,8 +6460,7 @@ if tela_escolhida == "Ranking de recursos":
         else:
             col_f3.info("Considerando toda a base")
 
-        criterio = "Notas"
-        col_f4.info("Ordenado por notas")
+        criterio = col_f4.selectbox("Ordenar por", ["Notas", "Faturamento"], key="ranking_criterio")
 
         base_filtrada_exec, ranking_exec = ranking_recursos_cacheado(
             base_exec, contrato_ranking, tipo_periodo, valor_periodo, criterio
@@ -6487,13 +6473,29 @@ if tela_escolhida == "Ranking de recursos":
         total_express_mensal = 0
         fat_express_mensal = 0.0
 
-        # Pagamento Express removido do painel operacional.
+        if tipo_periodo == "Mês" and valor_periodo:
+            (
+                ranking_exec,
+                express_resumo_recurso,
+                express_data_max,
+                express_sem_vinculo,
+                express_caminho,
+                total_express_mensal,
+                fat_express_mensal,
+            ) = aplicar_express_no_ranking_mensal(
+                ranking_exec,
+                notas,
+                valor_periodo,
+                contrato_ranking,
+            )
 
         if ranking_exec.empty:
             st.info("Nenhum recurso encontrado para os filtros selecionados.")
         else:
             total_notas_exec = int(ranking_exec["NOTAS"].sum()) if "NOTAS" in ranking_exec.columns else int(base_filtrada_exec["ORDEM_DE_SERVICO"].nunique())
             total_executores = int(ranking_exec["RECURSO"].nunique())
+            total_fat_atribuido = float(ranking_exec["FATURAMENTO_ATRIBUÍDO"].sum())
+
             media_notas_executor = total_notas_exec / total_executores if total_executores else 0
 
             lider = ranking_exec.iloc[0]
@@ -6502,7 +6504,7 @@ if tela_escolhida == "Ranking de recursos":
                 f"""
                 <div class="executive-card">
                     <h3>Resumo executivo do ranking</h3>
-                    <div>🥇 Líder: <b>{lider['RECURSO']}</b> • {numero(lider['NOTAS'])} notas</div>
+                    <div>🥇 Líder: <b>{lider['RECURSO']}</b> • {numero(lider['NOTAS'])} notas • {dinheiro(lider['FATURAMENTO_ATRIBUÍDO'])} em faturamento atribuído</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -6511,8 +6513,11 @@ if tela_escolhida == "Ranking de recursos":
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Recursos ativos", numero(total_executores))
             m2.metric("Notas únicas", numero(total_notas_exec))
-            m3.metric("Cortes", numero(int(ranking_exec.get("CORTES", pd.Series(dtype=int)).sum())))
-            m4.metric("Religues", numero(int(ranking_exec.get("RELIGUES", pd.Series(dtype=int)).sum())))
+            m3.metric("Faturamento atribuído", dinheiro(total_fat_atribuido))
+            if tipo_periodo == "Mês" and valor_periodo:
+                m4.metric("Express", numero(total_express_mensal))
+            else:
+                m4.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
 
             if contrato_ranking == "STC Jundiai" and tipo_periodo in ["Dia", "Semana", "Mês"] and valor_periodo:
                 meta_inicio, meta_fim = _periodo_datas_cpfl(tipo_periodo, valor_periodo)
@@ -6525,10 +6530,23 @@ if tela_escolhida == "Ranking de recursos":
                 titulo_meta = "Meta CPFL da semana" if tipo_periodo == "Semana" else ("Meta CPFL do mês" if tipo_periodo == "Mês" else "Meta CPFL do dia")
                 render_meta_cpfl_stc(titulo_meta, meta_cpfl, cortes_cpfl, express_cpfl)
 
+            if tipo_periodo == "Mês" and valor_periodo and not express_sem_vinculo.empty:
+                with st.expander("Ver Express sem vínculo de Ordem de Serviço"):
+                    cols_sem_vinculo = [
+                        "NOTA", "NOTA_NORM", "DATA_EXPRESS_DT", "VALIDAÇÃO", "VALIDACAO",
+                        "NOME_EXECUTOR_01", "NOME_EXECUTOR_02", "NOME_EXECUTOR", "EXECUTOR"
+                    ]
+                    cols_sem_vinculo = [c for c in cols_sem_vinculo if c in express_sem_vinculo.columns]
+                    st.dataframe(
+                        express_sem_vinculo[cols_sem_vinculo],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
             st.markdown('<div class="section-title">Top 10 recursos</div>', unsafe_allow_html=True)
             top10 = ranking_exec.head(10).copy()
-            coluna_grafico = "NOTAS"
-            titulo_eixo_y = "Notas"
+            coluna_grafico = "NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO"
+            titulo_eixo_y = "Notas" if criterio == "Notas" else "Faturamento atribuído"
 
             grafico_top10 = (
                 alt.Chart(top10)
@@ -6551,6 +6569,7 @@ if tela_escolhida == "Ranking de recursos":
                         alt.Tooltip("POSIÇÃO:Q", title="Posição"),
                         alt.Tooltip("RECURSO:N", title="Recurso"),
                         alt.Tooltip("NOTAS:Q", title="Notas"),
+                        alt.Tooltip("FATURAMENTO_ATRIBUÍDO:Q", title="Faturamento atribuído", format=",.2f"),
                     ],
                 )
                 .properties(height=360)
@@ -6563,8 +6582,9 @@ if tela_escolhida == "Ranking de recursos":
 
             st.markdown('<div class="section-title">Ranking detalhado</div>', unsafe_allow_html=True)
             colunas_ranking = [
-                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS", "DIAS_ATIVOS",
-                "MÉDIA_NOTAS_DIA", "QTD_EQUIPES"
+                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "EXPRESS", "RECUSAS", "DIAS_ATIVOS",
+                "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
+                "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE", "QTD_EQUIPES"
             ]
             colunas_ranking = [c for c in colunas_ranking if c in ranking_exec.columns]
             st.dataframe(
@@ -6757,9 +6777,10 @@ if tela_escolhida == "Ranking de recursos":
                 else:
                     colunas_nome_exec = [
                         "POSIÇÃO", "NOME", "MATRICULA", "EXECUTOR_CODIGO", "NOTAS", "CORTES", "RELIGUES",
-                        "VERIFICACOES", "RECUSAS", "DIAS_ATIVOS", "MÉDIA_NOTAS_DIA"
+                        "VERIFICACOES", "RECUSAS", "DIAS_ATIVOS", "MÉDIA_NOTAS_DIA", "VALOR_UNIT_PRODUCAO", "PRODUCAO", "FATURAMENTO_ATRIBUÍDO"
                     ]
                     colunas_nome_exec = [c for c in colunas_nome_exec if c in ranking_nome_exec.columns]
+                    st.caption("Produção STC: até 599 notas = R$ 0; de 600 a 659 = (notas - 599) × R$ 2,00; 660 a 719 × R$ 2,50; 720 a 779 × R$ 3,00; 780 a 839 × R$ 3,50; 840+ × R$ 4,00.")
                     st.dataframe(
                         preparar_tabela_ranking(ranking_nome_exec[colunas_nome_exec]),
                         use_container_width=True,
@@ -6776,7 +6797,7 @@ if tela_escolhida == "Ranking de recursos":
             with st.expander("Ver notas consideradas no ranking"):
                 detalhe_cols = [
                     "DATA", "RECURSO", "CONTRATO", "ORDEM_DE_SERVICO",
-                    "GRUPO_NOTA", "EH_CORTE", "EH_RELIGUE", "EH_VERIFICACAO"
+                    "GRUPO_NOTA", "EH_CORTE", "EH_RELIGUE", "EH_VERIFICACAO", "FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"
                 ]
                 detalhe_cols = [c for c in detalhe_cols if c in base_filtrada_exec.columns]
                 detalhe_base = base_filtrada_exec.copy()
@@ -6784,7 +6805,18 @@ if tela_escolhida == "Ranking de recursos":
                     detalhe_base = detalhe_base[pd.to_numeric(detalhe_base["EH_RECUSA"], errors="coerce").fillna(0).astype(int) == 0].copy()
                 detalhe = detalhe_base[detalhe_cols].sort_values(["DATA", "RECURSO"], ascending=[False, True])
                 st.dataframe(
-                    preparar_tabela_ranking(detalhe),
+                    preparar_tabela_ranking(detalhe, colunas_moeda=["FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            if tipo_periodo == "Mês" and valor_periodo and not express_resumo_recurso.empty:
+                st.markdown('<div class="section-title">Pagamento Express conciliado por recurso</div>', unsafe_allow_html=True)
+                tabela_express_recurso = express_resumo_recurso.copy().sort_values(
+                    ["EXPRESS", "FATURAMENTO_EXPRESS"], ascending=False
+                )
+                st.dataframe(
+                    formatar_tabela(tabela_express_recurso[["RECURSO", "CONTRATO", "EXPRESS", "FATURAMENTO_EXPRESS"]]),
                     use_container_width=True,
                     hide_index=True,
                 )
@@ -6834,7 +6866,12 @@ if tela_escolhida == "Ranking de recursos":
                     hide_index=True,
                 )
 
-            csv_ranking = ranking_exec[colunas_ranking].to_csv(index=False, sep=";", encoding="utf-8-sig")
+            render_auditoria_express_ranking(
+                tipo_periodo, valor_periodo, express_caminho, express_data_max, express_sem_vinculo,
+                express_resumo_recurso, total_express_mensal
+            )
+
+            csv_ranking = ranking_exec.to_csv(index=False, sep=";", encoding="utf-8-sig")
             st.download_button(
                 "Baixar ranking de recursos em CSV",
                 csv_ranking,
