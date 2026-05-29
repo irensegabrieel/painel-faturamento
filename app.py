@@ -305,11 +305,6 @@ USUARIOS_ACESSO = {
         "perfil": "supervisor_stc",
         "nome": secret_value("NOME_SUPERVISOR_STC", "Supervisor STC"),
     },
-    "supervisor_leitura": {
-        "senha": secret_value("SENHA_LEITURA", ""),
-        "perfil": "supervisor_leitura",
-        "nome": secret_value("NOME_SUPERVISOR_LEITURA", "Supervisor Leitura"),
-    },
 }
 
 CONTRATOS_SUPERVISOR_STC = secret_list("CONTRATOS_SUPERVISOR_STC", ["STC Jundiai", "Disjuntor Santa Cruz"])
@@ -427,7 +422,7 @@ if not st.session_state.autenticado:
 
 PERFIL_ACESSO = st.session_state.get("perfil_acesso", "gerente")
 NOME_ACESSO = st.session_state.get("nome_acesso", "Gerente")
-PODE_VER_FINANCEIRO = PERFIL_ACESSO == "gerente"
+PODE_VER_FINANCEIRO = False  # financeiro removido do painel
 
 PASTA_DASHBOARD = Path("dashboard")
 PASTA_ATUAL = Path(".")
@@ -2059,6 +2054,15 @@ def dinheiro(valor):
     except Exception:
         return valor
 
+
+
+def remover_colunas_financeiras_visao(df):
+    """Remove colunas financeiras da visão operacional."""
+    if df is None or df.empty:
+        return df
+    palavras = ["FATURAMENTO", "VALOR", "PRECO", "PREÇO", "TICKET", "TOTAL_GERAL", "HORA_EXTRA", "PRODUCAO", "PRODUÇÃO"]
+    cols = [c for c in df.columns if not any(p in str(c).upper() for p in palavras)]
+    return df[cols].copy()
 
 def numero(valor):
     try:
@@ -6003,16 +6007,8 @@ dias_original = bases.get("dias", pd.DataFrame())
 carro_dias_original = bases.get("carro_dias", pd.DataFrame())
 notas = pd.DataFrame()  # carregada sob demanda por SQL filtrado
 
-# Perfis restritos têm telas próprias para evitar exposição acidental de dados financeiros.
-if PERFIL_ACESSO == "supervisor_leitura":
-    st.title("📖 Leitura temporariamente desativada")
-    st.info("A área de Leitura foi removida temporariamente para acelerar o painel principal.")
-    st.stop()
-
-if PERFIL_ACESSO == "supervisor_stc":
-    mostrar_painel_supervisor_stc(bases)
-    st.stop()
-
+# Perfil leitura removido.
+# Supervisor STC continua no painel com acesso restrito a TXT e ranking operacional.
 st.title("🤖 G.Z.U.S. — Gestão Inteligente de Serviços")
 st.caption("Painel operacional com assistente inteligente. Atualização automática com GitHub e banco leve SQLite.")
 st.sidebar.caption(f"Perfil: {NOME_ACESSO}")
@@ -6149,10 +6145,10 @@ mostrar_carro = not carro.empty
 
 mostrar_aba_carro = (contrato_escolhido == "Todos") or (contrato_filtro_notas == "STC Jundiai") or (not carro.empty)
 
-nomes_abas = ["Resumo", "Parcial do dia", "Ranking de recursos", "Comparativo mensal", "Dias da semana", "Resumo para envio", "Conferência produção"]
-if mostrar_aba_carro:
-    nomes_abas.append("STC")
-nomes_abas += ["Notas", "Downloads"]
+if PERFIL_ACESSO == "supervisor_stc":
+    nomes_abas = ["TXT STC/Santa Cruz", "Ranking de recursos"]
+else:
+    nomes_abas = ["Parcial do dia", "Ranking de recursos", "Dias da semana", "Notas", "Downloads"]
 
 # Mais leve que st.tabs: no Streamlit, todas as abas executam ao mesmo tempo.
 # Com radio, só a tela escolhida roda, reduzindo carregamento após login e troca de filtros.
@@ -6163,6 +6159,10 @@ tela_escolhida = st.radio(
     label_visibility="collapsed",
     key="tela_principal_gzus",
 )
+
+if tela_escolhida == "TXT STC/Santa Cruz":
+    mostrar_painel_supervisor_stc(bases)
+    st.stop()
 
 # A tabela grande de notas NÃO é mais carregada aqui.
 # Cada tela pesada carrega somente quando for aberta.
@@ -6436,6 +6436,10 @@ if tela_escolhida == "Ranking de recursos":
 
         dias_ranking, semanas_ranking, meses_ranking = opcoes_periodo_ranking(base_exec)
         contratos_exec = ["Todos"] + sorted(base_exec["CONTRATO"].dropna().unique().tolist())
+        if PERFIL_ACESSO == "supervisor_stc":
+            contratos_exec = [c for c in CONTRATOS_SUPERVISOR_STC if c in contratos_exec]
+            if not contratos_exec:
+                contratos_exec = list(CONTRATOS_SUPERVISOR_STC)
         contrato_ranking = col_f1.selectbox(
             "Contrato",
             contratos_exec,
@@ -6473,29 +6477,14 @@ if tela_escolhida == "Ranking de recursos":
         total_express_mensal = 0
         fat_express_mensal = 0.0
 
-        if tipo_periodo == "Mês" and valor_periodo:
-            (
-                ranking_exec,
-                express_resumo_recurso,
-                express_data_max,
-                express_sem_vinculo,
-                express_caminho,
-                total_express_mensal,
-                fat_express_mensal,
-            ) = aplicar_express_no_ranking_mensal(
-                ranking_exec,
-                notas,
-                valor_periodo,
-                contrato_ranking,
-            )
+        # Pagamento Express removido da visão operacional/ranking.
+        # Mantemos as variáveis zeradas apenas para compatibilidade com trechos antigos.
 
         if ranking_exec.empty:
             st.info("Nenhum recurso encontrado para os filtros selecionados.")
         else:
             total_notas_exec = int(ranking_exec["NOTAS"].sum()) if "NOTAS" in ranking_exec.columns else int(base_filtrada_exec["ORDEM_DE_SERVICO"].nunique())
             total_executores = int(ranking_exec["RECURSO"].nunique())
-            total_fat_atribuido = float(ranking_exec["FATURAMENTO_ATRIBUÍDO"].sum())
-
             media_notas_executor = total_notas_exec / total_executores if total_executores else 0
 
             lider = ranking_exec.iloc[0]
@@ -6504,20 +6493,16 @@ if tela_escolhida == "Ranking de recursos":
                 f"""
                 <div class="executive-card">
                     <h3>Resumo executivo do ranking</h3>
-                    <div>🥇 Líder: <b>{lider['RECURSO']}</b> • {numero(lider['NOTAS'])} notas • {dinheiro(lider['FATURAMENTO_ATRIBUÍDO'])} em faturamento atribuído</div>
+                    <div>🥇 Líder: <b>{lider['RECURSO']}</b> • {numero(lider['NOTAS'])} notas</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            m1, m2, m3, m4 = st.columns(4)
+            m1, m2, m3 = st.columns(3)
             m1.metric("Recursos ativos", numero(total_executores))
             m2.metric("Notas únicas", numero(total_notas_exec))
-            m3.metric("Faturamento atribuído", dinheiro(total_fat_atribuido))
-            if tipo_periodo == "Mês" and valor_periodo:
-                m4.metric("Express", numero(total_express_mensal))
-            else:
-                m4.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
+            m3.metric("Média notas/recurso", f"{media_notas_executor:.1f}".replace(".", ","))
 
             if contrato_ranking == "STC Jundiai" and tipo_periodo in ["Dia", "Semana", "Mês"] and valor_periodo:
                 meta_inicio, meta_fim = _periodo_datas_cpfl(tipo_periodo, valor_periodo)
@@ -6582,10 +6567,10 @@ if tela_escolhida == "Ranking de recursos":
 
             st.markdown('<div class="section-title">Ranking detalhado</div>', unsafe_allow_html=True)
             colunas_ranking = [
-                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "EXPRESS", "RECUSAS", "DIAS_ATIVOS",
-                "MÉDIA_NOTAS_DIA", "TICKET_MÉDIO", "FATURAMENTO_ATRIBUÍDO",
-                "FATURAMENTO_MIN_ATRIBUÍDO", "FATURAMENTO_MAX_ATRIBUÍDO", "FATURAMENTO_EQUIPE", "QTD_EQUIPES"
+                "POSIÇÃO", "RECURSO", "NOTAS", "CORTES", "RELIGUES", "VERIFICACOES", "RECUSAS", "DIAS_ATIVOS",
+                "MÉDIA_NOTAS_DIA", "QTD_EQUIPES"
             ]
+            ranking_exec = remover_colunas_financeiras_visao(ranking_exec)
             colunas_ranking = [c for c in colunas_ranking if c in ranking_exec.columns]
             st.dataframe(
                 preparar_tabela_ranking(ranking_exec[colunas_ranking]),
@@ -6797,7 +6782,7 @@ if tela_escolhida == "Ranking de recursos":
             with st.expander("Ver notas consideradas no ranking"):
                 detalhe_cols = [
                     "DATA", "RECURSO", "CONTRATO", "ORDEM_DE_SERVICO",
-                    "GRUPO_NOTA", "EH_CORTE", "EH_RELIGUE", "EH_VERIFICACAO", "FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"
+                    "GRUPO_NOTA", "EH_CORTE", "EH_RELIGUE", "EH_VERIFICACAO"
                 ]
                 detalhe_cols = [c for c in detalhe_cols if c in base_filtrada_exec.columns]
                 detalhe_base = base_filtrada_exec.copy()
@@ -6805,7 +6790,7 @@ if tela_escolhida == "Ranking de recursos":
                     detalhe_base = detalhe_base[pd.to_numeric(detalhe_base["EH_RECUSA"], errors="coerce").fillna(0).astype(int) == 0].copy()
                 detalhe = detalhe_base[detalhe_cols].sort_values(["DATA", "RECURSO"], ascending=[False, True])
                 st.dataframe(
-                    preparar_tabela_ranking(detalhe, colunas_moeda=["FATURAMENTO", "FATURAMENTO_ATRIBUÍDO"]),
+                    preparar_tabela_ranking(detalhe),
                     use_container_width=True,
                     hide_index=True,
                 )
@@ -6865,11 +6850,6 @@ if tela_escolhida == "Ranking de recursos":
                     use_container_width=True,
                     hide_index=True,
                 )
-
-            render_auditoria_express_ranking(
-                tipo_periodo, valor_periodo, express_caminho, express_data_max, express_sem_vinculo,
-                express_resumo_recurso, total_express_mensal
-            )
 
             csv_ranking = ranking_exec.to_csv(index=False, sep=";", encoding="utf-8-sig")
             st.download_button(
