@@ -2181,43 +2181,13 @@ def filtrar_base_executores(base, contrato, tipo_periodo, valor_periodo):
 
 
 def calcular_ranking_executores(base_filtrada, criterio="Notas"):
-    """Calcula ranking operacional por recurso.
-
-    Compatibilidade importante:
-    - Algumas bases/tabelas instantâneas são operacionais e não trazem colunas financeiras.
-    - O painel antigo ainda pode referenciar essas colunas em ordenações ou tabelas internas.
-    - Para não quebrar com KeyError, criamos essas colunas zeradas quando não existirem.
-    """
     if base_filtrada.empty:
         return pd.DataFrame()
 
     base_calc = base_filtrada.copy()
-
-    colunas_texto = ["RECURSO", "ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]
-    for col in colunas_texto:
+    for col in ["ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]:
         if col not in base_calc.columns:
             base_calc[col] = pd.NA
-
-    colunas_operacionais = ["EH_CORTE", "EH_VERIFICACAO", "EH_RELIGUE"]
-    for col in colunas_operacionais:
-        if col not in base_calc.columns:
-            base_calc[col] = 0
-        base_calc[col] = pd.to_numeric(base_calc[col], errors="coerce").fillna(0).astype(int)
-
-    # Colunas financeiras legadas. Mantidas zeradas apenas para compatibilidade
-    # com trechos antigos do app, sem exibir dinheiro no painel operacional.
-    colunas_financeiras_legadas = [
-        "FATURAMENTO",
-        "FATURAMENTO_MIN",
-        "FATURAMENTO_MAX",
-        "FATURAMENTO_ATRIBUÍDO",
-        "FATURAMENTO_MIN_ATRIBUÍDO",
-        "FATURAMENTO_MAX_ATRIBUÍDO",
-    ]
-    for col in colunas_financeiras_legadas:
-        if col not in base_calc.columns:
-            base_calc[col] = 0.0
-        base_calc[col] = pd.to_numeric(base_calc[col], errors="coerce").fillna(0.0)
 
     ranking = (
         base_calc.groupby("RECURSO", dropna=False)
@@ -2246,13 +2216,12 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
         axis=1,
     )
 
-    # Em painel operacional, mesmo se algum select antigo mandar critério financeiro,
-    # ordenamos por NOTAS para evitar depender de dinheiro.
-    coluna_ordem = "NOTAS"
+    coluna_ordem = "NOTAS" if criterio == "Notas" else "FATURAMENTO_ATRIBUÍDO"
     ranking = ranking.sort_values([coluna_ordem, "NOTAS", "RECUSAS"], ascending=[False, False, False]).reset_index(drop=True)
     ranking.insert(0, "POSIÇÃO", range(1, len(ranking) + 1))
 
     return ranking
+
 
 def calcular_recusas_por_tipo(base_filtrada):
     """Resume as recusas por equipe e por motivo no período filtrado."""
