@@ -510,8 +510,12 @@ LEITURA_HABILITADA = False  # Removido temporariamente para deixar o painel prin
 
 
 def _github_sync_habilitado():
-    valor = str(secret_value("SINCRONIZAR_GITHUB_AUTO", "true") or "true").strip().lower()
-    return valor not in ["0", "false", "nao", "não", "no", "off"]
+    # PATCH ESTABILIDADE 2026-05-29:
+    # Desligado por padrão para impedir que o Streamlit faça git reset --hard
+    # sozinho durante a navegação e volte para um app.py antigo.
+    # Só reativa se o Secret SINCRONIZAR_GITHUB_AUTO estiver explicitamente "true".
+    valor = str(secret_value("SINCRONIZAR_GITHUB_AUTO", "false") or "false").strip().lower()
+    return valor in ["1", "true", "sim", "s", "yes", "on"]
 
 
 def _ler_status_github_sync():
@@ -574,8 +578,8 @@ def sincronizar_github_se_preciso(forcar=False):
     Para desligar: coloque SINCRONIZAR_GITHUB_AUTO = "false" nos Secrets.
     Para escolher branch: coloque GITHUB_SYNC_BRANCH = "main" ou o nome usado.
     """
-    if not _github_sync_habilitado() and not forcar:
-        return {"ok": False, "changed": False, "skipped": True, "message": "Sincronização automática desligada"}
+    if not _github_sync_habilitado():
+        return {"ok": False, "changed": False, "skipped": True, "message": "Sincronização GitHub desligada para estabilidade do app"}
 
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     status_antigo = _ler_status_github_sync()
@@ -2185,9 +2189,36 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
         return pd.DataFrame()
 
     base_calc = base_filtrada.copy()
-    for col in ["ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]:
+
+    # PATCH ESTABILIDADE 2026-05-29:
+    # Algumas telas operacionais usam bases sem colunas financeiras.
+    # O ranking antigo ainda soma FATURAMENTO/FATURAMENTO_*.
+    # Para o painel nunca quebrar, garantimos todas as colunas usadas no groupby.
+    colunas_texto = ["RECURSO", "ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]
+    colunas_num = [
+        "EH_CORTE",
+        "EH_VERIFICACAO",
+        "EH_RELIGUE",
+        "FATURAMENTO",
+        "FATURAMENTO_ATRIBUÍDO",
+        "FATURAMENTO_MIN_ATRIBUÍDO",
+        "FATURAMENTO_MAX_ATRIBUÍDO",
+    ]
+
+    for col in colunas_texto:
         if col not in base_calc.columns:
             base_calc[col] = pd.NA
+
+    if "RECURSO" not in base_calc.columns or base_calc["RECURSO"].isna().all():
+        base_calc["RECURSO"] = "SEM RECURSO"
+
+    base_calc["RECURSO"] = base_calc["RECURSO"].fillna("SEM RECURSO").astype(str).str.strip()
+    base_calc.loc[base_calc["RECURSO"] == "", "RECURSO"] = "SEM RECURSO"
+
+    for col in colunas_num:
+        if col not in base_calc.columns:
+            base_calc[col] = 0
+        base_calc[col] = pd.to_numeric(base_calc[col], errors="coerce").fillna(0)
 
     ranking = (
         base_calc.groupby("RECURSO", dropna=False)
@@ -6130,13 +6161,30 @@ def filtrar_ranking_instant(df, contrato, tipo_periodo, valor_periodo):
 def opcoes_periodo_de_base_rapida(base):
     if base is None or base.empty:
         return [], [], []
-    dias = sorted(base.get("DATA", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(), reverse=True)
-    semanas = sorted(base.get("SEMANA", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(), reverse=True)
-    meses = sorted(
-        base.get("MES", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(),
-        key=lambda m: pd.to_datetime("01/" + str(m), dayfirst=True, errors="coerce"),
-        reverse=True,
-    )
+
+    # PATCH CRONOLOGIA 2026-05-29:
+    # Ordena Dia e Semana por data real, não por texto.
+    # Mantém comportamento do app estável; só corrige a ordem dos selectbox.
+    def _ordenar_datas_br(valores):
+        if not valores:
+            return []
+        df_datas = pd.DataFrame({"VALOR": pd.Series(valores, dtype="object").dropna().astype(str)})
+        df_datas["VALOR"] = df_datas["VALOR"].str.strip()
+        df_datas = df_datas[df_datas["VALOR"] != ""].drop_duplicates()
+        df_datas["_DT"] = pd.to_datetime(df_datas["VALOR"], dayfirst=True, errors="coerce")
+        df_datas = df_datas.sort_values(["_DT", "VALOR"], ascending=[False, False], na_position="last")
+        return df_datas["VALOR"].tolist()
+
+    dias = _ordenar_datas_br(base.get("DATA", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+    semanas = _ordenar_datas_br(base.get("SEMANA", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+
+    meses_valores = base.get("MES", pd.Series(dtype=str)).dropna().astype(str).unique().tolist()
+    meses_df = pd.DataFrame({"MES": pd.Series(meses_valores, dtype="object").dropna().astype(str)})
+    meses_df["MES"] = meses_df["MES"].str.strip()
+    meses_df = meses_df[meses_df["MES"] != ""].drop_duplicates()
+    meses_df["_DT"] = pd.to_datetime("01/" + meses_df["MES"], dayfirst=True, errors="coerce")
+    meses = meses_df.sort_values(["_DT", "MES"], ascending=[False, False], na_position="last")["MES"].tolist()
+
     return dias, semanas, meses
 
 
