@@ -578,8 +578,8 @@ def sincronizar_github_se_preciso(forcar=False):
     Para desligar: coloque SINCRONIZAR_GITHUB_AUTO = "false" nos Secrets.
     Para escolher branch: coloque GITHUB_SYNC_BRANCH = "main" ou o nome usado.
     """
-    if not _github_sync_habilitado() and not forcar:
-        return {"ok": False, "changed": False, "skipped": True, "message": "Sincronização GitHub automática desligada"}
+    if not _github_sync_habilitado():
+        return {"ok": False, "changed": False, "skipped": True, "message": "Sincronização GitHub desligada para estabilidade do app"}
 
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     status_antigo = _ler_status_github_sync()
@@ -6180,8 +6180,8 @@ _status_sync_github = _ler_status_github_sync() or {
     "ok": True,
     "changed": False,
     "skipped": True,
-    "message": "",
-    "quando": "",
+    "message": "GitHub em modo manual para abrir mais rápido.",
+    "quando": datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M:%S"),
 }
 
 bases, faltando = carregar_bases_leves()
@@ -6213,6 +6213,8 @@ notas = pd.DataFrame()  # carregada sob demanda por SQL filtrado
 st.title("🤖 G.Z.U.S. — Gestão Inteligente de Serviços")
 st.caption("Painel operacional com assistente inteligente. Atualização automática com GitHub e banco leve SQLite.")
 st.sidebar.caption(f"Perfil: {NOME_ACESSO}")
+if isinstance(_status_sync_github, dict) and _status_sync_github.get("quando"):
+    st.sidebar.caption(f"GitHub: {_status_sync_github.get('message', '')} ({_status_sync_github.get('quando')})")
 
 if st.session_state.pop("github_dados_atualizados_sem_recarregar", False):
     st.sidebar.success("✅ Dados novos aplicados sem recarregar o painel.")
@@ -6236,18 +6238,13 @@ st.sidebar.header("Filtros")
 if st.sidebar.button("🔄 Atualizar dados", use_container_width=True):
     status_manual = sincronizar_github_se_preciso(forcar=True)
     st.cache_data.clear()
-    try:
-        st.cache_resource.clear()
-    except Exception:
-        pass
     if status_manual.get("changed"):
-        st.sidebar.success("Atualizado pelo GitHub.")
-        st.toast("Dados atualizados pelo GitHub.", icon="✅")
+        st.sidebar.success("Atualizado pelo GitHub. Os dados serão aplicados no próximo ciclo da tela.")
+        st.toast("Atualização baixada. Continue usando; a tela aplicará os dados no próximo refresh.", icon="✅")
     elif status_manual.get("ok"):
         st.sidebar.info("Cache limpo. Nenhum commit novo no GitHub.")
     else:
         st.sidebar.warning(status_manual.get("message", "Não consegui consultar o GitHub, mas limpei o cache local."))
-    st.rerun()
 
 
 contratos_lista = []
