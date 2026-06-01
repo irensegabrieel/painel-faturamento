@@ -2185,9 +2185,32 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
         return pd.DataFrame()
 
     base_calc = base_filtrada.copy()
-    for col in ["ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]:
+
+    # PATCH ESTABILIDADE 2026-05-30:
+    # Algumas bases/tabelas operacionais já vêm sem colunas financeiras.
+    # O ranking antigo ainda soma essas colunas no .agg(); sem criá-las aqui,
+    # o pandas gera KeyError e derruba o app.
+    colunas_padrao_na = ["ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]
+    for col in colunas_padrao_na:
         if col not in base_calc.columns:
             base_calc[col] = pd.NA
+
+    colunas_padrao_zero = [
+        "EH_CORTE",
+        "EH_VERIFICACAO",
+        "EH_RELIGUE",
+        "FATURAMENTO",
+        "FATURAMENTO_ATRIBUÍDO",
+        "FATURAMENTO_MIN_ATRIBUÍDO",
+        "FATURAMENTO_MAX_ATRIBUÍDO",
+    ]
+    for col in colunas_padrao_zero:
+        if col not in base_calc.columns:
+            base_calc[col] = 0.0
+        base_calc[col] = pd.to_numeric(base_calc[col], errors="coerce").fillna(0.0)
+
+    if "RECURSO" not in base_calc.columns:
+        base_calc["RECURSO"] = ""
 
     ranking = (
         base_calc.groupby("RECURSO", dropna=False)
@@ -4741,7 +4764,7 @@ def mostrar_painel_supervisor_stc(bases):
             return status
         return "REJEITADA" if recusa else "FINALIZADA"
 
-    def _gerar_txt_supervisor_stc(df, data_escolhida, contrato_filtro, grupo_filtro):
+    def _gerar_txt_supervisor_stc(df, data_escolhida, contrato_filtro, grupo_filtro, mes_escolhido=None):
         base = df.copy()
 
         if contrato_filtro != "Todos":
@@ -4763,6 +4786,9 @@ def mostrar_painel_supervisor_stc(bases):
             data_ref = pd.to_datetime(data_escolhida, dayfirst=True, errors="coerce")
             if pd.notna(data_ref):
                 base = base[base["DATA_TXT_DT"].dt.strftime("%d/%m/%Y") == data_ref.strftime("%d/%m/%Y")].copy()
+
+        if mes_escolhido:
+            base = base[base["DATA_TXT_DT"].dt.strftime("%m/%Y") == str(mes_escolhido)].copy()
 
         if base.empty:
             return "", base
@@ -4892,6 +4918,37 @@ def mostrar_painel_supervisor_stc(bases):
         mime="text/plain",
         use_container_width=True,
     )
+
+    # Download do mês inteiro no mesmo formato do TXT diário.
+    meses_disponiveis_txt = datas_disponiveis.copy()
+    meses_disponiveis_txt["MES"] = meses_disponiveis_txt["DATA_DT"].dt.strftime("%m/%Y")
+    meses_opcoes_txt = meses_disponiveis_txt[["MES", "DATA_DT"]].drop_duplicates("MES").sort_values("DATA_DT", ascending=False)["MES"].tolist()
+
+    if meses_opcoes_txt:
+        mes_padrao_txt = data_txt[3:10] if data_txt and len(data_txt) >= 10 else meses_opcoes_txt[0]
+        idx_mes_padrao = meses_opcoes_txt.index(mes_padrao_txt) if mes_padrao_txt in meses_opcoes_txt else 0
+        mes_txt = st.selectbox("Mês do TXT completo", meses_opcoes_txt, index=idx_mes_padrao, key="stc_txt_mes_completo")
+
+        texto_txt_mes, df_txt_mes = _gerar_txt_supervisor_stc(
+            notas_stc,
+            data_escolhida=None,
+            contrato_filtro=contrato_txt,
+            grupo_filtro=grupo_txt,
+            mes_escolhido=mes_txt,
+        )
+
+        if texto_txt_mes:
+            nome_mes = mes_txt.replace("/", "-")
+            st.download_button(
+                f"⬇️ Baixar TXT do mês inteiro ({mes_txt})",
+                texto_txt_mes.encode("utf-8"),
+                file_name=f"resultado_final_stc_santa_cruz_mes_{nome_mes}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+            st.caption(f"TXT mensal gerado com {numero(len(df_txt_mes))} linhas, usando o mesmo formato do TXT diário.")
+        else:
+            st.info("Não há linhas no mês escolhido para os filtros selecionados.")
 
     with st.expander("Prévia em tabela", expanded=False):
         colunas_previas = [
