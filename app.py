@@ -510,8 +510,12 @@ LEITURA_HABILITADA = False  # Removido temporariamente para deixar o painel prin
 
 
 def _github_sync_habilitado():
-    valor = str(secret_value("SINCRONIZAR_GITHUB_AUTO", "true") or "true").strip().lower()
-    return valor not in ["0", "false", "nao", "não", "no", "off"]
+    # PATCH ESTABILIDADE 2026-05-29:
+    # Desligado por padrão para impedir que o Streamlit faça git reset --hard
+    # sozinho durante a navegação e volte para um app.py antigo.
+    # Só reativa se o Secret SINCRONIZAR_GITHUB_AUTO estiver explicitamente "true".
+    valor = str(secret_value("SINCRONIZAR_GITHUB_AUTO", "false") or "false").strip().lower()
+    return valor in ["1", "true", "sim", "s", "yes", "on"]
 
 
 def _ler_status_github_sync():
@@ -574,8 +578,8 @@ def sincronizar_github_se_preciso(forcar=False):
     Para desligar: coloque SINCRONIZAR_GITHUB_AUTO = "false" nos Secrets.
     Para escolher branch: coloque GITHUB_SYNC_BRANCH = "main" ou o nome usado.
     """
-    if not _github_sync_habilitado() and not forcar:
-        return {"ok": False, "changed": False, "skipped": True, "message": "Sincronização automática desligada"}
+    if not _github_sync_habilitado():
+        return {"ok": False, "changed": False, "skipped": True, "message": "Sincronização GitHub desligada para estabilidade do app"}
 
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     status_antigo = _ler_status_github_sync()
@@ -2186,16 +2190,12 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
 
     base_calc = base_filtrada.copy()
 
-    # PATCH ESTABILIDADE 2026-05-30:
-    # Algumas bases/tabelas operacionais já vêm sem colunas financeiras.
-    # O ranking antigo ainda soma essas colunas no .agg(); sem criá-las aqui,
-    # o pandas gera KeyError e derruba o app.
-    colunas_padrao_na = ["ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]
-    for col in colunas_padrao_na:
-        if col not in base_calc.columns:
-            base_calc[col] = pd.NA
-
-    colunas_padrao_zero = [
+    # PATCH ESTABILIDADE 2026-05-29:
+    # Algumas telas operacionais usam bases sem colunas financeiras.
+    # O ranking antigo ainda soma FATURAMENTO/FATURAMENTO_*.
+    # Para o painel nunca quebrar, garantimos todas as colunas usadas no groupby.
+    colunas_texto = ["RECURSO", "ORDEM_SERVICO_PAGAVEL", "ORDEM_SERVICO_RECUSA", "DATA_PAGAVEL"]
+    colunas_num = [
         "EH_CORTE",
         "EH_VERIFICACAO",
         "EH_RELIGUE",
@@ -2204,13 +2204,21 @@ def calcular_ranking_executores(base_filtrada, criterio="Notas"):
         "FATURAMENTO_MIN_ATRIBUÍDO",
         "FATURAMENTO_MAX_ATRIBUÍDO",
     ]
-    for col in colunas_padrao_zero:
-        if col not in base_calc.columns:
-            base_calc[col] = 0.0
-        base_calc[col] = pd.to_numeric(base_calc[col], errors="coerce").fillna(0.0)
 
-    if "RECURSO" not in base_calc.columns:
-        base_calc["RECURSO"] = ""
+    for col in colunas_texto:
+        if col not in base_calc.columns:
+            base_calc[col] = pd.NA
+
+    if "RECURSO" not in base_calc.columns or base_calc["RECURSO"].isna().all():
+        base_calc["RECURSO"] = "SEM RECURSO"
+
+    base_calc["RECURSO"] = base_calc["RECURSO"].fillna("SEM RECURSO").astype(str).str.strip()
+    base_calc.loc[base_calc["RECURSO"] == "", "RECURSO"] = "SEM RECURSO"
+
+    for col in colunas_num:
+        if col not in base_calc.columns:
+            base_calc[col] = 0
+        base_calc[col] = pd.to_numeric(base_calc[col], errors="coerce").fillna(0)
 
     ranking = (
         base_calc.groupby("RECURSO", dropna=False)
@@ -4764,7 +4772,7 @@ def mostrar_painel_supervisor_stc(bases):
             return status
         return "REJEITADA" if recusa else "FINALIZADA"
 
-    def _gerar_txt_supervisor_stc(df, data_escolhida, contrato_filtro, grupo_filtro, mes_escolhido=None):
+    def _gerar_txt_supervisor_stc(df, data_escolhida, contrato_filtro, grupo_filtro):
         base = df.copy()
 
         if contrato_filtro != "Todos":
@@ -4786,9 +4794,6 @@ def mostrar_painel_supervisor_stc(bases):
             data_ref = pd.to_datetime(data_escolhida, dayfirst=True, errors="coerce")
             if pd.notna(data_ref):
                 base = base[base["DATA_TXT_DT"].dt.strftime("%d/%m/%Y") == data_ref.strftime("%d/%m/%Y")].copy()
-
-        if mes_escolhido:
-            base = base[base["DATA_TXT_DT"].dt.strftime("%m/%Y") == str(mes_escolhido)].copy()
 
         if base.empty:
             return "", base
@@ -4918,37 +4923,6 @@ def mostrar_painel_supervisor_stc(bases):
         mime="text/plain",
         use_container_width=True,
     )
-
-    # Download do mês inteiro no mesmo formato do TXT diário.
-    meses_disponiveis_txt = datas_disponiveis.copy()
-    meses_disponiveis_txt["MES"] = meses_disponiveis_txt["DATA_DT"].dt.strftime("%m/%Y")
-    meses_opcoes_txt = meses_disponiveis_txt[["MES", "DATA_DT"]].drop_duplicates("MES").sort_values("DATA_DT", ascending=False)["MES"].tolist()
-
-    if meses_opcoes_txt:
-        mes_padrao_txt = data_txt[3:10] if data_txt and len(data_txt) >= 10 else meses_opcoes_txt[0]
-        idx_mes_padrao = meses_opcoes_txt.index(mes_padrao_txt) if mes_padrao_txt in meses_opcoes_txt else 0
-        mes_txt = st.selectbox("Mês do TXT completo", meses_opcoes_txt, index=idx_mes_padrao, key="stc_txt_mes_completo")
-
-        texto_txt_mes, df_txt_mes = _gerar_txt_supervisor_stc(
-            notas_stc,
-            data_escolhida=None,
-            contrato_filtro=contrato_txt,
-            grupo_filtro=grupo_txt,
-            mes_escolhido=mes_txt,
-        )
-
-        if texto_txt_mes:
-            nome_mes = mes_txt.replace("/", "-")
-            st.download_button(
-                f"⬇️ Baixar TXT do mês inteiro ({mes_txt})",
-                texto_txt_mes.encode("utf-8"),
-                file_name=f"resultado_final_stc_santa_cruz_mes_{nome_mes}.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-            st.caption(f"TXT mensal gerado com {numero(len(df_txt_mes))} linhas, usando o mesmo formato do TXT diário.")
-        else:
-            st.info("Não há linhas no mês escolhido para os filtros selecionados.")
 
     with st.expander("Prévia em tabela", expanded=False):
         colunas_previas = [
@@ -7731,7 +7705,7 @@ def _status_txt_supervisao(row):
     return "REJEITADA" if recusa else "FINALIZADA"
 
 
-def gerar_txt_supervisao(notas, data_escolhida=None, contrato_filtro="Todos", grupo_filtro="Todos"):
+def gerar_txt_supervisao(notas, data_escolhida=None, contrato_filtro="Todos", grupo_filtro="Todos", mes_escolhido=None):
     """Gera TXT no formato operacional usado para colar no Excel.
 
     Formato sem cabeçalho e separado por TAB:
@@ -7782,6 +7756,11 @@ def gerar_txt_supervisao(notas, data_escolhida=None, contrato_filtro="Todos", gr
         data_ref = pd.to_datetime(data_escolhida, dayfirst=True, errors="coerce")
         if pd.notna(data_ref):
             df = df[df["DATA_TXT_DT"].dt.strftime("%d/%m/%Y") == data_ref.strftime("%d/%m/%Y")].copy()
+
+    if mes_escolhido:
+        # Permite baixar o TXT do mês inteiro no mesmo formato do TXT diário.
+        # Ex.: mes_escolhido = "05/2026".
+        df = df[df["DATA_TXT_DT"].dt.strftime("%m/%Y") == str(mes_escolhido)].copy()
 
     if df.empty:
         return "", df
@@ -7932,6 +7911,46 @@ if tela_escolhida == "Downloads":
                     mime="text/plain",
                     use_container_width=True,
                 )
+
+                # TXT do mês inteiro no mesmo formato do TXT diário.
+                meses_txt = datas_disponiveis_txt.copy()
+                meses_txt["MES"] = meses_txt["DATA_DT"].dt.strftime("%m/%Y")
+                meses_opcoes = (
+                    meses_txt[["MES", "DATA_DT"]]
+                    .drop_duplicates("MES")
+                    .sort_values("DATA_DT", ascending=False)["MES"]
+                    .tolist()
+                )
+                if meses_opcoes:
+                    mes_default = data_txt[3:10] if data_txt and len(data_txt) >= 10 else meses_opcoes[0]
+                    idx_mes = meses_opcoes.index(mes_default) if mes_default in meses_opcoes else 0
+                    mes_txt = st.selectbox(
+                        "Mês do TXT completo",
+                        meses_opcoes,
+                        index=idx_mes,
+                        key="download_txt_supervisao_mes_completo",
+                    )
+
+                    texto_mes, df_mes = gerar_txt_supervisao(
+                        notas_txt,
+                        data_escolhida=None,
+                        contrato_filtro=contrato_txt,
+                        grupo_filtro=grupo_txt,
+                        mes_escolhido=mes_txt,
+                    )
+
+                    if texto_mes:
+                        nome_mes = mes_txt.replace("/", "-")
+                        st.download_button(
+                            f"⬇️ Baixar TXT do mês inteiro ({mes_txt})",
+                            texto_mes.encode("utf-8"),
+                            file_name=f"resultado_final_mes_{nome_mes}.txt",
+                            mime="text/plain",
+                            use_container_width=True,
+                        )
+                        st.caption(f"TXT mensal gerado com {numero(len(df_mes))} linhas, no mesmo formato do TXT diário.")
+                    else:
+                        st.info("Não há linhas no mês escolhido para os filtros selecionados.")
 
                 with st.expander("Prévia em tabela", expanded=False):
                     colunas_previas = [
