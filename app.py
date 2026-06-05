@@ -568,18 +568,17 @@ def _branch_git_atual():
 def sincronizar_github_se_preciso(forcar=False):
     """Puxa atualizações do GitHub sem precisar rebootar o app no Streamlit Cloud.
 
-    Por que isso existe:
-    - O extrator sobe CSV/Excel no GitHub.
-    - Em alguns deploys do Streamlit Cloud, o app continua lendo o checkout antigo
-      até reboot/redeploy.
-    - Esta rotina faz git fetch + reset para a branch atual e limpa o cache quando
-      detecta commit novo.
+    Uso correto:
+    - Navegação normal: NÃO faz git fetch/reset automaticamente.
+    - Botão "Atualizar dados": chama com forcar=True e SEMPRE tenta puxar o GitHub.
 
-    Para desligar: coloque SINCRONIZAR_GITHUB_AUTO = "false" nos Secrets.
-    Para escolher branch: coloque GITHUB_SYNC_BRANCH = "main" ou o nome usado.
+    Assim o painel continua rápido, mas o botão manual volta a funcionar.
     """
-    if not _github_sync_habilitado():
-        return {"ok": False, "changed": False, "skipped": True, "message": "Sincronização GitHub desligada para estabilidade do app"}
+    # PATCH ATUALIZAR DADOS 2026-06-02:
+    # A sincronização automática continua desligada por padrão, mas o botão manual
+    # precisa funcionar. Por isso, se forcar=True, não bloqueamos pelo Secret.
+    if not forcar and not _github_sync_habilitado():
+        return {"ok": True, "changed": False, "skipped": True, "message": "GitHub em modo manual"}
 
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     status_antigo = _ler_status_github_sync()
@@ -6213,8 +6212,8 @@ notas = pd.DataFrame()  # carregada sob demanda por SQL filtrado
 st.title("🤖 G.Z.U.S. — Gestão Inteligente de Serviços")
 st.caption("Painel operacional com assistente inteligente. Atualização automática com GitHub e banco leve SQLite.")
 st.sidebar.caption(f"Perfil: {NOME_ACESSO}")
-if isinstance(_status_sync_github, dict) and _status_sync_github.get("quando"):
-    st.sidebar.caption(f"GitHub: {_status_sync_github.get('message', '')} ({_status_sync_github.get('quando')})")
+# Status do GitHub removido da sidebar para não poluir o painel.
+# O botão "Atualizar dados" continua funcionando normalmente.
 
 if st.session_state.pop("github_dados_atualizados_sem_recarregar", False):
     st.sidebar.success("✅ Dados novos aplicados sem recarregar o painel.")
@@ -6237,14 +6236,26 @@ st.sidebar.header("Filtros")
 
 if st.sidebar.button("🔄 Atualizar dados", use_container_width=True):
     status_manual = sincronizar_github_se_preciso(forcar=True)
-    st.cache_data.clear()
+
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    try:
+        st.cache_resource.clear()
+    except Exception:
+        pass
+
     if status_manual.get("changed"):
-        st.sidebar.success("Atualizado pelo GitHub. Os dados serão aplicados no próximo ciclo da tela.")
-        st.toast("Atualização baixada. Continue usando; a tela aplicará os dados no próximo refresh.", icon="✅")
+        st.sidebar.success("Atualizado pelo GitHub. Recarregando dados...")
+        st.toast("Atualização baixada do GitHub.", icon="✅")
     elif status_manual.get("ok"):
         st.sidebar.info("Cache limpo. Nenhum commit novo no GitHub.")
     else:
         st.sidebar.warning(status_manual.get("message", "Não consegui consultar o GitHub, mas limpei o cache local."))
+
+    # Reexecuta o app para recarregar CSV/SQLite já com o checkout atualizado.
+    st.rerun()
 
 
 contratos_lista = []
