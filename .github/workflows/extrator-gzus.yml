@@ -1,7 +1,10 @@
+```yaml
 name: Extrator G.Z.U.S.
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
 
 permissions:
   contents: write
@@ -71,12 +74,6 @@ jobs:
           git add dashboard/gzus_dashboard.db
           git add dashboard/*.csv
 
-          # IMPORTANTE:
-          # Não adiciona pagamento_express*.xlsx aqui.
-          # Esse arquivo é manual e não pode ser sobrescrito pelo Actions.
-          # Se no futuro precisar commitar algum XLSX gerado automaticamente,
-          # adicione pelo nome específico, nunca com git add *.xlsx.
-
           if git diff --cached --quiet; then
             echo "Nada para commitar."
             exit 0
@@ -114,3 +111,4 @@ jobs:
 
           echo "Não foi possível fazer push após 3 tentativas."
           exit 1
+```
