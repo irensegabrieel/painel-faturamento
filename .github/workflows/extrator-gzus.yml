@@ -110,4 +110,3 @@ jobs:
 
           echo "Não foi possível fazer push após 3 tentativas."
           exit 1
-```
